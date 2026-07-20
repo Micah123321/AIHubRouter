@@ -15,11 +15,16 @@ var tests = new (string Name, Action Body)[]
     ("Balanced mode buys meaningful latency", TestBalancedModeBuysLatency),
     ("Balanced mode rejects catastrophic cheap latency", TestBalancedModeRejectsCatastrophicCheapLatency),
     ("Balanced mode keeps price for moderate speed gap", TestBalancedModeKeepsPriceForModerateGap),
+    ("Balanced mode keeps cheap route for a common latency gap", TestBalancedModeKeepsCheapRouteInCommonRange),
+    ("Balanced mode escapes extreme latency at double price", TestBalancedModeEscapesExtremeLatency),
     ("Balanced mode rejects weak latency value", TestBalancedModeRejectsWeakLatencyValue),
     ("Economy mode protects price", TestEconomyModeProtectsPrice),
     ("Speed mode accepts larger price premium", TestSpeedModeAcceptsLargerPremium),
     ("Missing latency ranks last", TestMissingLatencyRanksLast),
     ("Zero multiplier window stays free", TestZeroMultiplierWindow),
+    ("Close faster score keeps current group", TestCloseFasterScoreKeepsCurrentGroup),
+    ("Close cheaper score keeps current group", TestCloseCheaperScoreKeepsCurrentGroup),
+    ("Meaningful score advantage still switches", TestMeaningfulScoreAdvantageStillSwitches),
     ("Weighted speed winner switches immediately", TestWeightedSpeedWinnerSwitchesImmediately),
     ("Unknown current latency uses measured route", TestUnknownCurrentLatencyUsesMeasuredRoute),
     ("Price winner switches immediately", TestPriceWinnerSwitchesImmediately),
@@ -220,6 +225,56 @@ static void TestBalancedModeKeepsPriceForModerateGap()
         "Balanced mode paid a 67% premium for a moderate latency gap.");
 }
 
+static void TestBalancedModeKeepsCheapRouteInCommonRange()
+{
+    var now = DateTimeOffset.UtcNow;
+    var policy = Policy(RoutingMode.Balanced);
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.03, true, 0.99, now, latency: 9_000),
+            Provider(2, 0.05, true, 0.99, now, latency: 2_000)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        policy,
+        now);
+    var result = RouteDecisionEngine.Decide(
+        evaluation,
+        new RouteState { CurrentGroupId = 1 },
+        policy,
+        now,
+        observedCurrentGroupId: 1);
+
+    Assert(!result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 1,
+        "Balanced mode left a usable cheap route for a small weighted advantage.");
+}
+
+static void TestBalancedModeEscapesExtremeLatency()
+{
+    var now = DateTimeOffset.UtcNow;
+    var policy = Policy(RoutingMode.Balanced);
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.01, true, 0.99, now, latency: 120_000),
+            Provider(2, 0.02, true, 0.99, now, latency: 9_000)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        policy,
+        now);
+    var result = RouteDecisionEngine.Decide(
+        evaluation,
+        new RouteState { CurrentGroupId = 1 },
+        policy,
+        now,
+        observedCurrentGroupId: 1);
+
+    Assert(result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 2,
+        "Balanced mode kept an extreme-latency route despite an acceptable double-price route.");
+}
+
 static void TestBalancedModeRejectsWeakLatencyValue()
 {
     var now = DateTimeOffset.UtcNow;
@@ -305,6 +360,91 @@ static void TestWeightedSpeedWinnerSwitchesImmediately()
     Assert(result.Decision.ShouldSwitch &&
         result.Decision.Reason == RouteDecisionReason.FasterForWeightedTradeoff,
         "A clear weighted speed winner did not switch on the first evaluation.");
+}
+
+static void TestCloseFasterScoreKeepsCurrentGroup()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.02, true, 0.99, now, latency: 1_000),
+            Provider(2, 0.02, true, 0.99, now, latency: 980)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+    Assert(evaluation.Recommended?.Group.Id == 2,
+        "Test setup did not produce a slightly better faster route.");
+
+    var result = RouteDecisionEngine.Decide(
+        evaluation,
+        new RouteState { CurrentGroupId = 1 },
+        Policy(RoutingMode.Balanced),
+        now,
+        observedCurrentGroupId: 1);
+
+    Assert(!result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 1,
+        "A tiny weighted speed advantage replaced the current group.");
+    Assert(result.Decision.Reason == RouteDecisionReason.ScoreAdvantageTooSmall,
+        "A held close score did not report the stability reason.");
+}
+
+static void TestCloseCheaperScoreKeepsCurrentGroup()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.0201, true, 0.99, now, latency: 981),
+            Provider(2, 0.02, true, 0.99, now, latency: 1_000)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+    Assert(evaluation.Recommended?.Group.Id == 2,
+        "Test setup did not produce a slightly better cheaper route.");
+
+    var result = RouteDecisionEngine.Decide(
+        evaluation,
+        new RouteState { CurrentGroupId = 1 },
+        Policy(RoutingMode.Balanced),
+        now,
+        observedCurrentGroupId: 1);
+
+    Assert(!result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 1,
+        "A tiny weighted price advantage replaced the current group.");
+    Assert(result.Decision.Reason == RouteDecisionReason.ScoreAdvantageTooSmall,
+        "A held close price score did not report the stability reason.");
+}
+
+static void TestMeaningfulScoreAdvantageStillSwitches()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.02, true, 0.99, now, latency: 1_000),
+            Provider(2, 0.02, true, 0.99, now, latency: 400)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+    Assert(evaluation.Recommended?.Group.Id == 2,
+        "Test setup did not produce a meaningful faster route.");
+
+    var result = RouteDecisionEngine.Decide(
+        evaluation,
+        new RouteState { CurrentGroupId = 1 },
+        Policy(RoutingMode.Balanced),
+        now,
+        observedCurrentGroupId: 1);
+
+    Assert(result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 2,
+        "A score advantage above the stability threshold was blocked.");
 }
 
 static void TestUnknownCurrentLatencyUsesMeasuredRoute()
@@ -485,10 +625,12 @@ static void TestLegacyHardGateSettingsAreIgnored()
 
         var settings = store.Load().Settings;
         var policy = settings.CreatePolicy();
-        Assert(Math.Abs(policy.PriceWeight - 0.80) < 0.0001,
+        Assert(Math.Abs(policy.PriceWeight - 0.90) < 0.0001,
             "Legacy settings changed the balanced price weight.");
-        Assert(Math.Abs(policy.LatencyWeight - 0.20) < 0.0001,
+        Assert(Math.Abs(policy.LatencyWeight - 0.10) < 0.0001,
             "Legacy settings changed the balanced latency weight.");
+        Assert(Math.Abs(policy.MinimumScoreAdvantageToSwitch - 0.05) < 0.0001,
+            "Legacy settings changed the score hysteresis threshold.");
     }
     finally
     {

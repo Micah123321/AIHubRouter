@@ -132,21 +132,26 @@ public enum RoutingMode
 
 public sealed record BalancedRoutingPolicy
 {
+    public const double DefaultMinimumScoreAdvantageToSwitch = 0.05;
+
     public string Platform { get; init; } = "openai";
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
     public double MinimumSuccessRate6h { get; init; } = 0.9;
     public TimeSpan MaximumStatusAge { get; init; } = TimeSpan.FromMinutes(15);
     public double? PriceWeightOverride { get; init; }
+    public double? MinimumScoreAdvantageOverride { get; init; }
 
     public double PriceWeight => PriceWeightOverride ?? Mode switch
     {
-        RoutingMode.Economy => 0.95,
-        RoutingMode.Balanced => 0.80,
-        RoutingMode.Speed => 0.35,
-        _ => 0.80
+        RoutingMode.Economy => 0.98,
+        RoutingMode.Balanced => 0.90,
+        RoutingMode.Speed => 0.75,
+        _ => 0.90
     };
 
     public double LatencyWeight => 1 - PriceWeight;
+    public double MinimumScoreAdvantageToSwitch => MinimumScoreAdvantageOverride ??
+        DefaultMinimumScoreAdvantageToSwitch;
 
     public void Validate()
     {
@@ -169,6 +174,12 @@ public sealed record BalancedRoutingPolicy
         {
             throw new ArgumentOutOfRangeException(nameof(PriceWeightOverride));
         }
+
+        if (MinimumScoreAdvantageOverride is { } minimumScoreAdvantage &&
+            (minimumScoreAdvantage < 0 || !double.IsFinite(minimumScoreAdvantage)))
+        {
+            throw new ArgumentOutOfRangeException(nameof(MinimumScoreAdvantageOverride));
+        }
     }
 }
 
@@ -187,6 +198,7 @@ public enum RouteDecisionReason
     InitialRoute,
     CurrentRouteInvalid,
     AlreadyOptimal,
+    ScoreAdvantageTooSmall,
     BetterPrice,
     FasterForWeightedTradeoff
 }

@@ -61,6 +61,22 @@ public static class RouteDecisionEngine
         var latencyImprovement = CalculateLatencyImprovement(
             current.Provider.FirstTokenLatencyMs,
             target.Provider.FirstTokenLatencyMs);
+        var currentScore = RoutingEngine.CalculateWeightedScore(evaluation, current);
+        var targetScore = RoutingEngine.CalculateWeightedScore(evaluation, target);
+        if (currentScore is { } currentScoreValue &&
+            targetScore is { } targetScoreValue &&
+            targetScoreValue - currentScoreValue <= policy.MinimumScoreAdvantageToSwitch)
+        {
+            return Result(
+                current,
+                current,
+                false,
+                RouteDecisionReason.ScoreAdvantageTooSmall,
+                state with { CurrentGroupId = current.Group.Id },
+                CalculatePremium(evaluation.MinimumMultiplier, current.EffectiveMultiplier),
+                0,
+                now);
+        }
 
         return Switched(
             current,

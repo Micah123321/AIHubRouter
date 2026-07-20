@@ -178,6 +178,30 @@ public static class RoutingEngine
             : double.MaxValue;
     }
 
+    internal static double? CalculateWeightedScore(
+        RouteEvaluation evaluation,
+        RouteCandidate candidate)
+    {
+        var minimumMultiplier = evaluation.MinimumMultiplier;
+        var baselineLatency = evaluation.Baseline?.Provider.FirstTokenLatencyMs;
+        var candidateLatency = candidate.Provider.FirstTokenLatencyMs;
+        if (minimumMultiplier is not > 0 ||
+            baselineLatency is not > 0 ||
+            candidateLatency is not > 0 ||
+            !double.IsFinite(baselineLatency.Value) ||
+            !double.IsFinite(candidateLatency.Value))
+        {
+            return null;
+        }
+
+        return CalculateTradeoffScore(
+            minimumMultiplier.Value,
+            baselineLatency.Value,
+            candidate,
+            evaluation.PriceWeight,
+            evaluation.LatencyWeight);
+    }
+
     private static bool IsKnownLatency(double? latency) =>
         latency is > 0 && double.IsFinite(latency.Value);
 
