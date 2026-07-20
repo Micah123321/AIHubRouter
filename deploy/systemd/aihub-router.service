@@ -13,7 +13,9 @@ WorkingDirectory=/var/lib/aihub-router
 Environment=XDG_CONFIG_HOME=/var/lib/aihub-router
 Environment=DOTNET_NOLOGO=1
 EnvironmentFile=/etc/aihub-router/environment
-ExecStart=/opt/aihub-router/aihub-router watch --interval 60 --json
+LogsDirectory=aihub-router
+LogsDirectoryMode=0700
+ExecStart=/opt/aihub-router/aihub-router watch --interval 60 --json --log-file /var/log/aihub-router/router.jsonl --log-max-mb 20 --log-files 7
 Restart=always
 RestartSec=10s
 UMask=0077

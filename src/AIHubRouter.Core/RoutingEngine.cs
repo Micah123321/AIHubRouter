@@ -91,34 +91,111 @@ public static class RoutingEngine
 
         if (eligible.Length == 0)
         {
-            return new RouteEvaluation(null, eligible, eligible, null, double.NaN);
+            return new RouteEvaluation(
+                null,
+                null,
+                eligible,
+                eligible,
+                null,
+                policy.PriceWeight,
+                policy.LatencyWeight);
         }
 
-        var minimumMultiplier = eligible.Min(candidate => candidate.EffectiveMultiplier);
-        var maximumAcceptedMultiplier = minimumMultiplier == 0
-            ? 0
-            : minimumMultiplier * (1 + policy.PricePremiumPercent / 100);
-        var priceWindow = eligible
-            .Where(candidate => candidate.EffectiveMultiplier <= maximumAcceptedMultiplier + 1e-12)
+        var measured = eligible
+            .Where(candidate => IsKnownLatency(candidate.Provider.FirstTokenLatencyMs))
+            .ToArray();
+        var decisionPool = measured.Length > 0 ? measured : eligible;
+        var minimumMultiplier = decisionPool.Min(candidate => candidate.EffectiveMultiplier);
+        var cheapest = decisionPool
+            .Where(candidate => NearlyEqual(candidate.EffectiveMultiplier, minimumMultiplier))
             .OrderBy(candidate => NormalizeLatency(candidate.Provider.FirstTokenLatencyMs))
             .ThenByDescending(candidate => candidate.Provider.SuccessRate6h ?? 0)
-            .ThenBy(candidate => candidate.EffectiveMultiplier)
             .ThenBy(candidate => candidate.Group.Id)
             .ToArray();
 
+        if (minimumMultiplier == 0 || measured.Length == 0)
+        {
+            return new RouteEvaluation(
+                cheapest.FirstOrDefault(),
+                cheapest.FirstOrDefault(),
+                eligible,
+                cheapest,
+                minimumMultiplier,
+                policy.PriceWeight,
+                policy.LatencyWeight);
+        }
+
+        var baseline = cheapest[0];
+        var baselineLatency = baseline.Provider.FirstTokenLatencyMs!.Value;
+        if (baselineLatency <= 0)
+        {
+            return new RouteEvaluation(
+                baseline,
+                baseline,
+                eligible,
+                cheapest,
+                minimumMultiplier,
+                policy.PriceWeight,
+                policy.LatencyWeight);
+        }
+
+        var tradeoff = decisionPool
+            .Select(candidate => new
+            {
+                Candidate = candidate,
+                Score = CalculateTradeoffScore(
+                    minimumMultiplier,
+                    baselineLatency,
+                    candidate,
+                    policy.PriceWeight,
+                    policy.LatencyWeight)
+            })
+            .Where(candidate =>
+                candidate.Candidate.Group.Id == baseline.Group.Id ||
+                candidate.Score > 1e-9)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Candidate.EffectiveMultiplier)
+            .ThenBy(candidate => NormalizeLatency(candidate.Candidate.Provider.FirstTokenLatencyMs))
+            .ThenByDescending(candidate => candidate.Candidate.Provider.SuccessRate6h ?? 0)
+            .ThenBy(candidate => candidate.Candidate.Group.Id)
+            .Select(candidate => candidate.Candidate)
+            .ToArray();
+
         return new RouteEvaluation(
-            priceWindow.FirstOrDefault(),
+            tradeoff.FirstOrDefault() ?? baseline,
+            baseline,
             eligible,
-            priceWindow,
+            tradeoff.Length > 0 ? tradeoff : cheapest,
             minimumMultiplier,
-            maximumAcceptedMultiplier);
+            policy.PriceWeight,
+            policy.LatencyWeight);
     }
 
     internal static double NormalizeLatency(double? latency)
     {
-        return latency is >= 0 && double.IsFinite(latency.Value)
+        return latency is > 0 && double.IsFinite(latency.Value)
             ? latency.Value
             : double.MaxValue;
+    }
+
+    private static bool IsKnownLatency(double? latency) =>
+        latency is > 0 && double.IsFinite(latency.Value);
+
+    private static bool NearlyEqual(double left, double right) =>
+        Math.Abs(left - right) <= 1e-12;
+
+    private static double CalculateTradeoffScore(
+        double minimumMultiplier,
+        double baselineLatency,
+        RouteCandidate candidate,
+        double priceWeight,
+        double latencyWeight)
+    {
+        var pricePremiumRatio =
+            (candidate.EffectiveMultiplier - minimumMultiplier) / minimumMultiplier;
+        var speedupRatio =
+            baselineLatency / candidate.Provider.FirstTokenLatencyMs!.Value - 1;
+        return latencyWeight * speedupRatio - priceWeight * pricePremiumRatio;
     }
 
     private static bool IsFresh(DateTimeOffset? checkedAt, DateTimeOffset now, TimeSpan maximumAge)

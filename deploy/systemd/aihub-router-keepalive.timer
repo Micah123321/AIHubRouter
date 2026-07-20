@@ -2,8 +2,7 @@
 Description=Periodic AIHubRouter keepalive check
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
+OnCalendar=*:0/5
 AccuracySec=15s
 Persistent=true
 Unit=aihub-router-keepalive.service

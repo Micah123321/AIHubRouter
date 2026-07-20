@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\AIHubRouter.Core\AIHubRouter.Core.csproj" />
+    <ProjectReference Include="..\..\src\AIHubRouter.Cli\AIHubRouter.Cli.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

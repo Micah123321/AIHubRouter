@@ -7,7 +7,7 @@ AIHubRouter 迁移为 Windows、Linux、macOS 共用的 API-only 路由器，同
 - `AIHubRouter.Cli`：面向无图形环境、systemd、容器和脚本。
 - `AIHubRouter.Desktop`：基于 Avalonia 12 的桌面界面。
 
-两个入口共用同一套路由、认证、缓存和防抖状态机。程序不得嵌入、自动化或自动启动浏览器。
+两个入口共用同一套路由、认证、缓存和状态管理。程序不得嵌入、自动化或自动启动浏览器。
 
 ## 2. 非目标
 
@@ -46,56 +46,48 @@ tests/
 
 账号专属倍率优先于公开倍率。
 
-### 4.2 价格窗口与速度优选
+### 4.2 价格与延迟权衡
 
-先计算全部有效候选中的最低倍率 `minimumRate`。候选满足下式时进入价格窗口：
+只要存在有效首 Token 实测值，缺失或非法延迟的候选就不参与本轮竞争。程序从有实测值的候选中选出最低倍率基准，并计算其他候选相对基准的权衡得分：
 
 ```text
-effectiveRate <= minimumRate * (1 + MaximumPricePremiumPercent / 100)
+pricePremiumRatio = (candidateRate - minimumRate) / minimumRate
+speedupRatio = baselineLatency / candidateLatency - 1
+weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 ```
 
-当最低倍率为 0 时，仅保留倍率为 0 的候选。在窗口内依次按以下字段排序：
-
-1. 首 Token 延迟更低；缺失或非法延迟排在最后。
-2. 6 小时可用率更高。
-3. 有效倍率更低。
-4. 分组 ID 更小，保证结果确定。
+最低倍率基准的得分为 0。其他候选得分大于 0 才进入推荐集合；得分相同时优先倍率更低、延迟更低、可用率更高和分组 ID 更小的候选。
 
 预设策略：
 
-| 模式 | 最大价格溢价 |
-|---|---:|
-| Economy | 5% |
-| Balanced | 15% |
-| Speed | 30% |
+| 模式 | `priceWeight` | `latencyWeight` | 决策倾向 |
+|---|---:|---:|---|
+| Economy | 0.95 | 0.05 | 强倍率倾向 |
+| Balanced | 0.80 | 0.20 | 倍率主导，只响应很大的速度差距 |
+| Speed | 0.35 | 0.65 | 强速度倾向 |
 
-默认使用 `Balanced`。
+最低倍率为 0 时，仅在零倍率候选中按延迟和可用率选择。全部候选都缺失延迟时回退到最低倍率，避免虚构速度收益。默认使用 `Balanced`。
 
-### 4.3 切换防抖
+### 4.3 权重稳定机制
 
-路由状态持久化以下非敏感字段：
+倍率通常稳定，而首 Token 延迟会随网络和服务负载波动。算法通过提高倍率权重、降低首字速度权重抑制频繁切换，而不是增加时间门槛：
 
-- 当前候选分组。
-- 待确认候选分组与连续命中次数。
-- 最后一次切换时间。
+- 不设置固定延迟上限。
+- 不设置切换冷却或最短驻留时间。
+- 不要求候选连续出现多次。
+- 只持久化当前候选分组。
 
-发生以下任一情况时允许立即切换：
+候选相对最低倍率的必要速度收益为：
 
-- 当前分组已失效或不在有效候选集合中。
-- 新分组倍率至少改善 `MinimumPriceImprovementPercent`。
+```text
+speedupRatio > pricePremiumRatio * priceWeight / latencyWeight
+```
 
-其余速度优化切换必须同时满足：
-
-- 新分组在价格窗口内。
-- 首 Token 延迟至少改善 `MinimumLatencyImprovementPercent`。
-- 新候选连续出现 `RequiredConfirmations` 次。
-- 距离上次切换达到 `MinimumDwellTime`。
-
-默认值为连续 2 次、驻留 5 分钟、延迟改善 15%。
+Balanced 中右侧系数为 4，普通的延迟波动通常不足以改变推荐；只有速度差距相对倍率溢价足够大时才切换。推荐结果一旦明确变化便立即执行，没有额外硬约束。
 
 ### 4.4 可解释结果
 
-算法返回 `RouteDecision`，包含目标分组、倍率、延迟、相对最低价的溢价、相对当前分组的改善、是否切换以及稳定原因码。CLI JSON 与 GUI 必须直接展示这些字段。
+算法返回 `RouteDecision`，包含目标分组、倍率、延迟、相对最低价的溢价、相对当前分组的改善、是否切换以及原因码。CLI JSON 与 GUI 必须直接展示这些字段。JSONL 审计日志额外记录每个候选的价格溢价、速度收益、加权得分和是否进入推荐集合。
 
 ## 5. 应用服务
 
@@ -114,7 +106,7 @@ public interface IRouteSelector;
 1. 确保 session 可用。
 2. 获取监测数据。
 3. 读取带 TTL 的分组、倍率和 Key 缓存。
-4. 计算候选与防抖决策。
+4. 计算候选与加权决策。
 5. `dry-run` 时只返回决策。
 6. 仅对不在目标分组的已选 Key 发送 `PUT`。
 7. 保存路由状态并返回逐 Key 结果。
@@ -185,6 +177,7 @@ Avalonia UI 只负责编辑配置、调用应用服务和显示结果。主界�
 - 站点、邮箱、密码和 Token 输入。
 - Economy/Balanced/Speed 分段策略。
 - 可用率、轮询间隔和 Key 选择。
+- 跟随系统、浅色和深色主题选择，主题偏好持久化。
 - 供应商倍率、首字延迟、状态和推荐结果。
 - 单次路由、dry-run、自动路由开关。
 
@@ -206,9 +199,11 @@ CLI 和 Desktop 分别生成自包含包。第一阶段不启用 Native AOT，�
 
 必须覆盖：
 
-- 三种价格窗口策略。
+- 三种倍率/首字速度权重策略。
+- Balanced 对普通速度差保持低倍率、对数量级速度差选择更快分组。
 - 缺失延迟、零倍率、同价和异常数值。
-- 连续确认、驻留时间、价格立即改善和当前路由失效。
+- 加权推荐首次出现即执行、价格改善和当前路由失效。
+- JSONL 日志格式、权限、轮转和敏感信息扫描。
 - 业务 401 单次刷新。
 - 跨域重定向拒绝和 Cookie 不泄漏。
 - dry-run 不发送 `PUT`。

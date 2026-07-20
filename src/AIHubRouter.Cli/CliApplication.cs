@@ -194,6 +194,7 @@ internal static class CliApplication
         var credentials = ApplyEnvironmentCredentials(snapshot.Credentials ?? new PersistentCredentials());
         var json = HasFlag(args, "--json");
         var dryRun = HasFlag(args, "--dry-run");
+        var auditLog = CreateAuditLog(args);
 
         using var profileLock = ProfileLock.TryAcquire(store.StorageDirectory);
         if (profileLock is null)
@@ -221,7 +222,7 @@ internal static class CliApplication
         if (!watch)
         {
             var result = await service.RunOnceAsync(dryRun, forceAccountRefresh: true, cancellationToken);
-            WriteCycle(result, json);
+            WriteCycle(result, json, auditLog);
             if (result.Decision.Reason == RouteDecisionReason.NoCandidate)
             {
                 return 6;
@@ -237,11 +238,11 @@ internal static class CliApplication
             try
             {
                 var result = await service.RunOnceAsync(dryRun, cancellationToken: cancellationToken);
-                WriteCycle(result, json);
+                WriteCycle(result, json, auditLog);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                WriteWatchError(exception, json);
+                WriteWatchError(exception, json, auditLog);
             }
         }
         while (await timer.WaitForNextTickAsync(cancellationToken));
@@ -354,32 +355,13 @@ internal static class CliApplication
         };
     }
 
-    private static void WriteCycle(RoutingCycleResult result, bool json)
+    private static void WriteCycle(RoutingCycleResult result, bool json, AuditLogWriter? auditLog)
     {
+        var payload = BuildCyclePayload(result);
+        WriteAudit(auditLog, payload);
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                result.DryRun,
-                result.CompletedAt,
-                decision = new
-                {
-                    reason = result.Decision.Reason.ToString(),
-                    result.Decision.ShouldSwitch,
-                    currentGroupId = result.Decision.Current?.Group.Id,
-                    targetGroupId = result.Decision.Target?.Group.Id,
-                    targetGroupName = result.Decision.Target?.Group.Name,
-                    multiplier = result.Decision.Target?.EffectiveMultiplier,
-                    firstTokenLatencyMs = result.Decision.Target?.Provider.FirstTokenLatencyMs,
-                    result.Decision.PricePremiumPercent,
-                    result.Decision.LatencyImprovementPercent,
-                    result.Decision.ConfirmationCount
-                },
-                result.SelectedKeyIds,
-                result.KeyResults,
-                result.ChangedKeyCount,
-                result.FailedKeyCount
-            }, JsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(payload, JsonOptions));
             return;
         }
 
@@ -398,7 +380,62 @@ internal static class CliApplication
             $"switch={decision.ShouldSwitch}, changed={result.ChangedKeyCount}, failed={result.FailedKeyCount}" );
     }
 
-    private static void WriteWatchError(Exception exception, bool json)
+    private static object BuildCyclePayload(RoutingCycleResult result)
+    {
+        var evaluation = result.Evaluation;
+        var tradeoffGroups = evaluation.TradeoffCandidates
+            .Select(candidate => candidate.Group.Id)
+            .ToHashSet();
+        return new
+        {
+            schemaVersion = 2,
+            eventType = "routingCycle",
+            processId = Environment.ProcessId,
+            result.DryRun,
+            result.CompletedAt,
+            policy = new
+            {
+                evaluation.PriceWeight,
+                evaluation.LatencyWeight,
+                evaluation.MinimumMultiplier,
+                baselineGroupId = evaluation.Baseline?.Group.Id
+            },
+            candidates = evaluation.EligibleCandidates
+                .OrderBy(candidate => candidate.EffectiveMultiplier)
+                .ThenBy(candidate => candidate.Provider.FirstTokenLatencyMs ?? double.MaxValue)
+                .Select(candidate => new
+                {
+                    groupId = candidate.Group.Id,
+                    groupName = candidate.Group.Name,
+                    multiplier = candidate.EffectiveMultiplier,
+                    firstTokenLatencyMs = candidate.Provider.FirstTokenLatencyMs,
+                    successRate6h = candidate.Provider.SuccessRate6h,
+                    pricePremiumPercent = CalculatePricePremium(evaluation, candidate),
+                    speedupRatio = CalculateSpeedupRatio(evaluation, candidate),
+                    weightedScore = CalculateWeightedScore(evaluation, candidate),
+                    tradeoffEligible = tradeoffGroups.Contains(candidate.Group.Id),
+                    recommended = candidate.Group.Id == evaluation.Recommended?.Group.Id
+                }),
+            decision = new
+            {
+                reason = result.Decision.Reason.ToString(),
+                result.Decision.ShouldSwitch,
+                currentGroupId = result.Decision.Current?.Group.Id,
+                targetGroupId = result.Decision.Target?.Group.Id,
+                targetGroupName = result.Decision.Target?.Group.Name,
+                multiplier = result.Decision.Target?.EffectiveMultiplier,
+                firstTokenLatencyMs = result.Decision.Target?.Provider.FirstTokenLatencyMs,
+                result.Decision.PricePremiumPercent,
+                result.Decision.LatencyImprovementPercent
+            },
+            result.SelectedKeyIds,
+            result.KeyResults,
+            result.ChangedKeyCount,
+            result.FailedKeyCount
+        };
+    }
+
+    private static void WriteWatchError(Exception exception, bool json, AuditLogWriter? auditLog)
     {
         var message = exception switch
         {
@@ -406,13 +443,18 @@ internal static class CliApplication
             HttpRequestException => "网络连接失败。",
             _ => exception.Message
         };
+        var payload = new
+        {
+            schemaVersion = 2,
+            eventType = "routingError",
+            processId = Environment.ProcessId,
+            timestamp = DateTimeOffset.UtcNow,
+            error = message
+        };
+        WriteAudit(auditLog, payload);
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                timestamp = DateTimeOffset.UtcNow,
-                error = message
-            }, JsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(payload, JsonOptions));
         }
         else
         {
@@ -422,6 +464,72 @@ internal static class CliApplication
 
     private static string FormatLatency(double? latency) =>
         latency is >= 0 && double.IsFinite(latency.Value) ? $"{latency:0}ms" : "unknown";
+
+    private static AuditLogWriter? CreateAuditLog(string[] args)
+    {
+        var path = GetOption(args, "--log-file");
+        if (path is null)
+        {
+            return null;
+        }
+
+        return new AuditLogWriter(
+            path,
+            GetIntOption(args, "--log-max-mb") ?? 20,
+            GetIntOption(args, "--log-files") ?? 7);
+    }
+
+    private static void WriteAudit(AuditLogWriter? auditLog, object payload)
+    {
+        if (auditLog is null)
+        {
+            return;
+        }
+
+        try
+        {
+            auditLog.Write(payload);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"审计日志写入失败：{exception.Message}");
+        }
+    }
+
+    private static double? CalculatePricePremium(RouteEvaluation evaluation, RouteCandidate candidate)
+    {
+        if (evaluation.MinimumMultiplier is not > 0)
+        {
+            return candidate.EffectiveMultiplier == 0 ? 0 : null;
+        }
+
+        return (candidate.EffectiveMultiplier - evaluation.MinimumMultiplier.Value) /
+            evaluation.MinimumMultiplier.Value * 100;
+    }
+
+    private static double? CalculateSpeedupRatio(
+        RouteEvaluation evaluation,
+        RouteCandidate candidate)
+    {
+        var baseline = evaluation.Baseline?.Provider.FirstTokenLatencyMs;
+        var latency = candidate.Provider.FirstTokenLatencyMs;
+        if (baseline is not > 0 || latency is not > 0 || !double.IsFinite(latency.Value))
+        {
+            return null;
+        }
+
+        return baseline.Value / latency.Value - 1;
+    }
+
+    private static double? CalculateWeightedScore(RouteEvaluation evaluation, RouteCandidate candidate)
+    {
+        var premium = CalculatePricePremium(evaluation, candidate);
+        var speedupRatio = CalculateSpeedupRatio(evaluation, candidate);
+        return premium is null || speedupRatio is null
+            ? null
+            : evaluation.LatencyWeight * speedupRatio.Value -
+                evaluation.PriceWeight * (premium.Value / 100);
+    }
 
     private static async Task<string> ReadSecretLineAsync(
         string prompt,
@@ -509,6 +617,11 @@ internal static class CliApplication
               --minimum-success <0-100>
               --interval <30-3600>
               --selected-keys <id,id,...>
+
+            Audit options for route/watch:
+              --log-file <path>
+              --log-max-mb <1-1024>
+              --log-files <1-30>
 
             Credential environment variables:
               AIHUB_EMAIL, AIHUB_PASSWORD, AIHUB_TOKEN, AIHUB_REFRESH_TOKEN,

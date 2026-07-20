@@ -1,6 +1,8 @@
 using AIHubRouter.Core;
+using AIHubRouter.Cli;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 
 var tests = new (string Name, Action Body)[]
 {
@@ -11,16 +13,21 @@ var tests = new (string Name, Action Body)[]
     ("Availability threshold", TestAvailabilityThreshold),
     ("Stale status rejection", TestStaleStatusRejection),
     ("Balanced mode buys meaningful latency", TestBalancedModeBuysLatency),
-    ("Economy mode keeps tight price window", TestEconomyModeKeepsTightPriceWindow),
+    ("Balanced mode rejects catastrophic cheap latency", TestBalancedModeRejectsCatastrophicCheapLatency),
+    ("Balanced mode keeps price for moderate speed gap", TestBalancedModeKeepsPriceForModerateGap),
+    ("Balanced mode rejects weak latency value", TestBalancedModeRejectsWeakLatencyValue),
+    ("Economy mode protects price", TestEconomyModeProtectsPrice),
+    ("Speed mode accepts larger price premium", TestSpeedModeAcceptsLargerPremium),
     ("Missing latency ranks last", TestMissingLatencyRanksLast),
     ("Zero multiplier window stays free", TestZeroMultiplierWindow),
-    ("Latency switch requires confirmation", TestLatencySwitchRequiresConfirmation),
-    ("Unknown current latency does not trigger speed switch", TestUnknownCurrentLatencyDoesNotSwitch),
-    ("Minimum dwell time blocks speed switch", TestMinimumDwellTimeBlocksSwitch),
-    ("Price improvement switches immediately", TestPriceImprovementSwitchesImmediately),
+    ("Weighted speed winner switches immediately", TestWeightedSpeedWinnerSwitchesImmediately),
+    ("Unknown current latency uses measured route", TestUnknownCurrentLatencyUsesMeasuredRoute),
+    ("Price winner switches immediately", TestPriceWinnerSwitchesImmediately),
     ("Plain HTTP is rejected", TestPlainHttpIsRejected),
     ("AES settings roundtrip has no plaintext", TestAesSettingsRoundtrip),
     ("Unavailable credential storage fails before settings write", TestUnavailableCredentialStorageIsAtomic),
+    ("Legacy hard-gate settings are ignored", TestLegacyHardGateSettingsAreIgnored),
+    ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
     ("Encrypted settings roundtrip", TestEncryptedSettingsRoundtrip),
     ("Usable access token is reused", TestUsableAccessTokenIsReused),
@@ -159,12 +166,12 @@ static void TestBalancedModeBuysLatency()
     Assert(evaluation.Recommended?.Group.Id == 2, "Balanced mode did not buy a large latency improvement.");
 }
 
-static void TestEconomyModeKeepsTightPriceWindow()
+static void TestEconomyModeProtectsPrice()
 {
     var now = DateTimeOffset.UtcNow;
     var providers = new[]
     {
-        Provider(1, 0.02, true, 0.99, now, latency: 10_000),
+        Provider(1, 0.02, true, 0.99, now, latency: 2_000),
         Provider(2, 0.022, true, 0.99, now, latency: 1_000)
     };
     var evaluation = RoutingEngine.Evaluate(
@@ -174,7 +181,79 @@ static void TestEconomyModeKeepsTightPriceWindow()
         Policy(RoutingMode.Economy),
         now);
 
-    Assert(evaluation.Recommended?.Group.Id == 1, "Economy mode accepted a candidate outside its price window.");
+    Assert(evaluation.Recommended?.Group.Id == 1, "Economy mode paid too much for the latency improvement.");
+}
+
+static void TestBalancedModeRejectsCatastrophicCheapLatency()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.03, true, 0.99, now, latency: 111_032),
+            Provider(2, 0.05, true, 0.99, now, latency: 6_025)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 2,
+        "Balanced mode accepted a 94% latency regression for a 40% price reduction.");
+}
+
+static void TestBalancedModeKeepsPriceForModerateGap()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.03, true, 0.99, now, latency: 6_051),
+            Provider(2, 0.05, true, 0.99, now, latency: 1_891)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 1,
+        "Balanced mode paid a 67% premium for a moderate latency gap.");
+}
+
+static void TestBalancedModeRejectsWeakLatencyValue()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.02, true, 0.99, now, latency: 1_000),
+            Provider(2, 0.03, true, 0.99, now, latency: 900)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 1,
+        "Balanced mode paid a 50% premium for only a 10% latency improvement.");
+}
+
+static void TestSpeedModeAcceptsLargerPremium()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.02, true, 0.99, now, latency: 10_000),
+            Provider(2, 0.04, true, 0.99, now, latency: 2_000)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Speed),
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 2,
+        "Speed mode rejected a large latency gain despite its lower price penalty.");
 }
 
 static void TestMissingLatencyRanksLast()
@@ -210,45 +289,25 @@ static void TestZeroMultiplierWindow()
         Policy(RoutingMode.Speed),
         now);
 
-    Assert(evaluation.PriceWindowCandidates.Count == 1, "A paid route entered a zero-cost price window.");
+    Assert(evaluation.TradeoffCandidates.Count == 1, "A paid route competed with a zero-cost route.");
     Assert(evaluation.Recommended?.Group.Id == 1, "Zero multiplier route was not retained.");
 }
 
-static void TestLatencySwitchRequiresConfirmation()
+static void TestWeightedSpeedWinnerSwitchesImmediately()
 {
     var now = DateTimeOffset.UtcNow;
     var evaluation = EvaluationForSwitch(now, currentRate: 0.02, targetRate: 0.021);
     var policy = Policy(RoutingMode.Balanced);
-    var state = new RouteState { CurrentGroupId = 1, LastSwitchAt = now - TimeSpan.FromMinutes(10) };
-
-    var first = RouteDecisionEngine.Decide(evaluation, state, policy, now, observedCurrentGroupId: 1);
-    var second = RouteDecisionEngine.Decide(evaluation, first.NextState, policy, now, observedCurrentGroupId: 1);
-
-    Assert(!first.Decision.ShouldSwitch && first.Decision.Reason == RouteDecisionReason.AwaitingConfirmation,
-        "First speed observation switched immediately.");
-    Assert(second.Decision.ShouldSwitch && second.Decision.Reason == RouteDecisionReason.FasterWithinBudget,
-        "Confirmed speed improvement did not switch.");
-}
-
-static void TestMinimumDwellTimeBlocksSwitch()
-{
-    var now = DateTimeOffset.UtcNow;
-    var evaluation = EvaluationForSwitch(now, currentRate: 0.02, targetRate: 0.021);
-    var policy = Policy(RoutingMode.Balanced);
-    var state = new RouteState
-    {
-        CurrentGroupId = 1,
-        PendingGroupId = 2,
-        PendingConfirmationCount = 1,
-        LastSwitchAt = now - TimeSpan.FromMinutes(1)
-    };
+    var state = new RouteState { CurrentGroupId = 1 };
 
     var result = RouteDecisionEngine.Decide(evaluation, state, policy, now, observedCurrentGroupId: 1);
-    Assert(!result.Decision.ShouldSwitch && result.Decision.Reason == RouteDecisionReason.MinimumDwellTime,
-        "Dwell time did not block a speed-only switch.");
+
+    Assert(result.Decision.ShouldSwitch &&
+        result.Decision.Reason == RouteDecisionReason.FasterForWeightedTradeoff,
+        "A clear weighted speed winner did not switch on the first evaluation.");
 }
 
-static void TestUnknownCurrentLatencyDoesNotSwitch()
+static void TestUnknownCurrentLatencyUsesMeasuredRoute()
 {
     var now = DateTimeOffset.UtcNow;
     var evaluation = RoutingEngine.Evaluate(
@@ -261,11 +320,7 @@ static void TestUnknownCurrentLatencyDoesNotSwitch()
         new Dictionary<long, double>(),
         Policy(RoutingMode.Balanced),
         now);
-    var state = new RouteState
-    {
-        CurrentGroupId = 1,
-        LastSwitchAt = now - TimeSpan.FromMinutes(10)
-    };
+    var state = new RouteState { CurrentGroupId = 1 };
 
     var result = RouteDecisionEngine.Decide(
         evaluation,
@@ -274,15 +329,16 @@ static void TestUnknownCurrentLatencyDoesNotSwitch()
         now,
         observedCurrentGroupId: 1);
 
-    Assert(!result.Decision.ShouldSwitch, "An unknown current latency was treated as a measured improvement.");
+    Assert(result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 2,
+        "A measured route did not replace a route with unknown latency.");
     Assert(result.Decision.LatencyImprovementPercent is null, "Unknown latency produced a numeric improvement.");
 }
 
-static void TestPriceImprovementSwitchesImmediately()
+static void TestPriceWinnerSwitchesImmediately()
 {
     var now = DateTimeOffset.UtcNow;
     var evaluation = EvaluationForSwitch(now, currentRate: 0.03, targetRate: 0.02);
-    var state = new RouteState { CurrentGroupId = 1, LastSwitchAt = now };
+    var state = new RouteState { CurrentGroupId = 1 };
 
     var result = RouteDecisionEngine.Decide(
         evaluation,
@@ -290,8 +346,9 @@ static void TestPriceImprovementSwitchesImmediately()
         Policy(RoutingMode.Balanced),
         now,
         observedCurrentGroupId: 1);
+
     Assert(result.Decision.ShouldSwitch && result.Decision.Reason == RouteDecisionReason.BetterPrice,
-        "A material price improvement did not switch immediately.");
+        "A lower-price weighted winner did not switch immediately.");
 }
 
 static void TestPlainHttpIsRejected()
@@ -324,7 +381,13 @@ static void TestAesSettingsRoundtrip()
             Password = "secret-password",
             BearerToken = "secret-token"
         };
-        store.Save(new PersistentAppSettings { PersistCredentials = true }, credentials);
+        store.Save(
+            new PersistentAppSettings
+            {
+                PersistCredentials = true,
+                ThemeMode = AppThemeMode.Dark
+            },
+            credentials);
 
         var encrypted = File.ReadAllBytes(Path.Combine(directory, "credentials.dat"));
         var encryptedText = Encoding.UTF8.GetString(encrypted);
@@ -333,6 +396,7 @@ static void TestAesSettingsRoundtrip()
         var loaded = store.Load();
         Assert(loaded.Credentials?.Password == credentials.Password, "AES password did not roundtrip.");
         Assert(loaded.Credentials?.BearerToken == credentials.BearerToken, "AES token did not roundtrip.");
+        Assert(loaded.Settings.ThemeMode == AppThemeMode.Dark, "Theme mode did not roundtrip.");
     }
     finally
     {
@@ -401,6 +465,88 @@ static void TestUnavailableCredentialStorageIsAtomic()
     }
 }
 
+static void TestLegacyHardGateSettingsAreIgnored()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, "settings.json"),
+            """
+            {
+              "requiredConfirmations": 2,
+              "minimumDwellSeconds": 300
+            }
+            """);
+        var store = new AppSettingsStore(
+            directory,
+            new UnavailableCredentialProtector("unit test unavailable protector"));
+
+        var settings = store.Load().Settings;
+        var policy = settings.CreatePolicy();
+        Assert(Math.Abs(policy.PriceWeight - 0.80) < 0.0001,
+            "Legacy settings changed the balanced price weight.");
+        Assert(Math.Abs(policy.LatencyWeight - 0.20) < 0.0001,
+            "Legacy settings changed the balanced latency weight.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestAuditLogWritesValidJsonAndRotates()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                directory,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        }
+
+        var path = Path.Combine(directory, "router.jsonl");
+        var writer = new AuditLogWriter(path, maximumMegabytes: 1, retainedFiles: 2);
+        var payload = new string('x', 600_000);
+        writer.Write(new { schemaVersion = 2, eventType = "test", payload });
+        writer.Write(new { schemaVersion = 2, eventType = "test", payload });
+
+        Assert(File.Exists(path), "Audit log was not created.");
+        Assert(File.Exists(path + ".1"), "Audit log did not rotate at the configured size.");
+        using (JsonDocument.Parse(File.ReadAllText(path)))
+        {
+        }
+        using (JsonDocument.Parse(File.ReadAllText(path + ".1")))
+        {
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var directoryMode = File.GetUnixFileMode(directory);
+            Assert(directoryMode.HasFlag(UnixFileMode.GroupRead),
+                "Audit writer changed permissions on an existing directory.");
+            Assert(File.GetUnixFileMode(path) == (UnixFileMode.UserRead | UnixFileMode.UserWrite),
+                "Audit log permissions are not 0600.");
+        }
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
 static RouteEvaluation EvaluationForSwitch(DateTimeOffset now, double currentRate, double targetRate)
 {
     return RoutingEngine.Evaluate(
@@ -418,9 +564,7 @@ static RouteEvaluation EvaluationForSwitch(DateTimeOffset now, double currentRat
 static BalancedRoutingPolicy Policy(RoutingMode mode) => new()
 {
     Mode = mode,
-    MinimumSuccessRate6h = 0,
-    RequiredConfirmations = 2,
-    MinimumDwellTime = TimeSpan.FromMinutes(5)
+    MinimumSuccessRate6h = 0
 };
 
 static void TestEncryptedSettingsRoundtrip()

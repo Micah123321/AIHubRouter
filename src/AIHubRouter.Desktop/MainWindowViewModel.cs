@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
-using Avalonia.Media;
+using Avalonia;
+using Avalonia.Styling;
 using AIHubRouter.Core;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -8,6 +9,13 @@ namespace AIHubRouter.Desktop;
 
 public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 {
+    public static IReadOnlyList<ThemeChoice> ThemeChoices { get; } =
+    [
+        new(AppThemeMode.System, "跟随系统"),
+        new(AppThemeMode.Light, "浅色"),
+        new(AppThemeMode.Dark, "深色")
+    ];
+
     private readonly AppSettingsStore _store = new();
     private RoutingService? _service;
     private ProfileLock? _profileLock;
@@ -24,10 +32,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private bool _autoRouting;
     [ObservableProperty] private string _status = "就绪";
-    [ObservableProperty] private IBrush _statusColor = Brush.Parse("#3F4A56");
+    [ObservableProperty] private bool _statusIsSuccess;
+    [ObservableProperty] private bool _statusIsError;
     [ObservableProperty] private string _candidateSummary = "目标分组：-";
     [ObservableProperty] private string _connectionSummary = "API-only / Balanced";
     [ObservableProperty] private RoutingMode _routingMode = RoutingMode.Balanced;
+    [ObservableProperty] private ThemeChoice? _selectedThemeChoice = ThemeChoices[0];
 
     public ObservableCollection<ProviderRowViewModel> Providers { get; } = [];
     public ObservableCollection<KeyRowViewModel> Keys { get; } = [];
@@ -72,6 +82,37 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         else
         {
             StopAutoRouting();
+        }
+    }
+
+    partial void OnSelectedThemeChoiceChanged(ThemeChoice? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        if (Application.Current is { } application)
+        {
+            application.RequestedThemeVariant = value.Mode switch
+            {
+                AppThemeMode.Light => ThemeVariant.Light,
+                AppThemeMode.Dark => ThemeVariant.Dark,
+                _ => ThemeVariant.Default
+            };
+        }
+
+        try
+        {
+            var snapshot = _store.Load();
+            if (snapshot.Settings.ThemeMode != value.Mode)
+            {
+                _store.Save(snapshot.Settings with { ThemeMode = value.Mode }, snapshot.Credentials);
+            }
+        }
+        catch (Exception exception)
+        {
+            SetStatus(GetSafeMessage(exception), success: false);
         }
     }
 
@@ -247,6 +288,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             MinimumSuccessPercent = settings.MinimumSuccessPercent;
             PollingIntervalSeconds = settings.PollingIntervalSeconds;
             PersistCredentials = settings.PersistCredentials;
+            SelectedThemeChoice = ThemeChoices.FirstOrDefault(choice => choice.Mode == settings.ThemeMode)
+                ?? ThemeChoices[0];
             Email = _loadedCredentials.Email;
             Password = _loadedCredentials.Password;
             BearerToken = _loadedCredentials.BearerToken;
@@ -268,6 +311,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             MinimumSuccessPercent = (int)MinimumSuccessPercent,
             PollingIntervalSeconds = (int)PollingIntervalSeconds,
             PersistCredentials = PersistCredentials,
+            ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
             KeySelectionInitialized = Keys.Count > 0 || existing.KeySelectionInitialized,
             SelectedKeyIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds
         };
@@ -307,7 +351,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void SetStatus(string message, bool success)
     {
         Status = message;
-        StatusColor = Brush.Parse(success ? "#12633E" : "#B3261E");
+        StatusIsSuccess = success;
+        StatusIsError = !success;
     }
 
     private static string GetSafeMessage(Exception exception)
@@ -332,6 +377,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         ResetService();
     }
 }
+
+public sealed record ThemeChoice(AppThemeMode Mode, string Name);
 
 public sealed record ProviderRowViewModel
 {

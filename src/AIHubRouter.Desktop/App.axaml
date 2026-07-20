@@ -3,6 +3,32 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     RequestedThemeVariant="Default">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F6F7F9" />
+          <SolidColorBrush x:Key="AppSurfaceBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="AppSurfaceAltBrush" Color="#EEF1F4" />
+          <SolidColorBrush x:Key="AppBorderBrush" Color="#D9DEE5" />
+          <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#20242A" />
+          <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#66717D" />
+          <SolidColorBrush x:Key="AppSuccessBrush" Color="#12633E" />
+          <SolidColorBrush x:Key="AppErrorBrush" Color="#B3261E" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="AppBackgroundBrush" Color="#17191D" />
+          <SolidColorBrush x:Key="AppSurfaceBrush" Color="#202328" />
+          <SolidColorBrush x:Key="AppSurfaceAltBrush" Color="#2A2E35" />
+          <SolidColorBrush x:Key="AppBorderBrush" Color="#3A414A" />
+          <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#F3F5F7" />
+          <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#B7C0CA" />
+          <SolidColorBrush x:Key="AppSuccessBrush" Color="#62D394" />
+          <SolidColorBrush x:Key="AppErrorBrush" Color="#FF8A80" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
   <Application.Styles>
     <FluentTheme />
     <Style Selector="Button.command">
@@ -13,10 +39,19 @@
       <Setter Property="MinHeight" Value="34" />
     </Style>
     <Style Selector="Border.section-rule">
-      <Setter Property="BorderBrush" Value="#D9DEE5" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
       <Setter Property="BorderThickness" Value="0,0,0,1" />
       <Setter Property="Padding" Value="0,0,0,14" />
       <Setter Property="Margin" Value="0,0,0,14" />
+    </Style>
+    <Style Selector="TextBlock.status">
+      <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
+    </Style>
+    <Style Selector="TextBlock.status.success">
+      <Setter Property="Foreground" Value="{DynamicResource AppSuccessBrush}" />
+    </Style>
+    <Style Selector="TextBlock.status.error">
+      <Setter Property="Foreground" Value="{DynamicResource AppErrorBrush}" />
     </Style>
   </Application.Styles>
 </Application>

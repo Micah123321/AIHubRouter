@@ -28,10 +28,9 @@ public static class RouteDecisionEngine
                 null,
                 false,
                 RouteDecisionReason.NoCandidate,
-                state with { CurrentGroupId = currentGroupId, PendingGroupId = null, PendingConfirmationCount = 0 },
+                state with { CurrentGroupId = currentGroupId },
                 0,
                 null,
-                0,
                 now);
         }
 
@@ -53,91 +52,22 @@ public static class RouteDecisionEngine
                 target,
                 false,
                 RouteDecisionReason.AlreadyOptimal,
-                state with
-                {
-                    CurrentGroupId = current.Group.Id,
-                    PendingGroupId = null,
-                    PendingConfirmationCount = 0
-                },
+                state with { CurrentGroupId = current.Group.Id },
                 premium,
-                0,
                 0,
                 now);
         }
 
-        var priceImprovement = CalculateImprovement(
-            current.EffectiveMultiplier,
-            target.EffectiveMultiplier);
         var latencyImprovement = CalculateLatencyImprovement(
             current.Provider.FirstTokenLatencyMs,
             target.Provider.FirstTokenLatencyMs);
 
-        if (priceImprovement is not null && priceImprovement >= policy.MinimumPriceImprovementPercent)
-        {
-            return Switched(current, target, RouteDecisionReason.BetterPrice, state, premium, latencyImprovement, now);
-        }
-
-        if (latencyImprovement is null || latencyImprovement < policy.MinimumLatencyImprovementPercent)
-        {
-            return Result(
-                current,
-                target,
-                false,
-                RouteDecisionReason.InsufficientImprovement,
-                state with
-                {
-                    CurrentGroupId = current.Group.Id,
-                    PendingGroupId = null,
-                    PendingConfirmationCount = 0
-                },
-                premium,
-                latencyImprovement,
-                0,
-                now);
-        }
-
-        var confirmationCount = state.PendingGroupId == target.Group.Id
-            ? state.PendingConfirmationCount + 1
-            : 1;
-        var pendingState = state with
-        {
-            CurrentGroupId = current.Group.Id,
-            PendingGroupId = target.Group.Id,
-            PendingConfirmationCount = confirmationCount
-        };
-
-        if (confirmationCount < policy.RequiredConfirmations)
-        {
-            return Result(
-                current,
-                target,
-                false,
-                RouteDecisionReason.AwaitingConfirmation,
-                pendingState,
-                premium,
-                latencyImprovement,
-                confirmationCount,
-                now);
-        }
-
-        if (state.LastSwitchAt is { } lastSwitchAt && now - lastSwitchAt < policy.MinimumDwellTime)
-        {
-            return Result(
-                current,
-                target,
-                false,
-                RouteDecisionReason.MinimumDwellTime,
-                pendingState,
-                premium,
-                latencyImprovement,
-                confirmationCount,
-                now);
-        }
-
         return Switched(
             current,
             target,
-            RouteDecisionReason.FasterWithinBudget,
+            target.EffectiveMultiplier < current.EffectiveMultiplier
+                ? RouteDecisionReason.BetterPrice
+                : RouteDecisionReason.FasterForWeightedTradeoff,
             state,
             premium,
             latencyImprovement,
@@ -155,12 +85,9 @@ public static class RouteDecisionEngine
     {
         var next = state with
         {
-            CurrentGroupId = target.Group.Id,
-            PendingGroupId = null,
-            PendingConfirmationCount = 0,
-            LastSwitchAt = now
+            CurrentGroupId = target.Group.Id
         };
-        return Result(current, target, true, reason, next, premium, latencyImprovement, 0, now);
+        return Result(current, target, true, reason, next, premium, latencyImprovement, now);
     }
 
     private static RouteDecisionResult Result(
@@ -171,7 +98,6 @@ public static class RouteDecisionEngine
         RouteState state,
         double premium,
         double? latencyImprovement,
-        int confirmationCount,
         DateTimeOffset now)
     {
         return new RouteDecisionResult(
@@ -182,7 +108,6 @@ public static class RouteDecisionEngine
                 reason,
                 premium,
                 latencyImprovement,
-                confirmationCount,
                 now),
             state);
     }
@@ -197,16 +122,6 @@ public static class RouteDecisionEngine
         return Math.Max(0, (value - minimum.Value) / minimum.Value * 100);
     }
 
-    private static double? CalculateImprovement(double current, double target)
-    {
-        if (!double.IsFinite(current) || !double.IsFinite(target) || current <= 0 || target < 0)
-        {
-            return null;
-        }
-
-        return (current - target) / current * 100;
-    }
-
     private static double? CalculateLatencyImprovement(double? current, double? target)
     {
         if (current is not { } currentValue ||
@@ -219,6 +134,6 @@ public static class RouteDecisionEngine
             return null;
         }
 
-        return CalculateImprovement(currentValue, targetValue);
+        return (currentValue - targetValue) / currentValue * 100;
     }
 }

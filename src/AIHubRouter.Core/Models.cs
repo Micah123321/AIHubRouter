@@ -136,19 +136,17 @@ public sealed record BalancedRoutingPolicy
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
     public double MinimumSuccessRate6h { get; init; } = 0.9;
     public TimeSpan MaximumStatusAge { get; init; } = TimeSpan.FromMinutes(15);
-    public double? MaximumPricePremiumPercent { get; init; }
-    public double MinimumPriceImprovementPercent { get; init; } = 5;
-    public double MinimumLatencyImprovementPercent { get; init; } = 15;
-    public int RequiredConfirmations { get; init; } = 2;
-    public TimeSpan MinimumDwellTime { get; init; } = TimeSpan.FromMinutes(5);
+    public double? PriceWeightOverride { get; init; }
 
-    public double PricePremiumPercent => MaximumPricePremiumPercent ?? Mode switch
+    public double PriceWeight => PriceWeightOverride ?? Mode switch
     {
-        RoutingMode.Economy => 5,
-        RoutingMode.Balanced => 15,
-        RoutingMode.Speed => 30,
-        _ => 15
+        RoutingMode.Economy => 0.95,
+        RoutingMode.Balanced => 0.80,
+        RoutingMode.Speed => 0.35,
+        _ => 0.80
     };
+
+    public double LatencyWeight => 1 - PriceWeight;
 
     public void Validate()
     {
@@ -162,31 +160,26 @@ public sealed record BalancedRoutingPolicy
             throw new ArgumentOutOfRangeException(nameof(MinimumSuccessRate6h));
         }
 
-        if (MaximumStatusAge <= TimeSpan.Zero || MinimumDwellTime < TimeSpan.Zero)
+        if (MaximumStatusAge <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(MaximumStatusAge));
         }
 
-        if (PricePremiumPercent < 0 || !double.IsFinite(PricePremiumPercent) ||
-            MinimumPriceImprovementPercent < 0 || !double.IsFinite(MinimumPriceImprovementPercent) ||
-            MinimumLatencyImprovementPercent < 0 || !double.IsFinite(MinimumLatencyImprovementPercent))
+        if (PriceWeight is <= 0 or >= 1 || !double.IsFinite(PriceWeight))
         {
-            throw new ArgumentOutOfRangeException(nameof(MaximumPricePremiumPercent));
-        }
-
-        if (RequiredConfirmations < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(RequiredConfirmations));
+            throw new ArgumentOutOfRangeException(nameof(PriceWeightOverride));
         }
     }
 }
 
 public sealed record RouteEvaluation(
     RouteCandidate? Recommended,
+    RouteCandidate? Baseline,
     IReadOnlyList<RouteCandidate> EligibleCandidates,
-    IReadOnlyList<RouteCandidate> PriceWindowCandidates,
+    IReadOnlyList<RouteCandidate> TradeoffCandidates,
     double? MinimumMultiplier,
-    double MaximumAcceptedMultiplier);
+    double PriceWeight,
+    double LatencyWeight);
 
 public enum RouteDecisionReason
 {
@@ -195,10 +188,7 @@ public enum RouteDecisionReason
     CurrentRouteInvalid,
     AlreadyOptimal,
     BetterPrice,
-    FasterWithinBudget,
-    AwaitingConfirmation,
-    MinimumDwellTime,
-    InsufficientImprovement
+    FasterForWeightedTradeoff
 }
 
 public sealed record RouteDecision(
@@ -208,13 +198,9 @@ public sealed record RouteDecision(
     RouteDecisionReason Reason,
     double PricePremiumPercent,
     double? LatencyImprovementPercent,
-    int ConfirmationCount,
     DateTimeOffset EvaluatedAt);
 
 public sealed record RouteState
 {
     public long? CurrentGroupId { get; init; }
-    public long? PendingGroupId { get; init; }
-    public int PendingConfirmationCount { get; init; }
-    public DateTimeOffset? LastSwitchAt { get; init; }
 }

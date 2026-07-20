@@ -37,6 +37,7 @@ public sealed record KeyRouteResult(
 
 public sealed record RoutingCycleResult(
     RouteDecision Decision,
+    RouteEvaluation Evaluation,
     IReadOnlyList<ProviderStatus> Providers,
     IReadOnlyList<GroupInfo> Groups,
     IReadOnlyList<ApiKeyInfo> Keys,
@@ -211,19 +212,14 @@ public sealed class RoutingService : IDisposable
         if (!dryRun)
         {
             var nextState = keyResults.Any(result => !result.Success)
-                ? decisionResult.NextState with
-                {
-                    CurrentGroupId = null,
-                    PendingGroupId = null,
-                    PendingConfirmationCount = 0,
-                    LastSwitchAt = state.LastSwitchAt
-                }
+                ? decisionResult.NextState with { CurrentGroupId = null }
                 : decisionResult.NextState;
             _stateStore.Save(nextState);
         }
 
         return new RoutingCycleResult(
             decisionResult.Decision,
+            evaluation,
             summary.Apis,
             _cachedGroups,
             _cachedKeys,

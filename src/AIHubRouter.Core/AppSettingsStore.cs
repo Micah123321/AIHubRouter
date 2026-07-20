@@ -5,6 +5,13 @@ using System.Text.Json;
 
 namespace AIHubRouter.Core;
 
+public enum AppThemeMode
+{
+    System,
+    Light,
+    Dark
+}
+
 public sealed record PersistentAppSettings
 {
     public bool PersistCredentials { get; init; }
@@ -15,11 +22,8 @@ public sealed record PersistentAppSettings
     public int MinimumSuccessPercent { get; init; } = 90;
     public int PollingIntervalSeconds { get; init; } = 60;
     public int AccountCacheSeconds { get; init; } = 300;
-    public int RequiredConfirmations { get; init; } = 2;
-    public int MinimumDwellSeconds { get; init; } = 300;
-    public int MinimumLatencyImprovementPercent { get; init; } = 15;
-    public int MinimumPriceImprovementPercent { get; init; } = 5;
     public bool SmoothRendering { get; init; } = true;
+    public AppThemeMode ThemeMode { get; init; } = AppThemeMode.System;
     public bool KeySelectionInitialized { get; init; }
     public long[] SelectedKeyIds { get; init; } = [];
 
@@ -30,11 +34,7 @@ public sealed record PersistentAppSettings
             Platform = string.IsNullOrWhiteSpace(Platform) ? "openai" : Platform,
             Mode = RoutingMode,
             MinimumSuccessRate6h = Math.Clamp(MinimumSuccessPercent, 0, 100) / 100d,
-            MaximumStatusAge = TimeSpan.FromMinutes(15),
-            MinimumPriceImprovementPercent = Math.Max(MinimumPriceImprovementPercent, 0),
-            MinimumLatencyImprovementPercent = Math.Max(MinimumLatencyImprovementPercent, 0),
-            RequiredConfirmations = Math.Max(RequiredConfirmations, 1),
-            MinimumDwellTime = TimeSpan.FromSeconds(Math.Max(MinimumDwellSeconds, 0))
+            MaximumStatusAge = TimeSpan.FromMinutes(15)
         };
     }
 }
@@ -94,7 +94,6 @@ public sealed class AppSettingsStore
             ? JsonSerializer.Deserialize<PersistentAppSettings>(File.ReadAllText(_settingsPath), JsonOptions)
                 ?? new PersistentAppSettings()
             : new PersistentAppSettings();
-
         PersistentCredentials? credentials = null;
         if (settings.PersistCredentials && File.Exists(_credentialsPath))
         {

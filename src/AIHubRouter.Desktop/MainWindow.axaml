@@ -9,15 +9,25 @@
     Height="900"
     MinWidth="980"
     MinHeight="720"
-    Background="#F6F7F9">
+    Background="{DynamicResource AppBackgroundBrush}">
   <Grid RowDefinitions="Auto,*,Auto">
-    <Border Grid.Row="0" Background="White" BorderBrush="#D9DEE5" BorderThickness="0,0,0,1" Padding="18,14">
-      <Grid ColumnDefinitions="*,Auto">
+    <Border Grid.Row="0" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="18,14">
+      <Grid ColumnDefinitions="*,Auto,24,Auto">
         <StackPanel Spacing="2">
-          <TextBlock Text="AIHub Router" FontSize="20" FontWeight="SemiBold" Foreground="#20242A" />
-          <TextBlock Text="{Binding ConnectionSummary}" FontSize="12" Foreground="#66717D" />
+          <TextBlock Text="AIHub Router" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+          <TextBlock Text="{Binding ConnectionSummary}" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" />
         </StackPanel>
-        <TextBlock Grid.Column="1" Text="{Binding CandidateSummary}" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#12633E" />
+        <TextBlock Grid.Column="1" Text="{Binding CandidateSummary}" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessBrush}" />
+        <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <TextBlock Text="主题" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+          <ComboBox Width="116" ItemsSource="{Binding ThemeChoices}" SelectedItem="{Binding SelectedThemeChoice}">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="local:ThemeChoice">
+                <TextBlock Text="{Binding Name}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+        </StackPanel>
       </Grid>
     </Border>
 
@@ -63,9 +73,9 @@
         </Grid>
 
         <Grid Grid.Row="3" RowDefinitions="*,14,*" MinHeight="440">
-          <Border Grid.Row="0" Background="White" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="4">
+          <Border Grid.Row="0" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4">
             <Grid RowDefinitions="38,*">
-              <Grid Grid.Row="0" ColumnDefinitions="64,*,90,110,110,100,150" Background="#EEF1F4">
+              <Grid Grid.Row="0" ColumnDefinitions="64,*,90,110,110,100,150" Background="{DynamicResource AppSurfaceAltBrush}">
                 <TextBlock Grid.Column="0" Text="分组" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="1" Text="方案" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="2" Text="倍率" VerticalAlignment="Center" FontWeight="SemiBold" />
@@ -92,9 +102,9 @@
             </Grid>
           </Border>
 
-          <Border Grid.Row="2" Background="White" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="4">
+          <Border Grid.Row="2" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4">
             <Grid RowDefinitions="38,*">
-              <Grid Grid.Row="0" ColumnDefinitions="72,80,*,110,100,180" Background="#EEF1F4">
+              <Grid Grid.Row="0" ColumnDefinitions="72,80,*,110,100,180" Background="{DynamicResource AppSurfaceAltBrush}">
                 <TextBlock Grid.Column="0" Text="路由" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="1" Text="ID" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="2" Text="Key" VerticalAlignment="Center" FontWeight="SemiBold" />
@@ -122,8 +132,8 @@
       </Grid>
     </ScrollViewer>
 
-    <Border Grid.Row="2" Background="White" BorderBrush="#D9DEE5" BorderThickness="0,1,0,0" Padding="14,9">
-      <TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" TextWrapping="Wrap" />
+    <Border Grid.Row="2" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,9">
+      <TextBlock Classes="status" Classes.success="{Binding StatusIsSuccess}" Classes.error="{Binding StatusIsError}" Text="{Binding Status}" TextWrapping="Wrap" />
     </Border>
   </Grid>
 </Window>

@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AIHubRouter.Core\AIHubRouter.Core.csproj" />
+    <InternalsVisibleTo Include="AIHubRouter.Core.Tests" />
   </ItemGroup>
 
   <PropertyGroup>
