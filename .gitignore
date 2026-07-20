@@ -1,0 +1,11 @@
+bin/
+obj/
+artifacts/
+.vs/
+.worktrees/
+.clawbench/
+docs/superpowers/
+src/AIHubRouter.WinForms/
+tests/release-scan-*.fixture
+*.user
+*.suo

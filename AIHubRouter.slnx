@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AIHubRouter.Cli/AIHubRouter.Cli.csproj" />
+    <Project Path="src/AIHubRouter.Core/AIHubRouter.Core.csproj" />
+    <Project Path="src/AIHubRouter.Desktop/AIHubRouter.Desktop.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AIHubRouter.Core.Tests/AIHubRouter.Core.Tests.csproj" />
+  </Folder>
+</Solution>

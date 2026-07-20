@@ -1,0 +1,129 @@
+<Window
+    x:Class="AIHubRouter.Desktop.MainWindow"
+    x:DataType="local:MainWindowViewModel"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:AIHubRouter.Desktop"
+    Title="AIHub Router"
+    Width="1240"
+    Height="900"
+    MinWidth="980"
+    MinHeight="720"
+    Background="#F6F7F9">
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Border Grid.Row="0" Background="White" BorderBrush="#D9DEE5" BorderThickness="0,0,0,1" Padding="18,14">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="2">
+          <TextBlock Text="AIHub Router" FontSize="20" FontWeight="SemiBold" Foreground="#20242A" />
+          <TextBlock Text="{Binding ConnectionSummary}" FontSize="12" Foreground="#66717D" />
+        </StackPanel>
+        <TextBlock Grid.Column="1" Text="{Binding CandidateSummary}" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#12633E" />
+      </Grid>
+    </Border>
+
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+      <Grid Margin="18" RowDefinitions="Auto,Auto,Auto,*">
+        <Border Grid.Row="0" Classes="section-rule">
+          <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="105,*,105,*">
+            <TextBlock Grid.Row="0" Grid.ColumnSpan="4" Text="连接与认证" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="站点" VerticalAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="1" Classes="field" Text="{Binding BaseUrl}" Margin="0,0,14,8" />
+            <TextBlock Grid.Row="1" Grid.Column="2" Text="邮箱" VerticalAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="3" Classes="field" Text="{Binding Email}" Margin="0,0,0,8" />
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="密码" VerticalAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="1" Classes="field" Text="{Binding Password}" PasswordChar="*" Margin="0,0,14,0" />
+            <TextBlock Grid.Row="2" Grid.Column="2" Text="Token" VerticalAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="3" Classes="field" Text="{Binding BearerToken}" PasswordChar="*" />
+          </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Classes="section-rule">
+          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,Auto,24,Auto,125,24,Auto,125,*">
+            <TextBlock Grid.Row="0" Grid.ColumnSpan="10" Text="路由策略" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+            <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="0">
+              <RadioButton Content="省钱" GroupName="mode" IsChecked="{Binding IsEconomy}" Padding="14,7" />
+              <RadioButton Content="均衡" GroupName="mode" IsChecked="{Binding IsBalanced}" Padding="14,7" />
+              <RadioButton Content="极速" GroupName="mode" IsChecked="{Binding IsSpeed}" Padding="14,7" />
+            </StackPanel>
+            <TextBlock Grid.Row="1" Grid.Column="4" Text="最低可用率 %" VerticalAlignment="Center" />
+            <NumericUpDown Grid.Row="1" Grid.Column="5" Minimum="0" Maximum="100" Value="{Binding MinimumSuccessPercent}" />
+            <TextBlock Grid.Row="1" Grid.Column="7" Text="间隔 秒" VerticalAlignment="Center" />
+            <NumericUpDown Grid.Row="1" Grid.Column="8" Minimum="30" Maximum="3600" Increment="30" Value="{Binding PollingIntervalSeconds}" />
+            <CheckBox Grid.Row="1" Grid.Column="9" Content="安全保存认证" IsChecked="{Binding PersistCredentials}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+          </Grid>
+        </Border>
+
+        <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*" Margin="0,0,0,14">
+          <Button Grid.Column="0" Classes="command" Content="保存" Command="{Binding SaveCommand}" Margin="0,0,8,0" />
+          <Button Grid.Column="1" Classes="command" Content="刷新" Command="{Binding RefreshCommand}" Margin="0,0,8,0" />
+          <Button Grid.Column="2" Classes="command" Content="模拟" Command="{Binding DryRunCommand}" Margin="0,0,8,0" />
+          <Button Grid.Column="3" Classes="command" Content="立即路由" Command="{Binding RouteCommand}" Margin="0,0,8,0" />
+          <ToggleButton Grid.Column="4" Classes="command" Content="自动路由" IsChecked="{Binding AutoRouting}" />
+          <ProgressBar Grid.Column="5" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="140" Height="4" HorizontalAlignment="Right" VerticalAlignment="Center" />
+        </Grid>
+
+        <Grid Grid.Row="3" RowDefinitions="*,14,*" MinHeight="440">
+          <Border Grid.Row="0" Background="White" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="4">
+            <Grid RowDefinitions="38,*">
+              <Grid Grid.Row="0" ColumnDefinitions="64,*,90,110,110,100,150" Background="#EEF1F4">
+                <TextBlock Grid.Column="0" Text="分组" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1" Text="方案" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="2" Text="倍率" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="3" Text="首字" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="4" Text="6h 可用率" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="5" Text="状态" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="6" Text="检测时间" VerticalAlignment="Center" FontWeight="SemiBold" />
+              </Grid>
+              <ListBox Grid.Row="1" ItemsSource="{Binding Providers}" BorderThickness="0">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="local:ProviderRowViewModel">
+                    <Grid ColumnDefinitions="64,*,90,110,110,100,150" MinHeight="34">
+                      <TextBlock Grid.Column="0" Text="{Binding GroupId}" Margin="10,0" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Text="{Binding Plan}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="{Binding Multiplier}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="3" Text="{Binding Latency}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="4" Text="{Binding SuccessRate}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="5" Text="{Binding State}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="6" Text="{Binding CheckedAt}" VerticalAlignment="Center" />
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+          </Border>
+
+          <Border Grid.Row="2" Background="White" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="4">
+            <Grid RowDefinitions="38,*">
+              <Grid Grid.Row="0" ColumnDefinitions="72,80,*,110,100,180" Background="#EEF1F4">
+                <TextBlock Grid.Column="0" Text="路由" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1" Text="ID" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="2" Text="Key" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="3" Text="状态" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="4" Text="分组" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="5" Text="分组名称" VerticalAlignment="Center" FontWeight="SemiBold" />
+              </Grid>
+              <ListBox Grid.Row="1" ItemsSource="{Binding Keys}" BorderThickness="0">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="local:KeyRowViewModel">
+                    <Grid ColumnDefinitions="72,80,*,110,100,180" MinHeight="34">
+                      <CheckBox Grid.Column="0" IsChecked="{Binding Selected}" Margin="10,0" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Text="{Binding Id}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="{Binding Name}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="3" Text="{Binding Status}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="4" Text="{Binding GroupId}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="5" Text="{Binding GroupName}" VerticalAlignment="Center" />
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+          </Border>
+        </Grid>
+      </Grid>
+    </ScrollViewer>
+
+    <Border Grid.Row="2" Background="White" BorderBrush="#D9DEE5" BorderThickness="0,1,0,0" Padding="14,9">
+      <TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" TextWrapping="Wrap" />
+    </Border>
+  </Grid>
+</Window>
