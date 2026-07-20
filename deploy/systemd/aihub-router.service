@@ -1,0 +1,40 @@
+[Unit]
+Description=AIHubRouter automatic Key group routing
+Documentation=https://github.com/OnRightPath/AIHubRouter
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=aihub-router
+Group=aihub-router
+WorkingDirectory=/var/lib/aihub-router
+Environment=XDG_CONFIG_HOME=/var/lib/aihub-router
+Environment=DOTNET_NOLOGO=1
+EnvironmentFile=/etc/aihub-router/environment
+ExecStart=/opt/aihub-router/aihub-router watch --interval 60 --json
+Restart=always
+RestartSec=10s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aihub-router
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aihub-router
+
+[Install]
+WantedBy=multi-user.target

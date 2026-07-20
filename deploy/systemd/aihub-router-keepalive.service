@@ -1,0 +1,6 @@
+[Unit]
+Description=Ensure AIHubRouter service is running
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --no-block start aihub-router.service

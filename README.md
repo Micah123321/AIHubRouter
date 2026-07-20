@@ -94,6 +94,27 @@ aihub-router route --once --json
 aihub-router watch --interval 60 --json
 ```
 
+### Linux systemd 后台运行
+
+仓库提供 systemd 服务和每 5 分钟一次的保活 timer。服务自身也配置为异常退出 10 秒后自动重启。
+
+```bash
+sudo ./scripts/install-systemd.sh artifacts/linux-x64/cli/aihub-router
+```
+
+安装器会创建独立的 `aihub-router` 系统用户，将 CLI 安装到 `/opt/aihub-router`，并生成权限为 `600` 的 AES 主密钥环境文件。启动前，使用该主密钥为服务用户写入加密凭据和路由配置；不要把密码写入 unit 或脚本。
+
+配置完成后启用服务与保活 timer：
+
+```bash
+sudo systemctl enable --now aihub-router.service
+sudo systemctl enable --now aihub-router-keepalive.timer
+systemctl status aihub-router.service
+systemctl list-timers aihub-router-keepalive.timer
+```
+
+后台运行不会启动桌面或浏览器。运行日志可通过 `journalctl -u aihub-router.service` 查看。
+
 修改策略：
 
 ```bash
