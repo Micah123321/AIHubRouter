@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.Styling;
 using AIHubRouter.Core;
@@ -21,6 +22,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private ProfileLock? _profileLock;
     private CancellationTokenSource? _autoRoutingCancellation;
     private PersistentCredentials _loadedCredentials = new();
+    private string? _providerSortField = "WeightedScore";
+    private bool _providerSortDescending = true;
 
     [ObservableProperty] private string _baseUrl = "https://aihub.top";
     [ObservableProperty] private string _email = string.Empty;
@@ -28,7 +31,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _bearerToken = string.Empty;
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
     [ObservableProperty] private bool _persistCredentials;
-    [ObservableProperty] private bool _isBusy;
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ManualRouteCommand))]
+    private bool _isBusy;
     [ObservableProperty] private bool _autoRouting;
     [ObservableProperty] private string _status = "就绪";
     [ObservableProperty] private bool _statusIsSuccess;
@@ -37,9 +42,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _connectionSummary = "API-only / Balanced";
     [ObservableProperty] private RoutingMode _routingMode = RoutingMode.Balanced;
     [ObservableProperty] private ThemeChoice? _selectedThemeChoice = ThemeChoices[0];
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ManualRouteCommand))]
+    private ProviderRowViewModel? _selectedProvider;
 
     public ObservableCollection<ProviderRowViewModel> Providers { get; } = [];
     public ObservableCollection<KeyRowViewModel> Keys { get; } = [];
+
+    public string MultiplierHeader => SortHeader("倍率", "Multiplier");
+    public string LatencyHeader => SortHeader("首字", "Latency");
+    public string SuccessRateHeader => SortHeader("6h 可用率", "SuccessRate");
+    public string WeightedScoreHeader => SortHeader("加权得分", "WeightedScore");
 
     public bool IsEconomy
     {
@@ -148,6 +161,89 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         await RunCycleAsync(dryRun: false, forceRefresh: false);
     }
 
+    [RelayCommand]
+    private void VisitSite()
+    {
+        if (!Uri.TryCreate(BaseUrl.Trim(), UriKind.Absolute, out var uri) ||
+            (!uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+             !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            SetStatus("站点地址无效，仅支持 HTTP 或 HTTPS。", success: false);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri)
+            {
+                UseShellExecute = true
+            });
+            SetStatus("已在默认浏览器中打开站点。", success: true);
+        }
+        catch (Exception exception)
+        {
+            SetStatus(GetSafeMessage(exception), success: false);
+        }
+    }
+
+    [RelayCommand]
+    private void SortProviders(string? field)
+    {
+        if (field is not ("Multiplier" or "Latency" or "SuccessRate" or "WeightedScore"))
+        {
+            return;
+        }
+
+        if (_providerSortField == field)
+        {
+            _providerSortDescending = !_providerSortDescending;
+        }
+        else
+        {
+            _providerSortField = field;
+            _providerSortDescending = field is "SuccessRate" or "WeightedScore";
+        }
+
+        SortProviderRows();
+        OnPropertyChanged(nameof(MultiplierHeader));
+        OnPropertyChanged(nameof(LatencyHeader));
+        OnPropertyChanged(nameof(SuccessRateHeader));
+        OnPropertyChanged(nameof(WeightedScoreHeader));
+    }
+
+    private bool CanManualRoute() =>
+        !IsBusy && SelectedProvider is { CanManualRoute: true, GroupIdValue: > 0 };
+
+    [RelayCommand(CanExecute = nameof(CanManualRoute))]
+    private async Task ManualRouteAsync()
+    {
+        if (SelectedProvider is not { CanManualRoute: true, GroupIdValue: > 0 } selected)
+        {
+            return;
+        }
+
+        AutoRouting = false;
+        IsBusy = true;
+        try
+        {
+            SaveSettings();
+            ResetService();
+            EnsureService();
+            var result = await _service!.RouteManuallyAsync(
+                selected.GroupIdValue.Value,
+                forceAccountRefresh: true);
+            ApplyManualResult(result, selected);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            SetStatus(GetSafeMessage(exception), success: false);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     private async Task StartAutoRoutingAsync()
     {
         StopAutoRouting();
@@ -241,6 +337,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void ApplyResult(RoutingCycleResult result)
     {
+        SelectedProvider = null;
         Providers.Clear();
         var targetId = result.Decision.Target?.Group.Id;
         var groups = result.Groups.ToDictionary(group => group.Id);
@@ -251,8 +348,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                      .OrderBy(provider => provider.GroupId == targetId ? 0 : 1)
                      .ThenBy(provider => provider.PriceMultiplier))
         {
-            Providers.Add(new ProviderRowViewModel(provider, groups, targetId));
+            Providers.Add(new ProviderRowViewModel(
+                provider,
+                groups,
+                targetId,
+                result.Evaluation));
         }
+
+        SortProviderRows();
 
         Keys.Clear();
         var selected = result.SelectedKeyIds.ToHashSet();
@@ -263,7 +366,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         if (result.Decision.Target is { } target)
         {
-            CandidateSummary = $"目标分组：{target.Group.Id} / {target.EffectiveMultiplier:0.####}x / {FormatLatency(target.Provider.FirstTokenLatencyMs)}";
+            var planName = string.IsNullOrWhiteSpace(target.Provider.PlanType)
+                ? target.Group.Name
+                : target.Provider.PlanType;
+            CandidateSummary = $"目标分组：{target.Group.Id} / 方案：{planName} / {target.EffectiveMultiplier:0.####}x / {FormatLatency(target.Provider.FirstTokenLatencyMs)}";
         }
         else
         {
@@ -274,6 +380,59 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             $"{result.Decision.Reason}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。",
             result.FailedKeyCount == 0);
     }
+
+    private void ApplyManualResult(ManualRoutingResult result, ProviderRowViewModel selected)
+    {
+        Keys.Clear();
+        var selectedKeyIds = result.SelectedKeyIds.ToHashSet();
+        foreach (var key in result.Keys)
+        {
+            Keys.Add(new KeyRowViewModel(key, selectedKeyIds.Contains(key.Id)));
+        }
+
+        CandidateSummary = $"目标分组：{selected.GroupId} / 方案：{selected.Plan} / {selected.Multiplier} / {selected.Latency}";
+        SetStatus(
+            $"手动路由完成；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。自动路由已关闭。",
+            result.FailedKeyCount == 0);
+    }
+
+    private void SortProviderRows()
+    {
+        if (_providerSortField is null || Providers.Count < 2)
+        {
+            return;
+        }
+
+        Func<ProviderRowViewModel, double?> selector = _providerSortField switch
+        {
+            "Multiplier" => row => row.MultiplierValue,
+            "Latency" => row => row.LatencyValue,
+            "SuccessRate" => row => row.SuccessRateValue,
+            "WeightedScore" => row => row.WeightedScoreValue,
+            _ => row => row.MultiplierValue
+        };
+        var selected = SelectedProvider;
+        var ordered = (_providerSortDescending
+                ? Providers.OrderBy(row => selector(row) is null)
+                    .ThenByDescending(selector)
+                : Providers.OrderBy(row => selector(row) is null)
+                    .ThenBy(selector))
+            .ThenBy(row => row.GroupIdValue)
+            .ThenBy(row => row.Plan, StringComparer.CurrentCulture)
+            .ToArray();
+
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            Providers.Move(Providers.IndexOf(ordered[index]), index);
+        }
+
+        SelectedProvider = selected;
+    }
+
+    private string SortHeader(string label, string field) =>
+        _providerSortField == field
+            ? $"{label} {(_providerSortDescending ? "↓" : "↑")}"
+            : label;
 
     private void Load()
     {
@@ -382,15 +541,38 @@ public sealed record ProviderRowViewModel
     public ProviderRowViewModel(
         ProviderStatus provider,
         IReadOnlyDictionary<long, GroupInfo> groups,
-        long? targetGroupId)
+        long? targetGroupId,
+        RouteEvaluation evaluation)
     {
+        var candidate = evaluation.EligibleCandidates.FirstOrDefault(item =>
+            item.Group.Id == provider.GroupId &&
+            item.Provider.Id.Equals(provider.Id, StringComparison.Ordinal));
+        var effectiveMultiplier = candidate?.EffectiveMultiplier ?? provider.PriceMultiplier;
+        var weightedScore = candidate is null
+            ? null
+            : RoutingEngine.CalculateWeightedScore(evaluation, candidate);
+
+        GroupIdValue = provider.GroupId;
         GroupId = provider.GroupId?.ToString() ?? "-";
-        Plan = provider.PlanType;
-        Multiplier = $"{provider.PriceMultiplier:0.####}x";
-        Latency = provider.FirstTokenLatencyMs is >= 0 and var latency && double.IsFinite(latency)
-            ? $"{latency:0} ms"
+        Plan = string.IsNullOrWhiteSpace(provider.PlanType) &&
+               provider.GroupId is { } groupId &&
+               groups.TryGetValue(groupId, out var group)
+            ? group.Name
+            : provider.PlanType;
+        MultiplierValue = double.IsFinite(effectiveMultiplier) ? effectiveMultiplier : null;
+        Multiplier = MultiplierValue is { } multiplier ? $"{multiplier:0.####}x" : "-";
+        LatencyValue = provider.FirstTokenLatencyMs is >= 0 and var latency && double.IsFinite(latency)
+            ? latency
+            : null;
+        Latency = LatencyValue is { } latencyValue
+            ? $"{latencyValue:0} ms"
             : "-";
+        SuccessRateValue = provider.SuccessRate6h;
         SuccessRate = provider.SuccessRate6h is { } success ? $"{success:P1}" : "-";
+        WeightedScoreValue = weightedScore;
+        WeightedScore = weightedScore is { } score
+            ? score.ToString("+0.0000;-0.0000;0.0000")
+            : "-";
         State = provider.GroupId == targetGroupId
             ? "推荐"
             : !provider.Enabled ? "停用"
@@ -398,15 +580,25 @@ public sealed record ProviderRowViewModel
             : provider.HasWarnings ? "警告"
             : "可用";
         CheckedAt = provider.CheckedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "-";
+        CanManualRoute = provider.GroupId is { } manualGroupId &&
+            groups.TryGetValue(manualGroupId, out var manualGroup) &&
+            manualGroup.Status.Equals("active", StringComparison.OrdinalIgnoreCase);
     }
 
+    public long? GroupIdValue { get; }
     public string GroupId { get; }
     public string Plan { get; }
+    public double? MultiplierValue { get; }
     public string Multiplier { get; }
+    public double? LatencyValue { get; }
     public string Latency { get; }
+    public double? SuccessRateValue { get; }
     public string SuccessRate { get; }
+    public double? WeightedScoreValue { get; }
+    public string WeightedScore { get; }
     public string State { get; }
     public string CheckedAt { get; }
+    public bool CanManualRoute { get; }
 }
 
 public sealed partial class KeyRowViewModel : ObservableObject

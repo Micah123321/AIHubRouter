@@ -34,6 +34,7 @@ var tests = new (string Name, Action Body)[]
     ("Legacy hard-gate settings are ignored", TestLegacyHardGateSettingsAreIgnored),
     ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
+    ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
     ("Encrypted settings roundtrip", TestEncryptedSettingsRoundtrip),
     ("Usable access token is reused", TestUsableAccessTokenIsReused),
     ("Expired access token refreshes first", TestExpiredAccessTokenRefreshesFirst),
@@ -573,6 +574,34 @@ static void TestDryRunNeverUpdatesKey()
     var result = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
     Assert(result.Decision.ShouldSwitch, "Dry run did not calculate a switch.");
     Assert(api.UpdateCalls == 0, "Dry run called UpdateKeyGroupAsync.");
+}
+
+static void TestManualRouteUpdatesSelectedKeysAndState()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(now);
+    var stateStore = new MemoryRouteStateStore();
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        stateStore,
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RouteManuallyAsync(2).GetAwaiter().GetResult();
+
+    Assert(api.UpdateCalls == 1, "Manual route did not update the selected Key.");
+    Assert(result.ChangedKeyCount == 1 && result.FailedKeyCount == 0,
+        "Manual route returned incorrect Key result counts.");
+    Assert(result.Keys.Single(key => key.Id == 10).GroupId == 2,
+        "Manual route did not return the updated Key group.");
+    Assert(stateStore.Current.CurrentGroupId == 2,
+        "Manual route did not persist the selected group as current.");
 }
 
 static void TestUnavailableCredentialStorageIsAtomic()
@@ -1209,6 +1238,7 @@ sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage
 sealed class MemoryRouteStateStore : IRouteStateStore
 {
     private RouteState _state = new();
+    public RouteState Current => _state;
     public RouteState Load() => _state;
     public void Save(RouteState state) => _state = state;
 }

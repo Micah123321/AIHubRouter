@@ -16,6 +16,12 @@
     <AssemblyName>AIHubRouter</AssemblyName>
     <RootNamespace>AIHubRouter.Desktop</RootNamespace>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\app-icon.png" />
+    <AvaloniaResource Include="Assets\app-icon.ico" />
+  </ItemGroup>
 
 </Project>

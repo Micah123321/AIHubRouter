@@ -50,6 +50,17 @@ public sealed record RoutingCycleResult(
     public int FailedKeyCount => KeyResults.Count(result => !result.Success);
 }
 
+public sealed record ManualRoutingResult(
+    GroupInfo TargetGroup,
+    IReadOnlyList<ApiKeyInfo> Keys,
+    IReadOnlyList<long> SelectedKeyIds,
+    IReadOnlyList<KeyRouteResult> KeyResults,
+    DateTimeOffset CompletedAt)
+{
+    public int ChangedKeyCount => KeyResults.Count(result => result.Changed && result.Success);
+    public int FailedKeyCount => KeyResults.Count(result => !result.Success);
+}
+
 public sealed class RoutingService : IDisposable
 {
     private readonly PersistentAppSettings _settings;
@@ -116,6 +127,39 @@ public sealed class RoutingService : IDisposable
         throw new InvalidOperationException("认证重试未返回结果。" );
     }
 
+    public async Task<ManualRoutingResult> RouteManuallyAsync(
+        long groupId,
+        bool forceAccountRefresh = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (groupId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(groupId));
+        }
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var client = await GetAuthenticatedClientAsync(
+                forceRenew: attempt > 0,
+                cancellationToken);
+            try
+            {
+                return await RouteManuallyCoreAsync(
+                    client,
+                    groupId,
+                    forceAccountRefresh,
+                    cancellationToken);
+            }
+            catch (AIHubApiException exception)
+                when (attempt == 0 && exception.IsAuthenticationFailure && CanRenewAutomatically())
+            {
+                InvalidateSession();
+            }
+        }
+
+        throw new InvalidOperationException("认证重试未返回结果。" );
+    }
+
     public void InvalidateAccountCache()
     {
         _accountCacheExpiresAt = DateTimeOffset.MinValue;
@@ -129,17 +173,7 @@ public sealed class RoutingService : IDisposable
     {
         var now = _utcNow();
         var summaryTask = client.GetProviderSummaryAsync(cancellationToken);
-        if (forceAccountRefresh || now >= _accountCacheExpiresAt || _cachedKeys.Count == 0)
-        {
-            var groupsTask = client.GetAvailableGroupsAsync(cancellationToken);
-            var ratesTask = client.GetUserGroupRatesAsync(cancellationToken);
-            var keysTask = client.GetAllKeysAsync(cancellationToken);
-            await Task.WhenAll(groupsTask, ratesTask, keysTask);
-            _cachedGroups = await groupsTask;
-            _cachedRates = await ratesTask;
-            _cachedKeys = await keysTask;
-            _accountCacheExpiresAt = now.AddSeconds(Math.Clamp(_settings.AccountCacheSeconds, 30, 3600));
-        }
+        await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
 
         var summary = await summaryTask;
         var selectedKeys = ResolveSelectedKeys(_cachedKeys);
@@ -227,6 +261,98 @@ public sealed class RoutingService : IDisposable
             keyResults,
             dryRun,
             _utcNow());
+    }
+
+    private async Task<ManualRoutingResult> RouteManuallyCoreAsync(
+        IAIHubApiClient client,
+        long groupId,
+        bool forceAccountRefresh,
+        CancellationToken cancellationToken)
+    {
+        var now = _utcNow();
+        await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
+
+        var targetGroup = _cachedGroups.FirstOrDefault(group =>
+            group.Id == groupId &&
+            group.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
+            group.Platform.Equals(_settings.Platform, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("所选方案不可用，或当前账号没有该分组权限。" );
+        var selectedKeys = ResolveSelectedKeys(_cachedKeys);
+        if (selectedKeys.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "没有选中的 active API Key。请先选择至少一个可用 Key。" );
+        }
+
+        var keyResults = new List<KeyRouteResult>();
+        foreach (var key in selectedKeys)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (key.GroupId == targetGroup.Id)
+            {
+                keyResults.Add(new KeyRouteResult(key.Id, key.Name, false, true, null));
+                continue;
+            }
+
+            try
+            {
+                var updated = await client.UpdateKeyGroupAsync(
+                    key.Id,
+                    targetGroup.Id,
+                    cancellationToken);
+                ReplaceCachedKey(updated);
+                keyResults.Add(new KeyRouteResult(key.Id, key.Name, true, true, null));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                if (exception is AIHubApiException { IsAuthenticationFailure: true })
+                {
+                    throw;
+                }
+
+                keyResults.Add(new KeyRouteResult(
+                    key.Id,
+                    key.Name,
+                    true,
+                    false,
+                    GetSafeErrorMessage(exception)));
+            }
+        }
+
+        _stateStore.Save(new RouteState
+        {
+            CurrentGroupId = keyResults.Any(result => !result.Success)
+                ? null
+                : targetGroup.Id
+        });
+
+        return new ManualRoutingResult(
+            targetGroup,
+            _cachedKeys,
+            selectedKeys.Select(key => key.Id).ToArray(),
+            keyResults,
+            _utcNow());
+    }
+
+    private async Task RefreshAccountDataAsync(
+        IAIHubApiClient client,
+        DateTimeOffset now,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        if (!forceRefresh && now < _accountCacheExpiresAt && _cachedKeys.Count > 0)
+        {
+            return;
+        }
+
+        var groupsTask = client.GetAvailableGroupsAsync(cancellationToken);
+        var ratesTask = client.GetUserGroupRatesAsync(cancellationToken);
+        var keysTask = client.GetAllKeysAsync(cancellationToken);
+        await Task.WhenAll(groupsTask, ratesTask, keysTask);
+        _cachedGroups = await groupsTask;
+        _cachedRates = await ratesTask;
+        _cachedKeys = await keysTask;
+        _accountCacheExpiresAt = now.AddSeconds(Math.Clamp(_settings.AccountCacheSeconds, 30, 3600));
     }
 
     private IReadOnlyList<ApiKeyInfo> ResolveSelectedKeys(IReadOnlyList<ApiKeyInfo> keys)

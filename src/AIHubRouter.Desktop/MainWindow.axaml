@@ -5,6 +5,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:AIHubRouter.Desktop"
     Title="AIHub Router"
+    Icon="/Assets/app-icon.ico"
+    Closing="OnClosing"
     Width="1240"
     Height="900"
     MinWidth="980"
@@ -61,38 +63,41 @@
           </Grid>
         </Border>
 
-        <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*" Margin="0,0,0,14">
+        <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*" Margin="0,0,0,14">
           <Button Grid.Column="0" Classes="command" Content="保存" Command="{Binding SaveCommand}" Margin="0,0,8,0" />
           <Button Grid.Column="1" Classes="command" Content="刷新" Command="{Binding RefreshCommand}" Margin="0,0,8,0" />
           <Button Grid.Column="2" Classes="command" Content="模拟" Command="{Binding DryRunCommand}" Margin="0,0,8,0" />
           <Button Grid.Column="3" Classes="command" Content="立即路由" Command="{Binding RouteCommand}" Margin="0,0,8,0" />
-          <ToggleButton Grid.Column="4" Classes="command" Content="自动路由" IsChecked="{Binding AutoRouting}" />
-          <ProgressBar Grid.Column="5" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="140" Height="4" HorizontalAlignment="Right" VerticalAlignment="Center" />
+          <Button Grid.Column="4" Classes="command" Content="手动选择" Command="{Binding ManualRouteCommand}" Margin="0,0,8,0" />
+          <ToggleButton Grid.Column="5" Classes="command" Content="自动路由" IsChecked="{Binding AutoRouting}" />
+          <ProgressBar Grid.Column="6" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="140" Height="4" HorizontalAlignment="Right" VerticalAlignment="Center" />
         </Grid>
 
         <Grid Grid.Row="3" RowDefinitions="*,14,*" MinHeight="440">
           <Border Grid.Row="0" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4">
             <Grid RowDefinitions="38,*">
-              <Grid Grid.Row="0" ColumnDefinitions="64,*,90,110,110,100,150" Background="{DynamicResource AppSurfaceAltBrush}">
+              <Grid Grid.Row="0" ColumnDefinitions="64,*,90,110,110,110,100,150" Background="{DynamicResource AppSurfaceAltBrush}">
                 <TextBlock Grid.Column="0" Text="分组" Margin="10,0" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <TextBlock Grid.Column="1" Text="方案" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="2" Text="倍率" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="3" Text="首字" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="4" Text="6h 可用率" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="5" Text="状态" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="6" Text="检测时间" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <Button Grid.Column="2" Classes="table-header" Content="{Binding MultiplierHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Multiplier" />
+                <Button Grid.Column="3" Classes="table-header" Content="{Binding LatencyHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Latency" />
+                <Button Grid.Column="4" Classes="table-header" Content="{Binding SuccessRateHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="SuccessRate" />
+                <Button Grid.Column="5" Classes="table-header" Content="{Binding WeightedScoreHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="WeightedScore" />
+                <TextBlock Grid.Column="6" Text="状态" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="7" Text="检测时间" VerticalAlignment="Center" FontWeight="SemiBold" />
               </Grid>
-              <ListBox Grid.Row="1" ItemsSource="{Binding Providers}" BorderThickness="0">
+              <ListBox Grid.Row="1" ItemsSource="{Binding Providers}" SelectedItem="{Binding SelectedProvider}" SelectionMode="Single" BorderThickness="0">
                 <ListBox.ItemTemplate>
                   <DataTemplate x:DataType="local:ProviderRowViewModel">
-                    <Grid ColumnDefinitions="64,*,90,110,110,100,150" MinHeight="34">
+                    <Grid ColumnDefinitions="64,*,90,110,110,110,100,150" MinHeight="34">
                       <TextBlock Grid.Column="0" Text="{Binding GroupId}" Margin="10,0" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="1" Text="{Binding Plan}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Text="{Binding Multiplier}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="3" Text="{Binding Latency}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="4" Text="{Binding SuccessRate}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="5" Text="{Binding State}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="6" Text="{Binding CheckedAt}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="5" Text="{Binding WeightedScore}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="6" Text="{Binding State}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="7" Text="{Binding CheckedAt}" VerticalAlignment="Center" />
                     </Grid>
                   </DataTemplate>
                 </ListBox.ItemTemplate>
@@ -130,8 +135,11 @@
       </Grid>
     </ScrollViewer>
 
-    <Border Grid.Row="2" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,9">
-      <TextBlock Classes="status" Classes.success="{Binding StatusIsSuccess}" Classes.error="{Binding StatusIsError}" Text="{Binding Status}" TextWrapping="Wrap" />
+    <Border Grid.Row="2" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,5">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Classes="status" Classes.success="{Binding StatusIsSuccess}" Classes.error="{Binding StatusIsError}" Text="{Binding Status}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,16,0" />
+        <Button Grid.Column="1" Classes="status-command" Content="访问站点" Command="{Binding VisitSiteCommand}" />
+      </Grid>
     </Border>
   </Grid>
 </Window>

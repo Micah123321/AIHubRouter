@@ -171,7 +171,7 @@ public static class RoutingEngine
             : double.MaxValue;
     }
 
-    internal static double? CalculateWeightedScore(
+    public static double? CalculateWeightedScore(
         RouteEvaluation evaluation,
         RouteCandidate candidate)
     {

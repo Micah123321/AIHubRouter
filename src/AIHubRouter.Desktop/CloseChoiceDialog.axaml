@@ -1,0 +1,38 @@
+<Window
+    x:Class="AIHubRouter.Desktop.CloseChoiceDialog"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="关闭 AIHub Router"
+    Icon="/Assets/app-icon.ico"
+    Width="450"
+    Height="210"
+    MinWidth="450"
+    MinHeight="210"
+    CanResize="False"
+    ShowInTaskbar="False"
+    WindowStartupLocation="CenterOwner"
+    Background="{DynamicResource AppBackgroundBrush}">
+  <Grid Margin="24" RowDefinitions="Auto,Auto,*,Auto">
+    <TextBlock
+        Grid.Row="0"
+        Text="关闭 AIHub Router？"
+        FontSize="18"
+        FontWeight="SemiBold"
+        Foreground="{DynamicResource AppTextPrimaryBrush}" />
+    <TextBlock
+        Grid.Row="1"
+        Margin="0,8,0,0"
+        Text="选择在系统托盘继续运行，或结束当前进程。"
+        TextWrapping="Wrap"
+        Foreground="{DynamicResource AppTextSecondaryBrush}" />
+    <StackPanel
+        Grid.Row="3"
+        Orientation="Horizontal"
+        HorizontalAlignment="Right"
+        Spacing="8">
+      <Button Classes="command" Content="取消" IsCancel="True" Click="OnCancel" />
+      <Button Classes="command" Content="最小化到托盘" IsDefault="True" Click="OnMinimize" />
+      <Button Classes="command danger" Content="退出应用" Click="OnExit" />
+    </StackPanel>
+  </Grid>
+</Window>

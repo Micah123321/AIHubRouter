@@ -3,6 +3,23 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     RequestedThemeVariant="Default">
+  <TrayIcon.Icons>
+    <TrayIcons>
+      <TrayIcon
+          Icon="/Assets/app-icon.ico"
+          ToolTipText="AIHub Router"
+          IsVisible="False"
+          Clicked="OnTrayIconClicked">
+        <TrayIcon.Menu>
+          <NativeMenu>
+            <NativeMenuItem Header="打开主窗口" Click="OnOpenMainWindow" />
+            <NativeMenuItemSeparator />
+            <NativeMenuItem Header="退出应用" Click="OnExitFromTray" />
+          </NativeMenu>
+        </TrayIcon.Menu>
+      </TrayIcon>
+    </TrayIcons>
+  </TrayIcon.Icons>
   <Application.Resources>
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>
@@ -34,6 +51,27 @@
     <Style Selector="Button.command">
       <Setter Property="MinHeight" Value="34" />
       <Setter Property="Padding" Value="14,6" />
+    </Style>
+    <Style Selector="ToggleButton.command">
+      <Setter Property="MinHeight" Value="34" />
+      <Setter Property="Padding" Value="14,6" />
+    </Style>
+    <Style Selector="Button.command.danger">
+      <Setter Property="Foreground" Value="{DynamicResource AppErrorBrush}" />
+    </Style>
+    <Style Selector="Button.status-command">
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="Padding" Value="12,3" />
+    </Style>
+    <Style Selector="Button.table-header">
+      <Setter Property="MinHeight" Value="38" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
     </Style>
     <Style Selector="TextBox.field">
       <Setter Property="MinHeight" Value="34" />
