@@ -9,12 +9,12 @@ fi
 patterns=(
   'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}'
   '(?i)Bearer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}'
-  '(?i)(sk|ak)-[A-Za-z0-9_-]{16,}'
+  '(?i)(?<![A-Za-z0-9_-])(sk|ak)-[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])'
   '(?i)(auth_token|access_token|refresh_token|session|sessionid)[[:space:]]*=[[:space:]]*[A-Za-z0-9%._~+/=-]{20,}'
   '(?i)(password|passwd|access[_-]?token|refresh[_-]?token|api[_-]?key|cookie)[[:space:]]*[:=][[:space:]]*["'"'][^"'"']{8,}["'"']'
   '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
-  '(?i)([A-Z]:[\\/]Users[\\/][^\\/:*?"<>|[:space:]]+|/(root|home/[A-Za-z0-9._-]+)/)'
 )
+local_path_pattern='(?i)([A-Z]:[\\/]Users[\\/][^\\/:*?"<>|[:space:]]+|/(root|home/[A-Za-z0-9._-]+)/)'
 email_pattern='(?i)[A-Z0-9._%+-]+@([A-Z0-9-]+\.)+[A-Z]{2,}'
 findings=0
 scanned=0
@@ -27,6 +27,7 @@ scan_file() {
   local pattern
   local email
 
+  mime_type="$(file -b --mime-type -- "$file")"
   strings -a -n 4 -- "$file" >"$scratch"
   scanned=$((scanned + 1))
   for pattern in "${patterns[@]}"; do
@@ -37,9 +38,12 @@ scan_file() {
     fi
   done
 
-  mime_type="$(file -b --mime-type -- "$file")"
   case "$mime_type" in
     text/*|application/json|application/xml|application/x-empty)
+      if rg --pcre2 -q -- "$local_path_pattern" "$scratch"; then
+        printf '[SensitivePattern] %s\n' "$file" >&2
+        findings=$((findings + 1))
+      fi
       while IFS= read -r email; do
         case "${email,,}" in
           *@example.com|*@*.test|*@*.invalid) ;;

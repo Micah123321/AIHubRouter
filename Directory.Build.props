@@ -2,5 +2,14 @@
   <PropertyGroup>
     <NuGetAudit>false</NuGetAudit>
     <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+    <EnableCompressionInSingleFile Condition="'$(RuntimeIdentifier)' != 'osx-arm64'">true</EnableCompressionInSingleFile>
+    <!-- Work around dotnet/runtime#123324 until the Apple Silicon runtime fix ships in .NET 10. -->
+    <EnableCompressionInSingleFile Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">false</EnableCompressionInSingleFile>
   </PropertyGroup>
+
+  <Target Name="ValidateAppleSiliconSingleFileCompression"
+          BeforeTargets="PrepareForPublish"
+          Condition="'$(RuntimeIdentifier)' == 'osx-arm64' and '$(PublishSingleFile)' == 'true' and '$(EnableCompressionInSingleFile)' != 'false'">
+    <Error Text="Compressed self-contained single-file apps can crash on Apple Silicon (dotnet/runtime#123324). Keep EnableCompressionInSingleFile=false for osx-arm64." />
+  </Target>
 </Project>

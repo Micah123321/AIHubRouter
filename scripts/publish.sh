@@ -22,7 +22,7 @@ dotnet restore "$solution" \
   -p:NuGetAudit=false \
   -m:1
 dotnet build "$solution" -c Release --no-restore -m:1
-dotnet run --project "$test_project" -c Release --no-restore
+dotnet run --project "$test_project" -c Release --no-build
 
 for rid in "${runtimes[@]}"; do
   rid_root="$artifacts_root/$rid"
@@ -45,13 +45,11 @@ for rid in "${runtimes[@]}"; do
   dotnet publish "$cli_project" -c Release -r "$rid" \
     --self-contained true --no-restore \
     -p:PublishSingleFile=true \
-    -p:EnableCompressionInSingleFile=true \
     -p:DebugType=None -p:DebugSymbols=false \
     -o "$rid_root/cli"
   dotnet publish "$desktop_project" -c Release -r "$rid" \
     --self-contained true --no-restore \
     -p:PublishSingleFile=true \
-    -p:EnableCompressionInSingleFile=true \
     -p:DebugType=None -p:DebugSymbols=false \
     -o "$rid_root/desktop"
   find "$rid_root" -type f -name '*.pdb' -delete
