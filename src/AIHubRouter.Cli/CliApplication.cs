@@ -291,7 +291,6 @@ internal static class CliApplication
         var baseUrl = GetOption(args, "--base-url");
         var platform = GetOption(args, "--platform");
         var mode = GetOption(args, "--mode");
-        var success = GetIntOption(args, "--minimum-success");
         var interval = GetIntOption(args, "--interval");
         var selectedKeys = GetOption(args, "--selected-keys");
         var allowLoopback = HasFlag(args, "--allow-insecure-loopback")
@@ -322,9 +321,6 @@ internal static class CliApplication
             RoutingMode = mode is null
                 ? settings.RoutingMode
                 : Enum.Parse<RoutingMode>(mode, ignoreCase: true),
-            MinimumSuccessPercent = success is null
-                ? settings.MinimumSuccessPercent
-                : Math.Clamp(success.Value, 0, 100),
             PollingIntervalSeconds = interval is null
                 ? settings.PollingIntervalSeconds
                 : Math.Clamp(interval.Value, 30, 3600),
@@ -614,7 +610,6 @@ internal static class CliApplication
               --base-url <https-url>
               --platform <openai|anthropic|gemini|antigravity|grok>
               --mode <economy|balanced|speed>
-              --minimum-success <0-100>
               --interval <30-3600>
               --selected-keys <id,id,...>
 

@@ -26,7 +26,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _email = string.Empty;
     [ObservableProperty] private string _password = string.Empty;
     [ObservableProperty] private string _bearerToken = string.Empty;
-    [ObservableProperty] private decimal _minimumSuccessPercent = 90;
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
     [ObservableProperty] private bool _persistCredentials;
     [ObservableProperty] private bool _isBusy;
@@ -285,7 +284,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _loadedCredentials = snapshot.Credentials ?? new PersistentCredentials();
             BaseUrl = settings.BaseUrl;
             RoutingMode = settings.RoutingMode;
-            MinimumSuccessPercent = settings.MinimumSuccessPercent;
             PollingIntervalSeconds = settings.PollingIntervalSeconds;
             PersistCredentials = settings.PersistCredentials;
             SelectedThemeChoice = ThemeChoices.FirstOrDefault(choice => choice.Mode == settings.ThemeMode)
@@ -308,7 +306,6 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             BaseUrl = BaseUrl.Trim(),
             RoutingMode = RoutingMode,
-            MinimumSuccessPercent = (int)MinimumSuccessPercent,
             PollingIntervalSeconds = (int)PollingIntervalSeconds,
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
@@ -396,7 +393,10 @@ public sealed record ProviderRowViewModel
         SuccessRate = provider.SuccessRate6h is { } success ? $"{success:P1}" : "-";
         State = provider.GroupId == targetGroupId
             ? "推荐"
-            : provider.Enabled && provider.Available ? "可用" : "异常";
+            : !provider.Enabled ? "停用"
+            : !provider.Available ? "异常"
+            : provider.HasWarnings ? "警告"
+            : "可用";
         CheckedAt = provider.CheckedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "-";
     }
 

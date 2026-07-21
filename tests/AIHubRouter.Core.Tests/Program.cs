@@ -10,7 +10,7 @@ var tests = new (string Name, Action Body)[]
     ("Token extraction from cookie", TestCookieTokenExtraction),
     ("Lowest available authorized group", TestLowestAvailableGroup),
     ("User rate override", TestUserRateOverride),
-    ("Availability threshold", TestAvailabilityThreshold),
+    ("Latest status controls eligibility", TestLatestStatusControlsEligibility),
     ("Stale status rejection", TestStaleStatusRejection),
     ("Balanced mode buys meaningful latency", TestBalancedModeBuysLatency),
     ("Balanced mode rejects catastrophic cheap latency", TestBalancedModeRejectsCatastrophicCheapLatency),
@@ -126,18 +126,24 @@ static void TestUserRateOverride()
     Assert(result?.Group.Id == 2 && result.HasUserRateOverride, "User rate override was not used.");
 }
 
-static void TestAvailabilityThreshold()
+static void TestLatestStatusControlsEligibility()
 {
     var now = DateTimeOffset.UtcNow;
     var providers = new[]
     {
-        Provider(1, 0.01, true, 0.49, now),
-        Provider(2, 0.05, true, 0.99, now)
+        Provider(1, 0.01, available: true, success: 0, now, warning: true),
+        Provider(2, 0.005, available: false, success: 1, now),
+        Provider(3, 0.05, available: true, success: 1, now)
     };
-    var criteria = new RoutingCriteria("openai", 0.5, TimeSpan.FromMinutes(15));
 
-    var result = RoutingEngine.SelectCheapest(providers, new[] { Group(1), Group(2) }, new Dictionary<long, double>(), criteria, now);
-    Assert(result?.Group.Id == 2, "Low-availability group was not rejected.");
+    var result = RoutingEngine.SelectCheapest(
+        providers,
+        new[] { Group(1), Group(2), Group(3) },
+        new Dictionary<long, double>(),
+        Criteria(),
+        now);
+    Assert(result?.Group.Id == 1 && result.Provider.HasWarnings,
+        "A warning status was rejected or the six-hour success rate affected eligibility.");
 }
 
 static void TestStaleStatusRejection()
@@ -555,8 +561,7 @@ static void TestDryRunNeverUpdatesKey()
     var settings = new PersistentAppSettings
     {
         KeySelectionInitialized = true,
-        SelectedKeyIds = [10],
-        MinimumSuccessPercent = 0
+        SelectedKeyIds = [10]
     };
     using var service = new RoutingService(
         settings,
@@ -705,8 +710,7 @@ static RouteEvaluation EvaluationForSwitch(DateTimeOffset now, double currentRat
 
 static BalancedRoutingPolicy Policy(RoutingMode mode) => new()
 {
-    Mode = mode,
-    MinimumSuccessRate6h = 0
+    Mode = mode
 };
 
 static void TestEncryptedSettingsRoundtrip()
@@ -726,7 +730,6 @@ static void TestEncryptedSettingsRoundtrip()
             PersistCredentials = true,
             BaseUrl = "https://example.test",
             Platform = "openai",
-            MinimumSuccessPercent = 85,
             PollingIntervalSeconds = 120,
             SmoothRendering = true,
             KeySelectionInitialized = true,
@@ -1150,7 +1153,8 @@ static ProviderStatus Provider(
     bool available,
     double success,
     DateTimeOffset checkedAt,
-    double? latency = 1000)
+    double? latency = 1000,
+    bool warning = false)
 {
     return new ProviderStatus
     {
@@ -1163,7 +1167,10 @@ static ProviderStatus Provider(
         Enabled = true,
         CheckedAt = checkedAt,
         FirstTokenLatencyMs = latency,
-        SuccessRates = new Dictionary<string, double> { ["6h"] = success }
+        SuccessRates = new Dictionary<string, double> { ["6h"] = success },
+        WarningReasons = warning
+            ? [new ProviderWarningReason { Type = "test_warning", Message = "Synthetic warning" }]
+            : []
     };
 }
 
@@ -1179,7 +1186,7 @@ static GroupInfo Group(long id)
     };
 }
 
-static RoutingCriteria Criteria() => new("openai", 0, TimeSpan.FromMinutes(15));
+static RoutingCriteria Criteria() => new("openai", TimeSpan.FromMinutes(15));
 
 static void Assert(bool condition, string message)
 {

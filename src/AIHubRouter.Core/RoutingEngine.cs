@@ -25,7 +25,6 @@ public static class RoutingEngine
             .Where(provider => provider.Platform.Equals(criteria.Platform, StringComparison.OrdinalIgnoreCase))
             .Where(provider => provider.PriceMultiplier >= 0 && double.IsFinite(provider.PriceMultiplier))
             .Where(provider => IsFresh(provider.CheckedAt, now, criteria.MaximumStatusAge))
-            .Where(provider => (provider.SuccessRate6h ?? 0) >= criteria.MinimumSuccessRate6h)
             .Select(provider =>
             {
                 var group = groups[provider.GroupId!.Value];
@@ -37,11 +36,9 @@ public static class RoutingEngine
             .GroupBy(candidate => candidate.Group.Id)
             .Select(group => group
                 .OrderBy(candidate => candidate.EffectiveMultiplier)
-                .ThenByDescending(candidate => candidate.Provider.SuccessRate6h ?? 0)
                 .ThenBy(candidate => candidate.Provider.FirstTokenLatencyMs ?? double.MaxValue)
                 .First())
             .OrderBy(candidate => candidate.EffectiveMultiplier)
-            .ThenByDescending(candidate => candidate.Provider.SuccessRate6h ?? 0)
             .ThenBy(candidate => candidate.Provider.FirstTokenLatencyMs ?? double.MaxValue)
             .ThenBy(candidate => candidate.Group.Id)
             .FirstOrDefault();
@@ -72,7 +69,6 @@ public static class RoutingEngine
             .Where(provider => provider.Platform.Equals(policy.Platform, StringComparison.OrdinalIgnoreCase))
             .Where(provider => provider.PriceMultiplier >= 0 && double.IsFinite(provider.PriceMultiplier))
             .Where(provider => IsFresh(provider.CheckedAt, now, policy.MaximumStatusAge))
-            .Where(provider => (provider.SuccessRate6h ?? 0) >= policy.MinimumSuccessRate6h)
             .Select(provider =>
             {
                 var group = groups[provider.GroupId!.Value];
@@ -84,7 +80,6 @@ public static class RoutingEngine
             .GroupBy(candidate => candidate.Group.Id)
             .Select(group => group
                 .OrderBy(candidate => NormalizeLatency(candidate.Provider.FirstTokenLatencyMs))
-                .ThenByDescending(candidate => candidate.Provider.SuccessRate6h ?? 0)
                 .ThenBy(candidate => candidate.EffectiveMultiplier)
                 .First())
             .ToArray();
@@ -109,7 +104,6 @@ public static class RoutingEngine
         var cheapest = decisionPool
             .Where(candidate => NearlyEqual(candidate.EffectiveMultiplier, minimumMultiplier))
             .OrderBy(candidate => NormalizeLatency(candidate.Provider.FirstTokenLatencyMs))
-            .ThenByDescending(candidate => candidate.Provider.SuccessRate6h ?? 0)
             .ThenBy(candidate => candidate.Group.Id)
             .ToArray();
 
@@ -156,7 +150,6 @@ public static class RoutingEngine
             .OrderByDescending(candidate => candidate.Score)
             .ThenBy(candidate => candidate.Candidate.EffectiveMultiplier)
             .ThenBy(candidate => NormalizeLatency(candidate.Candidate.Provider.FirstTokenLatencyMs))
-            .ThenByDescending(candidate => candidate.Candidate.Provider.SuccessRate6h ?? 0)
             .ThenBy(candidate => candidate.Candidate.Group.Id)
             .Select(candidate => candidate.Candidate)
             .ToArray();

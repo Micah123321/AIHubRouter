@@ -52,7 +52,24 @@ public sealed class ProviderStatus
     [JsonPropertyName("errorMessage")]
     public string? ErrorMessage { get; init; }
 
+    [JsonPropertyName("warningReasons")]
+    public List<ProviderWarningReason> WarningReasons { get; init; } = [];
+
     public double? SuccessRate6h => SuccessRates.TryGetValue("6h", out var value) ? value : null;
+
+    public bool HasWarnings => WarningReasons.Count > 0;
+}
+
+public sealed class ProviderWarningReason
+{
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = string.Empty;
+
+    [JsonPropertyName("count")]
+    public int? Count { get; init; }
 }
 
 public sealed class GroupInfo
@@ -114,7 +131,6 @@ public sealed class PaginatedResponse<T>
 
 public sealed record RoutingCriteria(
     string Platform,
-    double MinimumSuccessRate6h,
     TimeSpan MaximumStatusAge);
 
 public sealed record RouteCandidate(
@@ -136,7 +152,6 @@ public sealed record BalancedRoutingPolicy
 
     public string Platform { get; init; } = "openai";
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
-    public double MinimumSuccessRate6h { get; init; } = 0.9;
     public TimeSpan MaximumStatusAge { get; init; } = TimeSpan.FromMinutes(15);
     public double? PriceWeightOverride { get; init; }
     public double? MinimumScoreAdvantageOverride { get; init; }
@@ -158,11 +173,6 @@ public sealed record BalancedRoutingPolicy
         if (string.IsNullOrWhiteSpace(Platform))
         {
             throw new ArgumentException("路由平台不能为空。", nameof(Platform));
-        }
-
-        if (MinimumSuccessRate6h is < 0 or > 1 || !double.IsFinite(MinimumSuccessRate6h))
-        {
-            throw new ArgumentOutOfRangeException(nameof(MinimumSuccessRate6h));
         }
 
         if (MaximumStatusAge <= TimeSpan.Zero)

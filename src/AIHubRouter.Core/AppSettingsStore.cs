@@ -19,7 +19,6 @@ public sealed record PersistentAppSettings
     public bool AllowInsecureLoopback { get; init; }
     public string Platform { get; init; } = "openai";
     public RoutingMode RoutingMode { get; init; } = RoutingMode.Balanced;
-    public int MinimumSuccessPercent { get; init; } = 90;
     public int PollingIntervalSeconds { get; init; } = 60;
     public int AccountCacheSeconds { get; init; } = 300;
     public bool SmoothRendering { get; init; } = true;
@@ -33,7 +32,6 @@ public sealed record PersistentAppSettings
         {
             Platform = string.IsNullOrWhiteSpace(Platform) ? "openai" : Platform,
             Mode = RoutingMode,
-            MinimumSuccessRate6h = Math.Clamp(MinimumSuccessPercent, 0, 100) / 100d,
             MaximumStatusAge = TimeSpan.FromMinutes(15)
         };
     }

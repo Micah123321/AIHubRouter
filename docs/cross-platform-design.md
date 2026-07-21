@@ -37,12 +37,11 @@ tests/
 候选必须同时满足：
 
 1. 供应商和分组均为启用状态。
-2. 当前监测为可用。
+2. 最新监测字段 `available` 为 `true`；“可用”和带警告原因的“警告”都可进入评估，错误状态直接排除。
 3. 供应商平台与策略平台一致。
 4. 账号拥有目标分组权限。
 5. 监测时间不超过 `MaximumStatusAge`，且未来偏差不超过 1 分钟。
-6. 6 小时可用率不低于 `MinimumSuccessRate6h`。
-7. 倍率为有限且非负数。
+6. 倍率为有限且非负数。
 
 账号专属倍率优先于公开倍率。
 
@@ -56,7 +55,7 @@ speedupRatio = baselineLatency / candidateLatency - 1
 weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 ```
 
-最低倍率基准的得分为 0。其他候选得分大于 0 才进入推荐集合；得分相同时优先倍率更低、延迟更低、可用率更高和分组 ID 更小的候选。
+最低倍率基准的得分为 0。其他候选得分大于 0 才进入推荐集合；得分相同时优先倍率更低、延迟更低和分组 ID 更小的候选。
 
 预设策略：
 
@@ -66,7 +65,7 @@ weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 | Balanced | 0.90 | 0.10 | 价格优先，只响应很大的速度差距 |
 | Speed | 0.75 | 0.25 | 在价格约束下提高速度敏感度 |
 
-最低倍率为 0 时，仅在零倍率候选中按延迟和可用率选择。全部候选都缺失延迟时回退到最低倍率，避免虚构速度收益。默认使用 `Balanced`。
+最低倍率为 0 时，仅在零倍率候选中按延迟选择。全部候选都缺失延迟时回退到最低倍率，避免虚构速度收益。默认使用 `Balanced`。
 
 ### 4.3 权重稳定机制
 
@@ -179,7 +178,7 @@ Avalonia UI 只负责编辑配置、调用应用服务和显示结果。主界�
 
 - 站点、邮箱、密码和 Token 输入。
 - Economy/Balanced/Speed 分段策略。
-- 可用率、轮询间隔和 Key 选择。
+- 轮询间隔和 Key 选择。
 - 跟随系统、浅色和深色主题选择，主题偏好持久化。
 - 供应商倍率、首字延迟、状态和推荐结果。
 - 单次路由、dry-run、自动路由开关。
