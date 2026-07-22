@@ -14,9 +14,12 @@ public static class RoutingEngine
         ArgumentNullException.ThrowIfNull(userGroupRates);
         ArgumentNullException.ThrowIfNull(criteria);
 
+        var blacklistedGroupIds = criteria.BlacklistedGroupIds?.ToHashSet() ?? [];
+
         var groups = availableGroups
             .Where(group => group.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
             .Where(group => group.Platform.Equals(criteria.Platform, StringComparison.OrdinalIgnoreCase))
+            .Where(group => !blacklistedGroupIds.Contains(group.Id))
             .ToDictionary(group => group.Id);
 
         return providers
@@ -57,9 +60,12 @@ public static class RoutingEngine
         ArgumentNullException.ThrowIfNull(policy);
         policy.Validate();
 
+        var blacklistedGroupIds = policy.BlacklistedGroupIds.ToHashSet();
+
         var groups = availableGroups
             .Where(group => group.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
             .Where(group => group.Platform.Equals(policy.Platform, StringComparison.OrdinalIgnoreCase))
+            .Where(group => !blacklistedGroupIds.Contains(group.Id))
             .GroupBy(group => group.Id)
             .ToDictionary(group => group.Key, group => group.First());
 

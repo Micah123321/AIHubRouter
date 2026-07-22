@@ -50,6 +50,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private ProviderRowViewModel? _selectedProvider;
 
     public ObservableCollection<ProviderRowViewModel> Providers { get; } = [];
+    public ObservableCollection<GroupRowViewModel> Groups { get; } = [];
     public ObservableCollection<KeyRowViewModel> Keys { get; } = [];
 
     public string MultiplierHeader => SortHeader("倍率", "Multiplier");
@@ -353,6 +354,27 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private void ApplyResult(RoutingCycleResult result)
     {
         SelectedProvider = null;
+        var persistedBlacklist = _store.Load().Settings.BlacklistedGroupIds.ToHashSet();
+        var previousBlacklist = Groups.ToDictionary(group => group.Id, group => group.Blacklisted);
+        Groups.Clear();
+        foreach (var group in result.Groups
+                     .Where(group => group.Platform.Equals(
+                         RoutingModePlatform(),
+                         StringComparison.OrdinalIgnoreCase))
+                     .GroupBy(group => group.Id)
+                     .Select(group => group.First())
+                     .OrderBy(group => group.Id))
+        {
+            var blacklisted = previousBlacklist.TryGetValue(group.Id, out var previous)
+                ? previous
+                : persistedBlacklist.Contains(group.Id);
+            Groups.Add(new GroupRowViewModel(group, blacklisted));
+        }
+
+        var blacklistedIds = Groups
+            .Where(group => group.Blacklisted)
+            .Select(group => group.Id)
+            .ToHashSet();
         Providers.Clear();
         var targetId = result.Decision.Target?.Group.Id;
         var groups = result.Groups.ToDictionary(group => group.Id);
@@ -367,7 +389,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 provider,
                 groups,
                 targetId,
-                result.Evaluation));
+                result.Evaluation,
+                blacklistedIds));
         }
 
         SortProviderRows();
@@ -476,6 +499,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         var selectedIds = Keys.Where(key => key.Selected).Select(key => key.Id).ToArray();
         var existing = _store.Load().Settings;
+        var loadedGroupIds = Groups.Select(group => group.Id).ToHashSet();
+        var blacklistedGroupIds = Groups
+            .Where(group => group.Blacklisted)
+            .Select(group => group.Id)
+            .Concat(existing.BlacklistedGroupIds.Where(groupId => !loadedGroupIds.Contains(groupId)))
+            .Distinct()
+            .Order()
+            .ToArray();
         var settings = existing with
         {
             BaseUrl = BaseUrl.Trim(),
@@ -484,7 +515,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
             KeySelectionInitialized = Keys.Count > 0 || existing.KeySelectionInitialized,
-            SelectedKeyIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds
+            SelectedKeyIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds,
+            BlacklistedGroupIds = Groups.Count > 0 ? blacklistedGroupIds : existing.BlacklistedGroupIds
         };
         var credentials = BuildCredentials();
         if (PersistCredentials && !_store.CanPersistCredentials)
@@ -557,7 +589,8 @@ public sealed record ProviderRowViewModel
         ProviderStatus provider,
         IReadOnlyDictionary<long, GroupInfo> groups,
         long? targetGroupId,
-        RouteEvaluation evaluation)
+        RouteEvaluation evaluation,
+        IReadOnlySet<long> blacklistedGroupIds)
     {
         var candidate = evaluation.EligibleCandidates.FirstOrDefault(item =>
             item.Group.Id == provider.GroupId &&
@@ -588,7 +621,9 @@ public sealed record ProviderRowViewModel
         WeightedScore = weightedScore is { } score
             ? score.ToString("+0.0000;-0.0000;0.0000")
             : "-";
-        State = provider.GroupId == targetGroupId
+        State = provider.GroupId is { } stateGroupId && blacklistedGroupIds.Contains(stateGroupId)
+            ? "黑名单"
+            : provider.GroupId == targetGroupId
             ? "推荐"
             : !provider.Enabled ? "停用"
             : !provider.Available ? "异常"
@@ -597,7 +632,8 @@ public sealed record ProviderRowViewModel
         CheckedAt = provider.CheckedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "-";
         CanManualRoute = provider.GroupId is { } manualGroupId &&
             groups.TryGetValue(manualGroupId, out var manualGroup) &&
-            manualGroup.Status.Equals("active", StringComparison.OrdinalIgnoreCase);
+            manualGroup.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
+            !blacklistedGroupIds.Contains(manualGroupId);
     }
 
     public long? GroupIdValue { get; }
@@ -614,6 +650,25 @@ public sealed record ProviderRowViewModel
     public string State { get; }
     public string CheckedAt { get; }
     public bool CanManualRoute { get; }
+}
+
+public sealed partial class GroupRowViewModel : ObservableObject
+{
+    [ObservableProperty] private bool _blacklisted;
+
+    public GroupRowViewModel(GroupInfo group, bool blacklisted)
+    {
+        Id = group.Id;
+        Name = group.Name;
+        Platform = group.Platform;
+        Status = group.Status;
+        _blacklisted = blacklisted;
+    }
+
+    public long Id { get; }
+    public string Name { get; }
+    public string Platform { get; }
+    public string Status { get; }
 }
 
 public sealed partial class KeyRowViewModel : ObservableObject

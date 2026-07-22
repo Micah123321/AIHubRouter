@@ -8,7 +8,10 @@ var tests = new (string Name, Action Body)[]
 {
     ("Bearer token normalization", TestBearerNormalization),
     ("Token extraction from cookie", TestCookieTokenExtraction),
+    ("Null provider availability is unavailable", TestNullProviderAvailabilityIsUnavailable),
     ("Lowest available authorized group", TestLowestAvailableGroup),
+    ("Blacklisted group is excluded", TestBlacklistedGroupIsExcluded),
+    ("Blacklisted group is excluded from balanced evaluation", TestBalancedEvaluationExcludesBlacklistedGroup),
     ("User rate override", TestUserRateOverride),
     ("Latest status controls eligibility", TestLatestStatusControlsEligibility),
     ("Stale status rejection", TestStaleStatusRejection),
@@ -35,6 +38,7 @@ var tests = new (string Name, Action Body)[]
     ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
     ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
+    ("Manual route rejects blacklisted group", TestManualRouteRejectsBlacklistedGroup),
     ("Manual route clears state after terminal authentication failure", TestManualRouteClearsStateAfterTerminalAuthenticationFailure),
     ("Manual route preserves changes across authentication retry", TestManualRoutePreservesChangesAcrossAuthenticationRetry),
     ("Encrypted settings roundtrip", TestEncryptedSettingsRoundtrip),
@@ -100,6 +104,31 @@ static void TestCookieTokenExtraction()
     Assert(token == "abc.def", "auth_token cookie was not decoded.");
 }
 
+static void TestNullProviderAvailabilityIsUnavailable()
+{
+    var handler = new StubHttpMessageHandler(_ => JsonResponse("""
+        {
+          "apis": [
+            {
+              "id": "provider-null-availability",
+              "group_id": 51,
+              "planType": "A016-Free",
+              "platform": "openai",
+              "priceMultiplier": 0.005,
+              "available": null,
+              "enabled": true
+            }
+          ]
+        }
+        """));
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    var summary = client.GetProviderSummaryAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+    Assert(summary.Apis.Count == 1 && !summary.Apis[0].Available,
+        "A null provider availability was not treated as unavailable.");
+}
+
 static void TestLowestAvailableGroup()
 {
     var now = DateTimeOffset.UtcNow;
@@ -113,6 +142,44 @@ static void TestLowestAvailableGroup()
 
     var result = RoutingEngine.SelectCheapest(providers, groups, new Dictionary<long, double>(), Criteria(), now);
     Assert(result?.Group.Id == 3, "Did not select the cheapest available authorized group.");
+}
+
+static void TestBlacklistedGroupIsExcluded()
+{
+    var now = DateTimeOffset.UtcNow;
+    var providers = new[]
+    {
+        Provider(1, 0.01, available: true, success: 1, now),
+        Provider(2, 0.05, available: true, success: 1, now)
+    };
+
+    var result = RoutingEngine.SelectCheapest(
+        providers,
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Criteria() with { BlacklistedGroupIds = [1] },
+        now);
+
+    Assert(result?.Group.Id == 2, "A blacklisted group entered the candidate pool.");
+}
+
+static void TestBalancedEvaluationExcludesBlacklistedGroup()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.01, available: true, success: 1, now),
+            Provider(2, 0.05, available: true, success: 1, now)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        new BalancedRoutingPolicy { BlacklistedGroupIds = [1] },
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 2 &&
+           evaluation.EligibleCandidates.All(candidate => candidate.Group.Id != 1),
+        "A blacklisted group entered balanced evaluation.");
 }
 
 static void TestUserRateOverride()
@@ -604,6 +671,40 @@ static void TestManualRouteUpdatesSelectedKeysAndState()
         "Manual route did not return the updated Key group.");
     Assert(stateStore.Current.CurrentGroupId == 2,
         "Manual route did not persist the selected group as current.");
+}
+
+static void TestManualRouteRejectsBlacklistedGroup()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(now);
+    var stateStore = new MemoryRouteStateStore(new RouteState { CurrentGroupId = 1 });
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        BlacklistedGroupIds = [2]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        stateStore,
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var rejected = false;
+    try
+    {
+        service.RouteManuallyAsync(2).GetAwaiter().GetResult();
+    }
+    catch (InvalidOperationException exception) when (exception.Message == "所选分组已加入黑名单。")
+    {
+        rejected = true;
+    }
+
+    Assert(rejected, "Manual route accepted a blacklisted group.");
+    Assert(api.UpdateCalls == 0, "Manual route updated a Key for a blacklisted group.");
+    Assert(stateStore.Current.CurrentGroupId == 1,
+        "Manual route changed the persisted state for a blacklisted group.");
 }
 
 static void TestManualRouteClearsStateAfterTerminalAuthenticationFailure()

@@ -293,6 +293,7 @@ internal static class CliApplication
         var mode = GetOption(args, "--mode");
         var interval = GetIntOption(args, "--interval");
         var selectedKeys = GetOption(args, "--selected-keys");
+        var blacklistedGroups = GetOption(args, "--blacklisted-groups");
         var allowLoopback = HasFlag(args, "--allow-insecure-loopback")
             ? true
             : settings.AllowInsecureLoopback;
@@ -314,6 +315,18 @@ internal static class CliApplication
                 .ToArray();
         }
 
+        long[]? parsedBlacklistedGroups = null;
+        if (blacklistedGroups is not null)
+        {
+            parsedBlacklistedGroups = blacklistedGroups
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(value => long.TryParse(value, out var id) && id > 0
+                    ? id
+                    : throw new ArgumentException("--blacklisted-groups 必须是逗号分隔的正整数。"))
+                .Distinct()
+                .ToArray();
+        }
+
         return settings with
         {
             BaseUrl = baseUrl ?? settings.BaseUrl,
@@ -328,7 +341,8 @@ internal static class CliApplication
             KeySelectionInitialized = parsedKeys is null
                 ? settings.KeySelectionInitialized
                 : true,
-            SelectedKeyIds = parsedKeys ?? settings.SelectedKeyIds
+            SelectedKeyIds = parsedKeys ?? settings.SelectedKeyIds,
+            BlacklistedGroupIds = parsedBlacklistedGroups ?? settings.BlacklistedGroupIds
         };
     }
 
@@ -612,6 +626,7 @@ internal static class CliApplication
               --mode <economy|balanced|speed>
               --interval <30-3600>
               --selected-keys <id,id,...>
+              --blacklisted-groups <id,id,...>
 
             Audit options for route/watch:
               --log-file <path>

@@ -121,11 +121,11 @@ function Get-DisplayPath([string]$fullPath) {
 $rules = @(
     @{ Name = "JWT"; Pattern = '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b' },
     @{ Name = "BearerValue"; Pattern = '(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{20,}' },
-    @{ Name = "ApiKeyValue"; Pattern = '(?i)\b(?:sk|ak)-[A-Za-z0-9_-]{16,}\b' },
+    @{ Name = "ApiKeyValue"; Pattern = '(?i)(?<![A-Za-z0-9_-])(?:sk|ak)-[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])' },
     @{ Name = "CookieCredential"; Pattern = '(?i)\b(?:auth_token|access_token|refresh_token|session|sessionid)\s*=\s*[A-Za-z0-9%._~+/=-]{20,}' },
     @{ Name = "SecretAssignment"; Pattern = '(?i)["'']?\b(?:password|passwd|access[_-]?token|refresh[_-]?token|api[_-]?key|cookie)\b["'']?\s*[:=]\s*["''][^"''\r\n]{8,}["'']' },
     @{ Name = "PrivateKey"; Pattern = '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----' },
-    @{ Name = "LocalUserPath"; Pattern = '(?i)(?:\b[A-Z]:[\\/]Users[\\/][^\\/:*?"<>|\r\n]+|/(?:root|home/[A-Za-z0-9._-]+)/)' }
+    @{ Name = "LocalUserPath"; Pattern = '(?i)(?:\b[A-Z]:[\\/]Users[\\/][^\\/:*?"<>|\r\n]+|/(?:root|home/[A-Za-z0-9._-]+)/)'; TextOnly = $true }
 )
 $emailPattern = '(?i)\b[A-Z0-9._%+-]+@(?:[A-Z0-9-]+\.)+[A-Z]{2,}\b'
 $regexOptions = [Text.RegularExpressions.RegexOptions]::Compiled -bor
@@ -139,18 +139,22 @@ $files = @(Get-ScanFiles $Path)
 
 foreach ($file in $files) {
     $displayPath = Get-DisplayPath $file.FullName
+    $isBinary = $file.Extension.ToLowerInvariant() -in $binaryExtensions
     $foundRules = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $unsafeEmail = $false
     Get-ScanSegments $file | ForEach-Object {
         $content = $_
         foreach ($rule in $rules) {
+            if ($isBinary -and $rule.ContainsKey("TextOnly") -and $rule.TextOnly) {
+                continue
+            }
             if (-not $foundRules.Contains($rule.Name) -and
                 $rule.Regex.IsMatch($content)) {
                 [void]$foundRules.Add($rule.Name)
             }
         }
 
-        if (-not $unsafeEmail) {
+        if (-not $isBinary -and -not $unsafeEmail) {
             foreach ($match in $emailRegex.Matches($content)) {
                 $domain = $match.Value.Split('@')[-1]
                 if ($domain.EndsWith(".test", [StringComparison]::OrdinalIgnoreCase) -or

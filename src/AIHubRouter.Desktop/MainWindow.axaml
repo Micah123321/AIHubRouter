@@ -34,7 +34,7 @@
     </Border>
 
     <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
-      <Grid Margin="18" RowDefinitions="Auto,Auto,Auto,*">
+      <Grid Margin="18" RowDefinitions="Auto,Auto,Auto,Auto,*">
         <Border Grid.Row="0" Classes="section-rule">
           <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="105,*,105,*">
             <TextBlock Grid.Row="0" Grid.ColumnSpan="4" Text="连接与认证" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
@@ -63,7 +63,27 @@
           </Grid>
         </Border>
 
-        <Grid Grid.Row="2" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*" Margin="0,0,0,14">
+        <Border Grid.Row="2" Classes="section-rule">
+          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto">
+            <TextBlock Grid.Row="0" Text="黑名单分组" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="勾选的分组不会进入候选" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,0,0,10" />
+            <ListBox Grid.Row="1" Grid.ColumnSpan="2" ItemsSource="{Binding Groups}" Height="126" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="local:GroupRowViewModel">
+                  <Grid ColumnDefinitions="74,72,*,120,100" MinHeight="30">
+                    <CheckBox Grid.Column="0" Content="禁用" IsChecked="{Binding Blacklisted}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding Id}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="{Binding Name}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="3" Text="{Binding Platform}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="4" Text="{Binding Status}" VerticalAlignment="Center" />
+                  </Grid>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Grid>
+        </Border>
+
+        <Grid Grid.Row="3" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*" Margin="0,0,0,14">
           <Button Grid.Column="0" Classes="command" Content="保存" Command="{Binding SaveCommand}" Margin="0,0,8,0" />
           <Button Grid.Column="1" Classes="command" Content="刷新" Command="{Binding RefreshCommand}" Margin="0,0,8,0" />
           <Button Grid.Column="2" Classes="command" Content="模拟" Command="{Binding DryRunCommand}" Margin="0,0,8,0" />
@@ -73,7 +93,7 @@
           <ProgressBar Grid.Column="6" IsIndeterminate="True" IsVisible="{Binding IsBusy}" Width="140" Height="4" HorizontalAlignment="Right" VerticalAlignment="Center" />
         </Grid>
 
-        <Grid Grid.Row="3" RowDefinitions="*,14,*" MinHeight="440">
+        <Grid Grid.Row="4" RowDefinitions="*,14,*" MinHeight="440">
           <Border Grid.Row="0" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4">
             <Grid RowDefinitions="38,*">
               <Grid Grid.Row="0" ColumnDefinitions="64,*,90,110,110,110,100,150" Background="{DynamicResource AppSurfaceAltBrush}">

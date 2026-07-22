@@ -33,7 +33,7 @@ $commonRestore = @(
 
 Invoke-Dotnet (@("restore", $solution) + $commonRestore)
 Invoke-Dotnet @("build", $solution, "-c", "Release", "--no-restore", "-m:1")
-Invoke-Dotnet @("run", "--project", $testProject, "-c", "Release", "--no-restore")
+Invoke-Dotnet @("run", "--project", $testProject, "-c", "Release", "--no-build")
 
 foreach ($rid in $Runtime) {
     $ridRoot = Join-Path $artifactsRoot $rid
@@ -48,13 +48,13 @@ foreach ($rid in $Runtime) {
     Invoke-Dotnet @(
         "publish", $cliProject, "-c", "Release", "-r", $rid,
         "--self-contained", "true", "--no-restore", "-o", $cliOutput,
-        "-p:PublishSingleFile=true", "-p:EnableCompressionInSingleFile=true",
+        "-p:PublishSingleFile=true",
         "-p:DebugType=None", "-p:DebugSymbols=false"
     )
     Invoke-Dotnet @(
         "publish", $desktopProject, "-c", "Release", "-r", $rid,
         "--self-contained", "true", "--no-restore", "-o", $desktopOutput,
-        "-p:PublishSingleFile=true", "-p:EnableCompressionInSingleFile=true",
+        "-p:PublishSingleFile=true",
         "-p:DebugType=None", "-p:DebugSymbols=false"
     )
     Get-ChildItem -LiteralPath $ridRoot -Recurse -File -Filter "*.pdb" |

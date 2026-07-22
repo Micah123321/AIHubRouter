@@ -320,6 +320,11 @@ public sealed class RoutingService : IDisposable
         var now = _utcNow();
         await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
 
+        if (_settings.BlacklistedGroupIds.Contains(groupId))
+        {
+            throw new InvalidOperationException("所选分组已加入黑名单。" );
+        }
+
         var targetGroup = _cachedGroups.FirstOrDefault(group =>
             group.Id == groupId &&
             group.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
