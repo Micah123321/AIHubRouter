@@ -189,9 +189,7 @@ internal static class CliApplication
         bool watch,
         CancellationToken cancellationToken)
     {
-        var snapshot = store.Load();
-        var settings = ApplyCommandOptions(ApplyEnvironmentSettings(snapshot.Settings), args);
-        var credentials = ApplyEnvironmentCredentials(snapshot.Credentials ?? new PersistentCredentials());
+        var runtime = LoadRoutingRuntime(store, args);
         var json = HasFlag(args, "--json");
         var dryRun = HasFlag(args, "--dry-run");
         var auditLog = CreateAuditLog(args);
@@ -204,23 +202,10 @@ internal static class CliApplication
         }
 
         var stateStore = new JsonRouteStateStore(store.StorageDirectory);
-        using var service = new RoutingService(
-            settings,
-            credentials,
-            stateStore,
-            persistCredentials: (updated, token) =>
-            {
-                token.ThrowIfCancellationRequested();
-                if (settings.PersistCredentials)
-                {
-                    store.Save(settings, updated);
-                }
-
-                return Task.CompletedTask;
-            });
 
         if (!watch)
         {
+            using var service = CreateRoutingService(store, runtime, stateStore);
             var result = await service.RunOnceAsync(dryRun, forceAccountRefresh: true, cancellationToken);
             WriteCycle(result, json, auditLog);
             if (result.Decision.Reason == RouteDecisionReason.NoCandidate)
@@ -231,23 +216,123 @@ internal static class CliApplication
             return result.FailedKeyCount == 0 ? 0 : 5;
         }
 
-        var interval = TimeSpan.FromSeconds(Math.Clamp(settings.PollingIntervalSeconds, 30, 3600));
-        using var timer = new PeriodicTimer(interval);
-        do
+        return await RunWatchAsync(
+            store,
+            args,
+            runtime,
+            stateStore,
+            dryRun,
+            json,
+            auditLog,
+            cancellationToken);
+    }
+
+    private static async Task<int> RunWatchAsync(
+        AppSettingsStore store,
+        string[] args,
+        RoutingRuntime runtime,
+        IRouteStateStore stateStore,
+        bool dryRun,
+        bool json,
+        AuditLogWriter? auditLog,
+        CancellationToken cancellationToken)
+    {
+        using var changes = new ProfileFileChangeMonitor(store.StorageDirectory);
+        var service = CreateRoutingService(store, runtime, stateStore);
+
+        try
         {
-            try
+            while (true)
             {
-                var result = await service.RunOnceAsync(dryRun, cancellationToken: cancellationToken);
-                WriteCycle(result, json, auditLog);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                WriteWatchError(exception, json, auditLog);
+                try
+                {
+                    var result = await service.RunOnceAsync(
+                        dryRun,
+                        cancellationToken: cancellationToken);
+                    WriteCycle(result, json, auditLog);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    WriteWatchError(exception, json, auditLog);
+                }
+
+                if (!await WaitForWatchEventAsync(
+                        TimeSpan.FromSeconds(Math.Clamp(runtime.Settings.PollingIntervalSeconds, 30, 3600)),
+                        changes,
+                        cancellationToken))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var reloadedRuntime = LoadRoutingRuntime(store, args);
+                    var reloadedService = CreateRoutingService(store, reloadedRuntime, stateStore);
+                    service.Dispose();
+                    service = reloadedService;
+                    runtime = reloadedRuntime;
+                    WriteConfigurationReloaded(runtime.Settings, json, auditLog);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    WriteConfigurationReloadError(exception, json, auditLog);
+                }
             }
         }
-        while (await timer.WaitForNextTickAsync(cancellationToken));
+        finally
+        {
+            service.Dispose();
+        }
+    }
 
-        return 0;
+    private static RoutingRuntime LoadRoutingRuntime(AppSettingsStore store, string[] args)
+    {
+        var snapshot = store.Load();
+        return new RoutingRuntime(
+            ApplyCommandOptions(ApplyEnvironmentSettings(snapshot.Settings), args),
+            ApplyEnvironmentCredentials(snapshot.Credentials ?? new PersistentCredentials()));
+    }
+
+    private static RoutingService CreateRoutingService(
+        AppSettingsStore store,
+        RoutingRuntime runtime,
+        IRouteStateStore stateStore)
+    {
+        return new RoutingService(
+            runtime.Settings,
+            runtime.Credentials,
+            stateStore,
+            persistCredentials: (updated, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                var latestSettings = store.Load().Settings;
+                if (latestSettings.PersistCredentials)
+                {
+                    store.Save(latestSettings, updated);
+                }
+
+                return Task.CompletedTask;
+            });
+    }
+
+    private static async Task<bool> WaitForWatchEventAsync(
+        TimeSpan interval,
+        ProfileFileChangeMonitor changes,
+        CancellationToken cancellationToken)
+    {
+        using var delayCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var delay = Task.Delay(interval, delayCancellation.Token);
+        var changed = changes.WaitForChangeAsync(cancellationToken).AsTask();
+        var completed = await Task.WhenAny(delay, changed);
+        if (completed == changed)
+        {
+            await changed;
+            delayCancellation.Cancel();
+            return true;
+        }
+
+        await delay;
+        return false;
     }
 
     private static async Task<int> RunStatusAsync(
@@ -472,6 +557,59 @@ internal static class CliApplication
         }
     }
 
+    private static void WriteConfigurationReloaded(
+        PersistentAppSettings settings,
+        bool json,
+        AuditLogWriter? auditLog)
+    {
+        var payload = new
+        {
+            schemaVersion = 2,
+            eventType = "configurationReloaded",
+            processId = Environment.ProcessId,
+            timestamp = DateTimeOffset.UtcNow,
+            pollingIntervalSeconds = settings.PollingIntervalSeconds,
+            routingMode = settings.RoutingMode.ToString(),
+            blacklistedGroupCount = settings.BlacklistedGroupIds.Length,
+            selectedKeyCount = settings.SelectedKeyIds.Length
+        };
+        WriteAudit(auditLog, payload);
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(payload, JsonOptions));
+        }
+        else
+        {
+            Console.Error.WriteLine(
+                $"[{DateTimeOffset.UtcNow:O}] 配置已热重载，轮询间隔：{settings.PollingIntervalSeconds} 秒。" );
+        }
+    }
+
+    private static void WriteConfigurationReloadError(
+        Exception exception,
+        bool json,
+        AuditLogWriter? auditLog)
+    {
+        var payload = new
+        {
+            schemaVersion = 2,
+            eventType = "configurationReloadError",
+            processId = Environment.ProcessId,
+            timestamp = DateTimeOffset.UtcNow,
+            error = exception.Message
+        };
+        WriteAudit(auditLog, payload);
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(payload, JsonOptions));
+        }
+        else
+        {
+            Console.Error.WriteLine(
+                $"[{DateTimeOffset.UtcNow:O}] 配置热重载失败，继续使用当前配置：{exception.Message}" );
+        }
+    }
+
     private static string FormatLatency(double? latency) =>
         latency is >= 0 && double.IsFinite(latency.Value) ? $"{latency:0}ms" : "unknown";
 
@@ -641,4 +779,8 @@ internal static class CliApplication
             as regular command-line option values.
             """ );
     }
+
+    private sealed record RoutingRuntime(
+        PersistentAppSettings Settings,
+        PersistentCredentials Credentials);
 }

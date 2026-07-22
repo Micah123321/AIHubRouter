@@ -115,6 +115,8 @@ sudo systemctl enable --now aihub-router-keepalive.timer
 
 服务使用独立系统用户运行，凭据通过受保护的环境文件和加密存储提供。完整日志与轮转配置见 `deploy/systemd`。
 
+`watch` 会监视该服务 profile 中的 `settings.json` 与 `credentials.dat`。配置保存后无需重启服务，路由器会立即加载新配置并执行下一轮路由；文件暂时无效时会保留最后一次有效配置。命令行参数（例如 `--interval`）仍优先于配置文件。
+
 </details>
 
 <details>

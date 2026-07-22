@@ -33,6 +33,7 @@ var tests = new (string Name, Action Body)[]
     ("Price winner switches immediately", TestPriceWinnerSwitchesImmediately),
     ("Plain HTTP is rejected", TestPlainHttpIsRejected),
     ("AES settings roundtrip has no plaintext", TestAesSettingsRoundtrip),
+    ("Profile settings changes signal hot reload", TestProfileSettingsChangeSignal),
     ("Unavailable credential storage fails before settings write", TestUnavailableCredentialStorageIsAtomic),
     ("Legacy hard-gate settings are ignored", TestLegacyHardGateSettingsAreIgnored),
     ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
@@ -617,6 +618,30 @@ static void TestAesSettingsRoundtrip()
     finally
     {
         Array.Clear(key);
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestProfileSettingsChangeSignal()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        using var monitor = new ProfileFileChangeMonitor(directory);
+        var temporaryPath = Path.Combine(directory, "settings.json.tmp");
+        var settingsPath = Path.Combine(directory, "settings.json");
+        File.WriteAllText(temporaryPath, "{}");
+        File.Move(temporaryPath, settingsPath);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        monitor.WaitForChangeAsync(timeout.Token).AsTask().GetAwaiter().GetResult();
+    }
+    finally
+    {
         if (Directory.Exists(directory))
         {
             Directory.Delete(directory, recursive: true);
