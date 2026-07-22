@@ -21,9 +21,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private RoutingService? _service;
     private ProfileLock? _profileLock;
     private CancellationTokenSource? _autoRoutingCancellation;
+    private CancellationTokenSource? _manualMonitoringCancellation;
     private PersistentCredentials _loadedCredentials = new();
     private string? _providerSortField = "WeightedScore";
     private bool _providerSortDescending = true;
+    private RoutingCycleResult? _lastCycleResult;
+    private long? _manualRouteGroupId;
+    private string? _manualRoutePlan;
     private bool _routingSettingsStale;
     private int _routingSettingsVersion;
 
@@ -53,6 +57,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<GroupRowViewModel> Groups { get; } = [];
     public ObservableCollection<KeyRowViewModel> Keys { get; } = [];
 
+    public string GroupHeader => SortHeader("分组", "GroupId");
+    public string PlanHeader => SortHeader("方案", "Plan");
     public string MultiplierHeader => SortHeader("倍率", "Multiplier");
     public string LatencyHeader => SortHeader("首字", "Latency");
     public string SuccessRateHeader => SortHeader("6h 可用率", "SuccessRate");
@@ -99,6 +105,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (value)
         {
+            ExitManualRoutingMode();
             _ = StartAutoRoutingAsync();
         }
         else
@@ -168,6 +175,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task RouteAsync()
     {
+        ExitManualRoutingMode();
         await RunCycleAsync(dryRun: false, forceRefresh: false);
     }
 
@@ -199,7 +207,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void SortProviders(string? field)
     {
-        if (field is not ("Multiplier" or "Latency" or "SuccessRate" or "WeightedScore"))
+        if (field is not ("GroupId" or "Plan" or "Multiplier" or "Latency" or "SuccessRate" or "WeightedScore"))
         {
             return;
         }
@@ -215,6 +223,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         SortProviderRows();
+        OnPropertyChanged(nameof(GroupHeader));
+        OnPropertyChanged(nameof(PlanHeader));
         OnPropertyChanged(nameof(MultiplierHeader));
         OnPropertyChanged(nameof(LatencyHeader));
         OnPropertyChanged(nameof(SuccessRateHeader));
@@ -260,6 +270,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _autoRoutingCancellation = new CancellationTokenSource();
         try
         {
+            while (IsBusy)
+            {
+                await Task.Delay(100, _autoRoutingCancellation.Token);
+            }
+
             SaveSettings();
             ResetService();
             var interval = TimeSpan.FromSeconds((double)Math.Clamp(PollingIntervalSeconds, 30, 3600));
@@ -286,6 +301,43 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _autoRoutingCancellation?.Cancel();
         _autoRoutingCancellation?.Dispose();
         _autoRoutingCancellation = null;
+    }
+
+    private void StartManualMonitoring()
+    {
+        StopManualMonitoring();
+        _manualMonitoringCancellation = new CancellationTokenSource();
+        _ = MonitorManualRouteAsync(_manualMonitoringCancellation.Token);
+    }
+
+    private async Task MonitorManualRouteAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var interval = TimeSpan.FromSeconds((double)Math.Clamp(PollingIntervalSeconds, 30, 3600));
+            using var timer = new PeriodicTimer(interval);
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await RunCycleAsync(dryRun: true, forceRefresh: false, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void StopManualMonitoring()
+    {
+        _manualMonitoringCancellation?.Cancel();
+        _manualMonitoringCancellation?.Dispose();
+        _manualMonitoringCancellation = null;
+    }
+
+    private void ExitManualRoutingMode()
+    {
+        _manualRouteGroupId = null;
+        _manualRoutePlan = null;
+        StopManualMonitoring();
     }
 
     private async Task RunCycleAsync(
@@ -353,6 +405,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void ApplyResult(RoutingCycleResult result)
     {
+        _lastCycleResult = result;
         SelectedProvider = null;
         var persistedBlacklist = _store.Load().Settings.BlacklistedGroupIds.ToHashSet();
         var previousBlacklist = Groups.ToDictionary(group => group.Id, group => group.Blacklisted);
@@ -368,16 +421,24 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             var blacklisted = previousBlacklist.TryGetValue(group.Id, out var previous)
                 ? previous
                 : persistedBlacklist.Contains(group.Id);
-            Groups.Add(new GroupRowViewModel(group, blacklisted));
+            var row = new GroupRowViewModel(group, blacklisted);
+            row.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName == nameof(GroupRowViewModel.Blacklisted))
+                {
+                    _routingSettingsStale = true;
+                    _routingSettingsVersion++;
+                    RecalculateProviderScores();
+                    ManualRouteCommand.NotifyCanExecuteChanged();
+                }
+            };
+            Groups.Add(row);
         }
 
-        var blacklistedIds = Groups
-            .Where(group => group.Blacklisted)
-            .Select(group => group.Id)
-            .ToHashSet();
         Providers.Clear();
         var targetId = result.Decision.Target?.Group.Id;
         var groups = result.Groups.ToDictionary(group => group.Id);
+        var groupRows = Groups.ToDictionary(group => group.Id);
         foreach (var provider in result.Providers
                      .Where(provider => provider.Platform.Equals(
                          RoutingModePlatform(),
@@ -385,12 +446,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                      .OrderBy(provider => provider.GroupId == targetId ? 0 : 1)
                      .ThenBy(provider => provider.PriceMultiplier))
         {
-            Providers.Add(new ProviderRowViewModel(
+            var row = new ProviderRowViewModel(
                 provider,
                 groups,
+                groupRows,
                 targetId,
-                result.Evaluation,
-                blacklistedIds));
+                _manualRouteGroupId,
+                result.Evaluation);
+            row.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName == nameof(ProviderRowViewModel.CanManualRoute))
+                {
+                    ManualRouteCommand.NotifyCanExecuteChanged();
+                }
+            };
+            Providers.Add(row);
         }
 
         SortProviderRows();
@@ -402,21 +472,69 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Keys.Add(new KeyRowViewModel(key, selected.Contains(key.Id)));
         }
 
-        if (result.Decision.Target is { } target)
+        if (_manualRouteGroupId is { } manualGroupId)
         {
-            var planName = string.IsNullOrWhiteSpace(target.Provider.PlanType)
-                ? target.Group.Name
-                : target.Provider.PlanType;
-            CandidateSummary = $"目标分组：{target.Group.Id} / 方案：{planName} / {target.EffectiveMultiplier:0.####}x / {FormatLatency(target.Provider.FirstTokenLatencyMs)}";
+            var selectedKeyIds = result.SelectedKeyIds.ToHashSet();
+            var actualGroupIds = result.Keys
+                .Where(key => selectedKeyIds.Contains(key.Id))
+                .Select(key => key.GroupId)
+                .Where(groupId => groupId is > 0)
+                .Distinct()
+                .ToArray();
+            var stillRoutedManually = actualGroupIds.Length == 1 && actualGroupIds[0] == manualGroupId;
+            var manualGroupAvailable = result.Evaluation.EligibleCandidates.Any(candidate =>
+                candidate.Group.Id == manualGroupId);
+
+            if (stillRoutedManually && manualGroupAvailable)
+            {
+                UpdateManualCandidateSummary(manualGroupId);
+                SetStatus($"手动路由监控正常；分组 {manualGroupId} 可用。", success: true);
+                return;
+            }
+
+            ExitManualRoutingMode();
+            UpdateAutomaticCandidateSummary(result);
+            SetStatus("手动分组状态异常或已不再生效，已启用自动路由。", success: true);
+            AutoRouting = true;
+            return;
         }
-        else
-        {
-            CandidateSummary = "目标分组：无可用候选";
-        }
+
+        UpdateAutomaticCandidateSummary(result);
 
         SetStatus(
             $"{result.Decision.Reason}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。",
             result.FailedKeyCount == 0);
+    }
+
+    private void RecalculateProviderScores()
+    {
+        if (_lastCycleResult is not { } result)
+        {
+            return;
+        }
+
+        var settings = _store.Load().Settings;
+        var policy = settings.CreatePolicy() with
+        {
+            Mode = RoutingMode,
+            BlacklistedGroupIds = Groups
+                .Where(group => group.Blacklisted)
+                .Select(group => group.Id)
+                .ToArray()
+        };
+        var evaluation = RoutingEngine.Evaluate(
+            result.Providers,
+            result.Groups,
+            result.UserGroupRates,
+            policy,
+            result.CompletedAt);
+
+        foreach (var provider in Providers)
+        {
+            provider.ApplyEvaluation(evaluation);
+        }
+
+        SortProviderRows();
     }
 
     private void ApplyManualResult(ManualRoutingResult result, ProviderRowViewModel selected)
@@ -428,10 +546,56 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Keys.Add(new KeyRowViewModel(key, selectedKeyIds.Contains(key.Id)));
         }
 
-        CandidateSummary = $"目标分组：{selected.GroupId} / 方案：{selected.Plan} / {selected.Multiplier} / {selected.Latency}";
+        var actualGroupIds = result.Keys
+            .Where(key => selectedKeyIds.Contains(key.Id))
+            .Select(key => key.GroupId)
+            .Where(groupId => groupId is > 0)
+            .Distinct()
+            .ToArray();
+        if (result.FailedKeyCount > 0 ||
+            actualGroupIds.Length != 1 ||
+            actualGroupIds[0] != selected.GroupIdValue)
+        {
+            ExitManualRoutingMode();
+            SetStatus(
+                $"手动路由未完全生效；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。已启用自动路由。",
+                success: false);
+            AutoRouting = true;
+            return;
+        }
+
+        _manualRouteGroupId = selected.GroupIdValue;
+        _manualRoutePlan = selected.Plan;
+        UpdateManualCandidateSummary(selected.GroupIdValue!.Value);
+        StartManualMonitoring();
         SetStatus(
             $"手动路由完成；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。自动路由已关闭。",
             result.FailedKeyCount == 0);
+    }
+
+    private void UpdateManualCandidateSummary(long groupId)
+    {
+        var provider = Providers.FirstOrDefault(row =>
+                row.GroupIdValue == groupId &&
+                row.Plan.Equals(_manualRoutePlan, StringComparison.CurrentCulture))
+            ?? Providers.FirstOrDefault(row => row.GroupIdValue == groupId);
+        CandidateSummary = provider is null
+            ? $"目标分组：{groupId}（手动） / 方案：{_manualRoutePlan ?? "-"}"
+            : $"目标分组：{provider.GroupId}（手动） / 方案：{provider.Plan} / {provider.Multiplier} / {provider.Latency}";
+    }
+
+    private void UpdateAutomaticCandidateSummary(RoutingCycleResult result)
+    {
+        if (result.Decision.Target is not { } target)
+        {
+            CandidateSummary = "目标分组：无可用候选";
+            return;
+        }
+
+        var planName = string.IsNullOrWhiteSpace(target.Provider.PlanType)
+            ? target.Group.Name
+            : target.Provider.PlanType;
+        CandidateSummary = $"目标分组：{target.Group.Id} / 方案：{planName} / {target.EffectiveMultiplier:0.####}x / {FormatLatency(target.Provider.FirstTokenLatencyMs)}";
     }
 
     private void SortProviderRows()
@@ -441,30 +605,36 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        Func<ProviderRowViewModel, double?> selector = _providerSortField switch
-        {
-            "Multiplier" => row => row.MultiplierValue,
-            "Latency" => row => row.LatencyValue,
-            "SuccessRate" => row => row.SuccessRateValue,
-            "WeightedScore" => row => row.WeightedScoreValue,
-            _ => row => row.MultiplierValue
-        };
         var selected = SelectedProvider;
-        var ordered = (_providerSortDescending
-                ? Providers.OrderBy(row => selector(row) is null)
-                    .ThenByDescending(selector)
-                : Providers.OrderBy(row => selector(row) is null)
-                    .ThenBy(selector))
+        IOrderedEnumerable<ProviderRowViewModel> ordered = _providerSortField switch
+        {
+            "Plan" => _providerSortDescending
+                ? Providers.OrderByDescending(row => row.Plan, StringComparer.CurrentCulture)
+                : Providers.OrderBy(row => row.Plan, StringComparer.CurrentCulture),
+            "GroupId" => OrderNumeric(row => row.GroupIdValue),
+            "Multiplier" => OrderNumeric(row => row.MultiplierValue),
+            "Latency" => OrderNumeric(row => row.LatencyValue),
+            "SuccessRate" => OrderNumeric(row => row.SuccessRateValue),
+            "WeightedScore" => OrderNumeric(row => row.WeightedScoreValue),
+            _ => OrderNumeric(row => row.WeightedScoreValue)
+        };
+        var sorted = ordered
             .ThenBy(row => row.GroupIdValue)
             .ThenBy(row => row.Plan, StringComparer.CurrentCulture)
             .ToArray();
 
-        for (var index = 0; index < ordered.Length; index++)
+        for (var index = 0; index < sorted.Length; index++)
         {
-            Providers.Move(Providers.IndexOf(ordered[index]), index);
+            Providers.Move(Providers.IndexOf(sorted[index]), index);
         }
 
         SelectedProvider = selected;
+
+        IOrderedEnumerable<ProviderRowViewModel> OrderNumeric(
+            Func<ProviderRowViewModel, double?> selector) =>
+            _providerSortDescending
+                ? Providers.OrderBy(row => selector(row) is null).ThenByDescending(selector)
+                : Providers.OrderBy(row => selector(row) is null).ThenBy(selector);
     }
 
     private string SortHeader(string label, string field) =>
@@ -576,6 +746,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        StopManualMonitoring();
         StopAutoRouting();
         ResetService();
     }
@@ -583,24 +754,31 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
 public sealed record ThemeChoice(AppThemeMode Mode, string Name);
 
-public sealed record ProviderRowViewModel
+public sealed class ProviderRowViewModel : ObservableObject
 {
+    private readonly GroupRowViewModel? _group;
+    private readonly ProviderStatus _provider;
+    private readonly string _baseState;
+    private readonly bool _baseCanManualRoute;
+    private double? _weightedScoreValue;
+    private string _weightedScore = "-";
+
     public ProviderRowViewModel(
         ProviderStatus provider,
         IReadOnlyDictionary<long, GroupInfo> groups,
+        IReadOnlyDictionary<long, GroupRowViewModel> groupRows,
         long? targetGroupId,
-        RouteEvaluation evaluation,
-        IReadOnlySet<long> blacklistedGroupIds)
+        long? manualTargetGroupId,
+        RouteEvaluation evaluation)
     {
-        var candidate = evaluation.EligibleCandidates.FirstOrDefault(item =>
-            item.Group.Id == provider.GroupId &&
-            item.Provider.Id.Equals(provider.Id, StringComparison.Ordinal));
+        _provider = provider;
+        var candidate = FindCandidate(evaluation);
         var effectiveMultiplier = candidate?.EffectiveMultiplier ?? provider.PriceMultiplier;
-        var weightedScore = candidate is null
-            ? null
-            : RoutingEngine.CalculateWeightedScore(evaluation, candidate);
 
         GroupIdValue = provider.GroupId;
+        _group = provider.GroupId is { } sharedGroupId && groupRows.TryGetValue(sharedGroupId, out var groupRow)
+            ? groupRow
+            : null;
         GroupId = provider.GroupId?.ToString() ?? "-";
         Plan = string.IsNullOrWhiteSpace(provider.PlanType) &&
                provider.GroupId is { } groupId &&
@@ -617,23 +795,31 @@ public sealed record ProviderRowViewModel
             : "-";
         SuccessRateValue = provider.SuccessRate6h;
         SuccessRate = provider.SuccessRate6h is { } success ? $"{success:P1}" : "-";
-        WeightedScoreValue = weightedScore;
-        WeightedScore = weightedScore is { } score
-            ? score.ToString("+0.0000;-0.0000;0.0000")
-            : "-";
-        State = provider.GroupId is { } stateGroupId && blacklistedGroupIds.Contains(stateGroupId)
-            ? "黑名单"
-            : provider.GroupId == targetGroupId
-            ? "推荐"
-            : !provider.Enabled ? "停用"
+        ApplyEvaluation(evaluation);
+        _baseState = !provider.Enabled ? "停用"
             : !provider.Available ? "异常"
             : provider.HasWarnings ? "警告"
+            : provider.GroupId == manualTargetGroupId ? "手动"
+            : provider.GroupId == targetGroupId ? "推荐"
             : "可用";
         CheckedAt = provider.CheckedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "-";
-        CanManualRoute = provider.GroupId is { } manualGroupId &&
+        _baseCanManualRoute = provider.GroupId is { } manualGroupId &&
             groups.TryGetValue(manualGroupId, out var manualGroup) &&
-            manualGroup.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
-            !blacklistedGroupIds.Contains(manualGroupId);
+            manualGroup.Status.Equals("active", StringComparison.OrdinalIgnoreCase);
+
+        if (_group is not null)
+        {
+            _group.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName == nameof(GroupRowViewModel.Blacklisted))
+                {
+                    OnPropertyChanged(nameof(Blacklisted));
+                    OnPropertyChanged(nameof(BlacklistToolTip));
+                    OnPropertyChanged(nameof(State));
+                    OnPropertyChanged(nameof(CanManualRoute));
+                }
+            };
+        }
     }
 
     public long? GroupIdValue { get; }
@@ -645,11 +831,49 @@ public sealed record ProviderRowViewModel
     public string Latency { get; }
     public double? SuccessRateValue { get; }
     public string SuccessRate { get; }
-    public double? WeightedScoreValue { get; }
-    public string WeightedScore { get; }
-    public string State { get; }
+    public double? WeightedScoreValue => _weightedScoreValue;
+    public string WeightedScore => _weightedScore;
+    public bool Blacklisted
+    {
+        get => _group?.Blacklisted ?? false;
+        set
+        {
+            if (_group is not null)
+            {
+                _group.Blacklisted = value;
+            }
+        }
+    }
+    public string BlacklistToolTip => Blacklisted ? "已禁用，点击恢复候选" : "点击禁用此分组";
+    public string State => Blacklisted ? "黑名单" : _baseState;
     public string CheckedAt { get; }
-    public bool CanManualRoute { get; }
+    public bool CanManualRoute => _baseCanManualRoute && !Blacklisted;
+
+    public void ApplyEvaluation(RouteEvaluation evaluation)
+    {
+        var candidate = FindCandidate(evaluation);
+        var score = candidate is null
+            ? null
+            : RoutingEngine.CalculateWeightedScore(evaluation, candidate);
+        var formatted = score is { } value
+            ? value.ToString("+0.0000;-0.0000;0.0000")
+            : "-";
+
+        if (_weightedScoreValue == score && _weightedScore == formatted)
+        {
+            return;
+        }
+
+        _weightedScoreValue = score;
+        _weightedScore = formatted;
+        OnPropertyChanged(nameof(WeightedScoreValue));
+        OnPropertyChanged(nameof(WeightedScore));
+    }
+
+    private RouteCandidate? FindCandidate(RouteEvaluation evaluation) =>
+        evaluation.EligibleCandidates.FirstOrDefault(item =>
+            item.Group.Id == _provider.GroupId &&
+            item.Provider.Id.Equals(_provider.Id, StringComparison.Ordinal));
 }
 
 public sealed partial class GroupRowViewModel : ObservableObject
