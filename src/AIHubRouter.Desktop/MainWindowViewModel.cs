@@ -39,6 +39,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private ThemeChoice? _selectedThemeChoice = ThemeChoices[0];
 
     public ObservableCollection<ProviderRowViewModel> Providers { get; } = [];
+    public ObservableCollection<GroupRowViewModel> Groups { get; } = [];
     public ObservableCollection<KeyRowViewModel> Keys { get; } = [];
 
     public bool IsEconomy
@@ -241,6 +242,27 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void ApplyResult(RoutingCycleResult result)
     {
+        var persistedBlacklist = _store.Load().Settings.BlacklistedGroupIds.ToHashSet();
+        var previousBlacklist = Groups.ToDictionary(group => group.Id, group => group.Blacklisted);
+        Groups.Clear();
+        foreach (var group in result.Groups
+                     .Where(group => group.Platform.Equals(
+                         RoutingModePlatform(),
+                         StringComparison.OrdinalIgnoreCase))
+                     .GroupBy(group => group.Id)
+                     .Select(group => group.First())
+                     .OrderBy(group => group.Id))
+        {
+            var blacklisted = previousBlacklist.TryGetValue(group.Id, out var previous)
+                ? previous
+                : persistedBlacklist.Contains(group.Id);
+            Groups.Add(new GroupRowViewModel(group, blacklisted));
+        }
+
+        var blacklistedIds = Groups
+            .Where(group => group.Blacklisted)
+            .Select(group => group.Id)
+            .ToHashSet();
         Providers.Clear();
         var targetId = result.Decision.Target?.Group.Id;
         var groups = result.Groups.ToDictionary(group => group.Id);
@@ -251,7 +273,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                      .OrderBy(provider => provider.GroupId == targetId ? 0 : 1)
                      .ThenBy(provider => provider.PriceMultiplier))
         {
-            Providers.Add(new ProviderRowViewModel(provider, groups, targetId));
+            Providers.Add(new ProviderRowViewModel(provider, groups, targetId, blacklistedIds));
         }
 
         Keys.Clear();
@@ -302,6 +324,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         var selectedIds = Keys.Where(key => key.Selected).Select(key => key.Id).ToArray();
         var existing = _store.Load().Settings;
+        var loadedGroupIds = Groups.Select(group => group.Id).ToHashSet();
+        var blacklistedGroupIds = Groups
+            .Where(group => group.Blacklisted)
+            .Select(group => group.Id)
+            .Concat(existing.BlacklistedGroupIds.Where(groupId => !loadedGroupIds.Contains(groupId)))
+            .Distinct()
+            .Order()
+            .ToArray();
         var settings = existing with
         {
             BaseUrl = BaseUrl.Trim(),
@@ -310,7 +340,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
             KeySelectionInitialized = Keys.Count > 0 || existing.KeySelectionInitialized,
-            SelectedKeyIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds
+            SelectedKeyIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds,
+            BlacklistedGroupIds = Groups.Count > 0 ? blacklistedGroupIds : existing.BlacklistedGroupIds
         };
         var credentials = BuildCredentials();
         if (PersistCredentials && !_store.CanPersistCredentials)
@@ -382,7 +413,8 @@ public sealed record ProviderRowViewModel
     public ProviderRowViewModel(
         ProviderStatus provider,
         IReadOnlyDictionary<long, GroupInfo> groups,
-        long? targetGroupId)
+        long? targetGroupId,
+        IReadOnlySet<long>? blacklistedGroupIds = null)
     {
         GroupId = provider.GroupId?.ToString() ?? "-";
         Plan = provider.PlanType;
@@ -391,7 +423,9 @@ public sealed record ProviderRowViewModel
             ? $"{latency:0} ms"
             : "-";
         SuccessRate = provider.SuccessRate6h is { } success ? $"{success:P1}" : "-";
-        State = provider.GroupId == targetGroupId
+        State = provider.GroupId is { } groupId && blacklistedGroupIds?.Contains(groupId) == true
+            ? "黑名单"
+            : provider.GroupId == targetGroupId
             ? "推荐"
             : !provider.Enabled ? "停用"
             : !provider.Available ? "异常"
@@ -407,6 +441,25 @@ public sealed record ProviderRowViewModel
     public string SuccessRate { get; }
     public string State { get; }
     public string CheckedAt { get; }
+}
+
+public sealed partial class GroupRowViewModel : ObservableObject
+{
+    [ObservableProperty] private bool _blacklisted;
+
+    public GroupRowViewModel(GroupInfo group, bool blacklisted)
+    {
+        Id = group.Id;
+        Name = group.Name;
+        Platform = group.Platform;
+        Status = group.Status;
+        _blacklisted = blacklisted;
+    }
+
+    public long Id { get; }
+    public string Name { get; }
+    public string Platform { get; }
+    public string Status { get; }
 }
 
 public sealed partial class KeyRowViewModel : ObservableObject

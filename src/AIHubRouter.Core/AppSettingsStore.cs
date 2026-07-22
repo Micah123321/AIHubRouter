@@ -25,6 +25,7 @@ public sealed record PersistentAppSettings
     public AppThemeMode ThemeMode { get; init; } = AppThemeMode.System;
     public bool KeySelectionInitialized { get; init; }
     public long[] SelectedKeyIds { get; init; } = [];
+    public long[] BlacklistedGroupIds { get; init; } = [];
 
     public BalancedRoutingPolicy CreatePolicy()
     {
@@ -32,7 +33,11 @@ public sealed record PersistentAppSettings
         {
             Platform = string.IsNullOrWhiteSpace(Platform) ? "openai" : Platform,
             Mode = RoutingMode,
-            MaximumStatusAge = TimeSpan.FromMinutes(15)
+            MaximumStatusAge = TimeSpan.FromMinutes(15),
+            BlacklistedGroupIds = BlacklistedGroupIds
+                .Where(groupId => groupId > 0)
+                .Distinct()
+                .ToArray()
         };
     }
 }

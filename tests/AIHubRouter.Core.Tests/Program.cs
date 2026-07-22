@@ -9,6 +9,8 @@ var tests = new (string Name, Action Body)[]
     ("Bearer token normalization", TestBearerNormalization),
     ("Token extraction from cookie", TestCookieTokenExtraction),
     ("Lowest available authorized group", TestLowestAvailableGroup),
+    ("Blacklisted group is excluded", TestBlacklistedGroupIsExcluded),
+    ("Blacklisted group is excluded from balanced evaluation", TestBalancedEvaluationExcludesBlacklistedGroup),
     ("User rate override", TestUserRateOverride),
     ("Latest status controls eligibility", TestLatestStatusControlsEligibility),
     ("Stale status rejection", TestStaleStatusRejection),
@@ -110,6 +112,44 @@ static void TestLowestAvailableGroup()
 
     var result = RoutingEngine.SelectCheapest(providers, groups, new Dictionary<long, double>(), Criteria(), now);
     Assert(result?.Group.Id == 3, "Did not select the cheapest available authorized group.");
+}
+
+static void TestBlacklistedGroupIsExcluded()
+{
+    var now = DateTimeOffset.UtcNow;
+    var providers = new[]
+    {
+        Provider(1, 0.01, available: true, success: 1, now),
+        Provider(2, 0.05, available: true, success: 1, now)
+    };
+
+    var result = RoutingEngine.SelectCheapest(
+        providers,
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        Criteria() with { BlacklistedGroupIds = [1] },
+        now);
+
+    Assert(result?.Group.Id == 2, "A blacklisted group entered the candidate pool.");
+}
+
+static void TestBalancedEvaluationExcludesBlacklistedGroup()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.01, available: true, success: 1, now),
+            Provider(2, 0.05, available: true, success: 1, now)
+        },
+        new[] { Group(1), Group(2) },
+        new Dictionary<long, double>(),
+        new BalancedRoutingPolicy { BlacklistedGroupIds = [1] },
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 2 &&
+           evaluation.EligibleCandidates.All(candidate => candidate.Group.Id != 1),
+        "A blacklisted group entered balanced evaluation.");
 }
 
 static void TestUserRateOverride()

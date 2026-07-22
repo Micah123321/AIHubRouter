@@ -131,7 +131,8 @@ public sealed class PaginatedResponse<T>
 
 public sealed record RoutingCriteria(
     string Platform,
-    TimeSpan MaximumStatusAge);
+    TimeSpan MaximumStatusAge,
+    IReadOnlyCollection<long>? BlacklistedGroupIds = null);
 
 public sealed record RouteCandidate(
     ProviderStatus Provider,
@@ -155,6 +156,7 @@ public sealed record BalancedRoutingPolicy
     public TimeSpan MaximumStatusAge { get; init; } = TimeSpan.FromMinutes(15);
     public double? PriceWeightOverride { get; init; }
     public double? MinimumScoreAdvantageOverride { get; init; }
+    public IReadOnlyCollection<long> BlacklistedGroupIds { get; init; } = [];
 
     public double PriceWeight => PriceWeightOverride ?? Mode switch
     {
