@@ -8,6 +8,7 @@ var tests = new (string Name, Action Body)[]
 {
     ("Bearer token normalization", TestBearerNormalization),
     ("Token extraction from cookie", TestCookieTokenExtraction),
+    ("Null provider availability is unavailable", TestNullProviderAvailabilityIsUnavailable),
     ("Lowest available authorized group", TestLowestAvailableGroup),
     ("Blacklisted group is excluded", TestBlacklistedGroupIsExcluded),
     ("Blacklisted group is excluded from balanced evaluation", TestBalancedEvaluationExcludesBlacklistedGroup),
@@ -97,6 +98,31 @@ static void TestCookieTokenExtraction()
 {
     var token = CredentialParser.TryExtractTokenFromCookie("theme=dark; auth_token=abc%2Edef; lang=zh");
     Assert(token == "abc.def", "auth_token cookie was not decoded.");
+}
+
+static void TestNullProviderAvailabilityIsUnavailable()
+{
+    var handler = new StubHttpMessageHandler(_ => JsonResponse("""
+        {
+          "apis": [
+            {
+              "id": "provider-null-availability",
+              "group_id": 51,
+              "planType": "A016-Free",
+              "platform": "openai",
+              "priceMultiplier": 0.005,
+              "available": null,
+              "enabled": true
+            }
+          ]
+        }
+        """));
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    var summary = client.GetProviderSummaryAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+    Assert(summary.Apis.Count == 1 && !summary.Apis[0].Available,
+        "A null provider availability was not treated as unavailable.");
 }
 
 static void TestLowestAvailableGroup()

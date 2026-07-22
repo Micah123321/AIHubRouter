@@ -32,6 +32,7 @@ public sealed class ProviderStatus
     public double PriceMultiplier { get; init; }
 
     [JsonPropertyName("available")]
+    [JsonConverter(typeof(NullAsFalseBooleanJsonConverter))]
     public bool Available { get; init; }
 
     [JsonPropertyName("enabled")]
