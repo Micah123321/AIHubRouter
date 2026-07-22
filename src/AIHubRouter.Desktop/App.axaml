@@ -73,6 +73,23 @@
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="CornerRadius" Value="0" />
     </Style>
+    <Style Selector="ToggleButton.blacklist-toggle">
+      <Setter Property="Width" Value="24" />
+      <Setter Property="Height" Value="24" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ToggleButton.blacklist-toggle:checked">
+      <Setter Property="Foreground" Value="{DynamicResource AppErrorBrush}" />
+      <Setter Property="Background" Value="{DynamicResource AppSurfaceAltBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppErrorBrush}" />
+    </Style>
     <Style Selector="TextBox.field">
       <Setter Property="MinHeight" Value="34" />
     </Style>
