@@ -24,6 +24,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private PersistentCredentials _loadedCredentials = new();
     private string? _providerSortField = "WeightedScore";
     private bool _providerSortDescending = true;
+    private bool _routingSettingsStale;
+    private int _routingSettingsVersion;
 
     [ObservableProperty] private string _baseUrl = "https://aihub.top";
     [ObservableProperty] private string _email = string.Empty;
@@ -33,6 +35,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _persistCredentials;
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ManualRouteCommand))]
+    [NotifyPropertyChangedFor(nameof(CanChangeRoutingMode))]
     private bool _isBusy;
     [ObservableProperty] private bool _autoRouting;
     [ObservableProperty] private string _status = "就绪";
@@ -53,6 +56,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public string LatencyHeader => SortHeader("首字", "Latency");
     public string SuccessRateHeader => SortHeader("6h 可用率", "SuccessRate");
     public string WeightedScoreHeader => SortHeader("加权得分", "WeightedScore");
+    public bool CanChangeRoutingMode => !IsBusy;
 
     public bool IsEconomy
     {
@@ -83,6 +87,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsBalanced));
         OnPropertyChanged(nameof(IsSpeed));
         ConnectionSummary = $"API-only / {value}";
+        _routingSettingsStale = true;
+        _routingSettingsVersion++;
+        SelectedProvider = null;
+        Providers.Clear();
+        CandidateSummary = "目标分组：请刷新后计算";
     }
 
     partial void OnAutoRoutingChanged(bool value)
@@ -289,11 +298,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         IsBusy = true;
+        var settingsVersion = _routingSettingsVersion;
         try
         {
             EnsureService();
             var result = await _service!.RunOnceAsync(dryRun, forceRefresh, cancellationToken);
-            ApplyResult(result);
+            if (settingsVersion == _routingSettingsVersion)
+            {
+                ApplyResult(result);
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -307,11 +320,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void EnsureService()
     {
-        if (_service is not null)
+        if (_service is not null && !_routingSettingsStale)
         {
             return;
         }
 
+        ResetService();
         SaveSettings();
         _profileLock = ProfileLock.TryAcquire(_store.StorageDirectory)
             ?? throw new InvalidOperationException("另一个 AIHubRouter 实例正在使用当前 profile。" );
@@ -333,6 +347,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
                 return Task.CompletedTask;
             });
+        _routingSettingsStale = false;
     }
 
     private void ApplyResult(RoutingCycleResult result)

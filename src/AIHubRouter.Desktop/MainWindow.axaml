@@ -53,9 +53,9 @@
           <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,Auto,24,Auto,125,*">
             <TextBlock Grid.Row="0" Grid.ColumnSpan="7" Text="路由策略" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
             <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="0">
-              <RadioButton Content="省钱" GroupName="mode" IsChecked="{Binding IsEconomy}" Padding="14,7" />
-              <RadioButton Content="均衡" GroupName="mode" IsChecked="{Binding IsBalanced}" Padding="14,7" />
-              <RadioButton Content="极速" GroupName="mode" IsChecked="{Binding IsSpeed}" Padding="14,7" />
+              <RadioButton Content="省钱" GroupName="mode" IsChecked="{Binding IsEconomy}" IsEnabled="{Binding CanChangeRoutingMode}" Padding="14,7" />
+              <RadioButton Content="均衡" GroupName="mode" IsChecked="{Binding IsBalanced}" IsEnabled="{Binding CanChangeRoutingMode}" Padding="14,7" />
+              <RadioButton Content="极速" GroupName="mode" IsChecked="{Binding IsSpeed}" IsEnabled="{Binding CanChangeRoutingMode}" Padding="14,7" />
             </StackPanel>
             <TextBlock Grid.Row="1" Grid.Column="4" Text="间隔 秒" VerticalAlignment="Center" />
             <NumericUpDown Grid.Row="1" Grid.Column="5" Minimum="30" Maximum="3600" Increment="30" Value="{Binding PollingIntervalSeconds}" />

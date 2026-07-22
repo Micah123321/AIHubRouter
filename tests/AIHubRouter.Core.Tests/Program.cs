@@ -35,6 +35,8 @@ var tests = new (string Name, Action Body)[]
     ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
     ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
+    ("Manual route clears state after terminal authentication failure", TestManualRouteClearsStateAfterTerminalAuthenticationFailure),
+    ("Manual route preserves changes across authentication retry", TestManualRoutePreservesChangesAcrossAuthenticationRetry),
     ("Encrypted settings roundtrip", TestEncryptedSettingsRoundtrip),
     ("Usable access token is reused", TestUsableAccessTokenIsReused),
     ("Expired access token refreshes first", TestExpiredAccessTokenRefreshesFirst),
@@ -602,6 +604,89 @@ static void TestManualRouteUpdatesSelectedKeysAndState()
         "Manual route did not return the updated Key group.");
     Assert(stateStore.Current.CurrentGroupId == 2,
         "Manual route did not persist the selected group as current.");
+}
+
+static void TestManualRouteClearsStateAfterTerminalAuthenticationFailure()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        keys:
+        [
+            new ApiKeyInfo { Id = 10, Name = "First", Status = "active", GroupId = 1 },
+            new ApiKeyInfo { Id = 11, Name = "Second", Status = "active", GroupId = 1 }
+        ],
+        updateFailure: (call, _, _) => call == 2
+            ? new AIHubApiException("token expired", HttpStatusCode.Unauthorized)
+            : null);
+    var stateStore = new MemoryRouteStateStore(new RouteState { CurrentGroupId = 1 });
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10, 11]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        stateStore,
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var rejected = false;
+    try
+    {
+        service.RouteManuallyAsync(2).GetAwaiter().GetResult();
+    }
+    catch (AIHubApiException exception) when (exception.IsAuthenticationFailure)
+    {
+        rejected = true;
+    }
+
+    Assert(rejected, "Terminal authentication failure was not propagated.");
+    Assert(api.UpdateCalls == 2, "Manual route did not attempt the expected Key updates.");
+    Assert(stateStore.Current.CurrentGroupId is null,
+        "Partial manual route kept a stale current group after authentication failure.");
+}
+
+static void TestManualRoutePreservesChangesAcrossAuthenticationRetry()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        keys:
+        [
+            new ApiKeyInfo { Id = 10, Name = "First", Status = "active", GroupId = 1 },
+            new ApiKeyInfo { Id = 11, Name = "Second", Status = "active", GroupId = 1 }
+        ],
+        updateFailure: (call, _, _) => call == 2
+            ? new AIHubApiException("token expired", HttpStatusCode.Unauthorized)
+            : null,
+        supportsRefresh: true);
+    var stateStore = new MemoryRouteStateStore(new RouteState { CurrentGroupId = 1 });
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10, 11]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials
+        {
+            BearerToken = "test-token",
+            RefreshToken = "refresh-token",
+            AccessTokenExpiresAt = now.AddHours(1)
+        },
+        stateStore,
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RouteManuallyAsync(2).GetAwaiter().GetResult();
+
+    Assert(api.UpdateCalls == 3, "Manual route did not retry only the failed Key.");
+    Assert(result.ChangedKeyCount == 2 && result.FailedKeyCount == 0,
+        "Manual route lost changes completed before authentication retry.");
+    Assert(stateStore.Current.CurrentGroupId == 2,
+        "Manual route did not persist the target group after authentication retry.");
 }
 
 static void TestUnavailableCredentialStorageIsAtomic()
@@ -1235,9 +1320,9 @@ sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage
     }
 }
 
-sealed class MemoryRouteStateStore : IRouteStateStore
+sealed class MemoryRouteStateStore(RouteState? initial = null) : IRouteStateStore
 {
-    private RouteState _state = new();
+    private RouteState _state = initial ?? new();
     public RouteState Current => _state;
     public RouteState Load() => _state;
     public void Save(RouteState state) => _state = state;
@@ -1253,7 +1338,11 @@ sealed class StubAIHubClientFactory(IAIHubApiClient client) : IAIHubClientFactor
         bool allowInsecureLoopback) => client;
 }
 
-sealed class StubAIHubApiClient(DateTimeOffset now) : IAIHubApiClient
+sealed class StubAIHubApiClient(
+    DateTimeOffset now,
+    IReadOnlyList<ApiKeyInfo>? keys = null,
+    Func<int, long, long, Exception?>? updateFailure = null,
+    bool supportsRefresh = false) : IAIHubApiClient
 {
     public int UpdateCalls { get; private set; }
 
@@ -1285,7 +1374,9 @@ sealed class StubAIHubApiClient(DateTimeOffset now) : IAIHubApiClient
         throw new NotSupportedException();
 
     public Task<AuthSession> RefreshSessionAsync(string refreshToken, CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException();
+        supportsRefresh
+            ? Task.FromResult(new AuthSession("refreshed-token", refreshToken, now.AddHours(1)))
+            : throw new NotSupportedException();
 
     public Task<IReadOnlyList<GroupInfo>> GetAvailableGroupsAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<GroupInfo>>([GroupForStub(2)]);
@@ -1295,13 +1386,19 @@ sealed class StubAIHubApiClient(DateTimeOffset now) : IAIHubApiClient
 
     public Task<IReadOnlyList<ApiKeyInfo>> GetAllKeysAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<ApiKeyInfo>>
-        ([
+        (keys ??
+        [
             new ApiKeyInfo { Id = 10, Name = "Key", Status = "active", GroupId = 1 }
         ]);
 
     public Task<ApiKeyInfo> UpdateKeyGroupAsync(long keyId, long groupId, CancellationToken cancellationToken = default)
     {
         UpdateCalls++;
+        if (updateFailure?.Invoke(UpdateCalls, keyId, groupId) is { } failure)
+        {
+            throw failure;
+        }
+
         return Task.FromResult(new ApiKeyInfo
         {
             Id = keyId,

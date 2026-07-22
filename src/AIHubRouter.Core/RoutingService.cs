@@ -61,6 +61,45 @@ public sealed record ManualRoutingResult(
     public int FailedKeyCount => KeyResults.Count(result => !result.Success);
 }
 
+internal sealed class ManualRoutingProgress
+{
+    private readonly Dictionary<long, KeyRouteResult> _results = [];
+
+    public bool HasUpdateAttempt { get; private set; }
+
+    public void MarkUpdateAttempt() => HasUpdateAttempt = true;
+
+    public void Record(KeyRouteResult result)
+    {
+        if (_results.TryGetValue(result.KeyId, out var existing) &&
+            existing.Success &&
+            existing.Changed &&
+            result.Success &&
+            !result.Changed)
+        {
+            return;
+        }
+
+        if (_results.TryGetValue(result.KeyId, out existing) &&
+            existing.Changed &&
+            result.Success &&
+            !result.Changed)
+        {
+            result = result with { Changed = true };
+        }
+
+        _results[result.KeyId] = result;
+    }
+
+    public IReadOnlyList<KeyRouteResult> ResultsFor(IReadOnlyList<ApiKeyInfo> keys)
+    {
+        return keys.Select(key => _results.TryGetValue(key.Id, out var result)
+            ? result
+            : new KeyRouteResult(key.Id, key.Name, false, true, null))
+            .ToArray();
+    }
+}
+
 public sealed class RoutingService : IDisposable
 {
     private readonly PersistentAppSettings _settings;
@@ -137,26 +176,34 @@ public sealed class RoutingService : IDisposable
             throw new ArgumentOutOfRangeException(nameof(groupId));
         }
 
+        var progress = new ManualRoutingProgress();
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var client = await GetAuthenticatedClientAsync(
-                forceRenew: attempt > 0,
-                cancellationToken);
             try
             {
+                var client = await GetAuthenticatedClientAsync(
+                    forceRenew: attempt > 0,
+                    cancellationToken);
                 return await RouteManuallyCoreAsync(
                     client,
                     groupId,
                     forceAccountRefresh,
-                    cancellationToken);
+                    cancellationToken,
+                    progress);
             }
             catch (AIHubApiException exception)
                 when (attempt == 0 && exception.IsAuthenticationFailure && CanRenewAutomatically())
             {
                 InvalidateSession();
             }
+            catch
+            {
+                ClearManualRouteStateAfterInterruptedUpdate(progress);
+                throw;
+            }
         }
 
+        ClearManualRouteStateAfterInterruptedUpdate(progress);
         throw new InvalidOperationException("认证重试未返回结果。" );
     }
 
@@ -267,7 +314,8 @@ public sealed class RoutingService : IDisposable
         IAIHubApiClient client,
         long groupId,
         bool forceAccountRefresh,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ManualRoutingProgress progress)
     {
         var now = _utcNow();
         await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
@@ -284,24 +332,24 @@ public sealed class RoutingService : IDisposable
                 "没有选中的 active API Key。请先选择至少一个可用 Key。" );
         }
 
-        var keyResults = new List<KeyRouteResult>();
         foreach (var key in selectedKeys)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (key.GroupId == targetGroup.Id)
             {
-                keyResults.Add(new KeyRouteResult(key.Id, key.Name, false, true, null));
+                progress.Record(new KeyRouteResult(key.Id, key.Name, false, true, null));
                 continue;
             }
 
             try
             {
+                progress.MarkUpdateAttempt();
                 var updated = await client.UpdateKeyGroupAsync(
                     key.Id,
                     targetGroup.Id,
                     cancellationToken);
                 ReplaceCachedKey(updated);
-                keyResults.Add(new KeyRouteResult(key.Id, key.Name, true, true, null));
+                progress.Record(new KeyRouteResult(key.Id, key.Name, true, true, null));
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -310,7 +358,7 @@ public sealed class RoutingService : IDisposable
                     throw;
                 }
 
-                keyResults.Add(new KeyRouteResult(
+                progress.Record(new KeyRouteResult(
                     key.Id,
                     key.Name,
                     true,
@@ -319,6 +367,7 @@ public sealed class RoutingService : IDisposable
             }
         }
 
+        var keyResults = progress.ResultsFor(selectedKeys);
         _stateStore.Save(new RouteState
         {
             CurrentGroupId = keyResults.Any(result => !result.Success)
@@ -332,6 +381,14 @@ public sealed class RoutingService : IDisposable
             selectedKeys.Select(key => key.Id).ToArray(),
             keyResults,
             _utcNow());
+    }
+
+    private void ClearManualRouteStateAfterInterruptedUpdate(ManualRoutingProgress progress)
+    {
+        if (progress.HasUpdateAttempt)
+        {
+            _stateStore.Save(new RouteState { CurrentGroupId = null });
+        }
     }
 
     private async Task RefreshAccountDataAsync(
