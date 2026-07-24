@@ -8,6 +8,7 @@ artifacts_root="$repo_root/artifacts"
 solution="$repo_root/AIHubRouter.slnx"
 cli_project="$repo_root/src/AIHubRouter.Cli/AIHubRouter.Cli.csproj"
 desktop_project="$repo_root/src/AIHubRouter.Desktop/AIHubRouter.Desktop.csproj"
+web_project="$repo_root/src/AIHubRouter.Web/AIHubRouter.Web.csproj"
 test_project="$repo_root/tests/AIHubRouter.Core.Tests/AIHubRouter.Core.Tests.csproj"
 
 if (($# > 0)); then
@@ -41,6 +42,12 @@ for rid in "${runtimes[@]}"; do
     --source "$nuget_fallback_source" \
     -p:NuGetAudit=false \
     -m:1
+  dotnet restore "$web_project" -r "$rid" \
+    --configfile "$repo_root/NuGet.Config" \
+    --source "$nuget_source" \
+    --source "$nuget_fallback_source" \
+    -p:NuGetAudit=false \
+    -m:1
 
   dotnet publish "$cli_project" -c Release -r "$rid" \
     --self-contained true --no-restore \
@@ -52,6 +59,11 @@ for rid in "${runtimes[@]}"; do
     -p:PublishSingleFile=true \
     -p:DebugType=None -p:DebugSymbols=false \
     -o "$rid_root/desktop"
+  dotnet publish "$web_project" -c Release -r "$rid" \
+    --self-contained true --no-restore \
+    -p:PublishSingleFile=true \
+    -p:DebugType=None -p:DebugSymbols=false \
+    -o "$rid_root/web"
   find "$rid_root" -type f -name '*.pdb' -delete
   printf 'Published %s to %s\n' "$rid" "$rid_root"
 done

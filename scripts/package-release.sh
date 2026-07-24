@@ -27,6 +27,7 @@ for rid in "${runtimes[@]}"; do
   mkdir -p "$package_root"
   cp -a "$artifacts_root/$rid/cli" "$package_root/cli"
   cp -a "$artifacts_root/$rid/desktop" "$package_root/desktop"
+  cp -a "$artifacts_root/$rid/web" "$package_root/web"
   cp "$repo_root/README.md" "$package_root/README.md"
   find "$package_root" -type f -name '*.pdb' -delete
 

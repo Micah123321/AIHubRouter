@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>AIHub Router</title>
+  <link rel="icon" href="/app-icon.png">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <section class="login-view" id="loginView" hidden>
+    <form class="login-panel" id="loginForm">
+      <div class="brand brand-login">
+        <img src="/app-icon.png" alt="" width="48" height="48">
+        <div>
+          <h1>AIHub Router</h1>
+          <p>Web Console</p>
+        </div>
+      </div>
+      <label class="field-label" for="webPassword">访问口令</label>
+      <div class="secret-field">
+        <input id="webPassword" name="password" type="password" autocomplete="current-password" required autofocus>
+        <button class="icon-button" id="toggleLoginPassword" type="button" title="显示或隐藏口令" aria-label="显示或隐藏口令">
+          <span aria-hidden="true">◉</span>
+        </button>
+      </div>
+      <button class="primary-button login-button" type="submit">登录</button>
+      <p class="form-error" id="loginError" role="alert"></p>
+    </form>
+  </section>
+
+  <div class="app-shell" id="appShell" hidden>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <img src="/app-icon.png" alt="" width="38" height="38">
+          <div class="brand-copy">
+            <h1>AIHub Router</h1>
+            <p id="connectionSummary">API-only / Balanced</p>
+          </div>
+        </div>
+        <div class="target-summary" id="candidateSummary">目标分组：-</div>
+        <div class="topbar-actions">
+          <label class="compact-select">
+            <span>主题</span>
+            <select id="themeSelect" aria-label="主题">
+              <option value="system">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </label>
+          <button class="icon-button" id="logoutButton" type="button" title="退出登录" aria-label="退出登录">
+            <span aria-hidden="true">⇥</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="settings-section" aria-labelledby="connectionTitle">
+        <div class="section-heading">
+          <h2 id="connectionTitle">连接与认证</h2>
+          <span class="credential-state" id="credentialState"></span>
+        </div>
+        <div class="connection-grid">
+          <label class="field wide-field">
+            <span>站点</span>
+            <div class="input-action">
+              <input id="baseUrl" type="url" inputmode="url" autocomplete="url">
+              <a class="icon-button" id="visitSite" href="https://aihub.top" target="_blank" rel="noreferrer" title="访问站点" aria-label="访问站点">↗</a>
+            </div>
+          </label>
+          <label class="field">
+            <span>邮箱</span>
+            <input id="email" type="email" autocomplete="username">
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <div class="secret-field">
+              <input id="password" type="password" autocomplete="new-password" placeholder="保持不变">
+              <button class="icon-button clear-secret" id="clearPassword" type="button" title="清除已保存的密码" aria-label="清除已保存的密码">×</button>
+            </div>
+          </label>
+          <label class="field wide-field">
+            <span>Token</span>
+            <div class="secret-field">
+              <input id="bearerToken" type="password" autocomplete="off" placeholder="保持不变">
+              <button class="icon-button clear-secret" id="clearToken" type="button" title="清除已保存的 Token" aria-label="清除已保存的 Token">×</button>
+            </div>
+          </label>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="strategyTitle">
+        <div class="section-heading"><h2 id="strategyTitle">路由策略</h2></div>
+        <div class="strategy-row">
+          <div class="segmented" role="radiogroup" aria-label="路由策略">
+            <label><input type="radio" name="routingMode" value="economy"><span>省钱</span></label>
+            <label><input type="radio" name="routingMode" value="balanced"><span>均衡</span></label>
+            <label><input type="radio" name="routingMode" value="speed"><span>极速</span></label>
+          </div>
+          <label class="inline-field" for="pollingInterval">
+            <span>间隔</span>
+            <input id="pollingInterval" type="number" min="30" max="3600" step="30">
+            <span>秒</span>
+          </label>
+          <label class="switch-field">
+            <input id="persistCredentials" type="checkbox">
+            <span class="switch" aria-hidden="true"></span>
+            <span>安全保存认证</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="blacklistTitle">
+        <div class="section-heading">
+          <h2 id="blacklistTitle">黑名单分组</h2>
+          <span class="section-meta" id="groupCount">0 个分组</span>
+        </div>
+        <div class="table-frame compact-table-frame">
+          <table class="data-table group-table">
+            <thead><tr><th>禁用</th><th>ID</th><th>名称</th><th>平台</th><th>状态</th></tr></thead>
+            <tbody id="groupRows"><tr><td class="empty-state" colspan="5">刷新后显示分组</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <nav class="command-bar" aria-label="路由操作">
+        <button class="command primary-command" id="saveButton" type="button"><span aria-hidden="true">▣</span>保存</button>
+        <button class="command" id="refreshButton" type="button"><span aria-hidden="true">↻</span>刷新</button>
+        <button class="command" id="dryRunButton" type="button"><span aria-hidden="true">◇</span>模拟</button>
+        <button class="command" id="routeButton" type="button"><span aria-hidden="true">▶</span>立即路由</button>
+        <button class="command" id="manualButton" type="button" disabled><span aria-hidden="true">◎</span>手动选择</button>
+        <label class="auto-route-control">
+          <input id="autoRouting" type="checkbox">
+          <span class="switch" aria-hidden="true"></span>
+          <span>自动路由</span>
+        </label>
+        <span class="busy-indicator" id="busyIndicator" aria-label="正在处理" hidden></span>
+      </nav>
+
+      <section class="data-section" aria-labelledby="providerTitle">
+        <div class="section-heading">
+          <h2 id="providerTitle">方案状态</h2>
+          <span class="section-meta" id="providerCount">0 个方案</span>
+        </div>
+        <div class="table-frame provider-frame">
+          <table class="data-table provider-table">
+            <thead>
+              <tr>
+                <th class="select-column" aria-label="选择"></th>
+                <th>分组</th>
+                <th>方案</th>
+                <th><button class="sort-button" type="button" data-sort="multiplier">倍率 <span></span></button></th>
+                <th><button class="sort-button" type="button" data-sort="latency">首字 <span></span></button></th>
+                <th><button class="sort-button" type="button" data-sort="successRate">6h 可用率 <span></span></button></th>
+                <th><button class="sort-button" type="button" data-sort="weightedScore">加权得分 <span></span></button></th>
+                <th>状态</th>
+                <th>检测时间</th>
+              </tr>
+            </thead>
+            <tbody id="providerRows"><tr><td class="empty-state" colspan="9">刷新后显示方案</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="data-section keys-section" aria-labelledby="keyTitle">
+        <div class="section-heading">
+          <h2 id="keyTitle">API Keys</h2>
+          <span class="section-meta" id="keyCount">0 个 Key</span>
+        </div>
+        <div class="table-frame key-frame">
+          <table class="data-table key-table">
+            <thead><tr><th>路由</th><th>ID</th><th>Key</th><th>状态</th><th>分组</th><th>分组名称</th></tr></thead>
+            <tbody id="keyRows"><tr><td class="empty-state" colspan="6">刷新后显示 Key</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <div class="statusbar-inner">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">就绪</span>
+        <time id="lastUpdated"></time>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

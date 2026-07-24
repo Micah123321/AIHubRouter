@@ -48,7 +48,7 @@ public sealed class ProviderStatus
     public double? OutputTokensPerSecond { get; init; }
 
     [JsonPropertyName("successRates")]
-    public Dictionary<string, double> SuccessRates { get; init; } = [];
+    public Dictionary<string, double?> SuccessRates { get; init; } = [];
 
     [JsonPropertyName("errorMessage")]
     public string? ErrorMessage { get; init; }

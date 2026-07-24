@@ -23,6 +23,7 @@ public sealed record PersistentAppSettings
     public int AccountCacheSeconds { get; init; } = 300;
     public bool SmoothRendering { get; init; } = true;
     public AppThemeMode ThemeMode { get; init; } = AppThemeMode.System;
+    public bool AutoRoutingEnabled { get; init; }
     public bool KeySelectionInitialized { get; init; }
     public long[] SelectedKeyIds { get; init; } = [];
     public long[] BlacklistedGroupIds { get; init; } = [];

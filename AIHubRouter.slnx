@@ -3,6 +3,7 @@
     <Project Path="src/AIHubRouter.Cli/AIHubRouter.Cli.csproj" />
     <Project Path="src/AIHubRouter.Core/AIHubRouter.Core.csproj" />
     <Project Path="src/AIHubRouter.Desktop/AIHubRouter.Desktop.csproj" />
+    <Project Path="src/AIHubRouter.Web/AIHubRouter.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AIHubRouter.Core.Tests/AIHubRouter.Core.Tests.csproj" />

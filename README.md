@@ -4,7 +4,7 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 ## 我们在做什么？
 
-每分钟轮询平台数据，依据你的策略偏好（省钱 vs 高速）自动切换分组。默认间隔为 60 秒，也可以按需调整。
+每分钟轮询平台数据，依据你的策略偏好（省钱 vs 高速）自动切换分组。默认间隔为 60 秒，也可以按需调整。桌面端、Web 控制台和 CLI 共用同一套路由核心。
 
 ## 为什么选择这个项目？
 
@@ -70,6 +70,28 @@ chmod +x cli/aihub-router
 ```
 
 `watch` 会按间隔重新读取状态；没有更好的候选时保持当前分组，不制造无意义的切换。
+
+### Web 控制台
+
+发布包的 `web` 目录提供与桌面端对应的浏览器界面，包括认证配置、策略、黑名单、Key 选择、模拟、立即/手动路由、自动路由和主题切换。
+
+本机启动：
+
+```bash
+export AIHUB_WEB_PASSWORD='至少十二个字符的独立访问口令'
+./web/aihub-router-web
+```
+
+默认只监听 `http://127.0.0.1:5080`。Linux 外网常驻部署使用仓库提供的 HTTPS systemd 安装器：
+
+```bash
+sudo ./scripts/install-web-systemd.sh artifacts/linux-x64/web/aihub-router-web
+sudo systemctl status aihub-router-web.service
+```
+
+安装器会生成独立 Web 口令、凭据加密主密钥和自签名 HTTPS 证书，服务监听 `0.0.0.0:5443`。首次访问需要接受自签名证书，生产环境建议在 5443 端口前使用带正式证书的反向代理。服务器防火墙与云安全组也需要放行实际使用的端口。
+
+Web 端不会向浏览器返回 AIHub 密码或 Token。外网模式必须使用 HTTPS；只有可信内网临时测试时才可同时设置 `AIHUB_WEB_URLS=http://0.0.0.0:5080` 和 `AIHUB_WEB_ALLOW_HTTP=1`。
 
 ## 你会得到什么
 
@@ -147,6 +169,7 @@ dotnet run --project tests/AIHubRouter.Core.Tests/AIHubRouter.Core.Tests.csproj 
 src/AIHubRouter.Core/       路由算法、API 客户端、认证、缓存和存储
 src/AIHubRouter.Cli/        无图形命令行入口
 src/AIHubRouter.Desktop/    Avalonia 桌面端
+src/AIHubRouter.Web/        ASP.NET Core Web 控制台与后台轮询
 tests/                      无网络确定性测试
 docs/                       跨平台与决策设计
 ```

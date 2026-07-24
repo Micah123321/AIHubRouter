@@ -9,6 +9,7 @@ var tests = new (string Name, Action Body)[]
     ("Bearer token normalization", TestBearerNormalization),
     ("Token extraction from cookie", TestCookieTokenExtraction),
     ("Null provider availability is unavailable", TestNullProviderAvailabilityIsUnavailable),
+    ("Null provider success rate is unknown", TestNullProviderSuccessRateIsUnknown),
     ("Lowest available authorized group", TestLowestAvailableGroup),
     ("Blacklisted group is excluded", TestBlacklistedGroupIsExcluded),
     ("Blacklisted group is excluded from balanced evaluation", TestBalancedEvaluationExcludesBlacklistedGroup),
@@ -128,6 +129,38 @@ static void TestNullProviderAvailabilityIsUnavailable()
 
     Assert(summary.Apis.Count == 1 && !summary.Apis[0].Available,
         "A null provider availability was not treated as unavailable.");
+}
+
+static void TestNullProviderSuccessRateIsUnknown()
+{
+    var handler = new StubHttpMessageHandler(_ => JsonResponse("""
+        {
+          "apis": [
+            {
+              "id": "provider-null-success-rate",
+              "group_id": 2,
+              "planType": "A001-Free",
+              "platform": "openai",
+              "priceMultiplier": 0.01,
+              "available": true,
+              "enabled": true,
+              "successRates": {
+                "5m": null,
+                "6h": 0.875
+              }
+            }
+          ]
+        }
+        """));
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    var summary = client.GetProviderSummaryAsync(CancellationToken.None).GetAwaiter().GetResult();
+    var provider = summary.Apis.Single();
+
+    Assert(provider.SuccessRates.TryGetValue("5m", out var fiveMinuteRate) && fiveMinuteRate is null,
+        "A null success rate was not preserved as unknown.");
+    Assert(provider.SuccessRate6h == 0.875,
+        "A numeric success rate changed while reading a nullable window.");
 }
 
 static void TestLowestAvailableGroup()
@@ -1407,7 +1440,7 @@ static ProviderStatus Provider(
         Enabled = true,
         CheckedAt = checkedAt,
         FirstTokenLatencyMs = latency,
-        SuccessRates = new Dictionary<string, double> { ["6h"] = success },
+        SuccessRates = new Dictionary<string, double?> { ["6h"] = success },
         WarningReasons = warning
             ? [new ProviderWarningReason { Type = "test_warning", Message = "Synthetic warning" }]
             : []
@@ -1488,7 +1521,7 @@ sealed class StubAIHubApiClient(
                     Enabled = true,
                     CheckedAt = now,
                     FirstTokenLatencyMs = 500,
-                    SuccessRates = new Dictionary<string, double> { ["6h"] = 1 }
+                    SuccessRates = new Dictionary<string, double?> { ["6h"] = 1 }
                 }
             ]
         });
