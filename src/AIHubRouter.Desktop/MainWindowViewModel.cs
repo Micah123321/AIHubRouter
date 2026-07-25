@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using Avalonia;
 using Avalonia.Styling;
 using AIHubRouter.Core;
@@ -37,10 +38,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _bearerToken = string.Empty;
     [ObservableProperty] private decimal _groupStickiness =
         (decimal)BalancedRoutingPolicy.DefaultMinimumScoreAdvantageToSwitch;
-    [ObservableProperty] private decimal _minimumPriceMultiplier =
-        (decimal)BalancedRoutingPolicy.DefaultMinimumPriceMultiplier;
-    [ObservableProperty] private decimal _maximumPriceMultiplier =
-        (decimal)BalancedRoutingPolicy.DefaultMaximumPriceMultiplier;
+    [ObservableProperty] private string _minimumPriceMultiplierText =
+        FormatPriceMultiplier(BalancedRoutingPolicy.DefaultMinimumPriceMultiplier);
+    [ObservableProperty] private string _maximumPriceMultiplierText =
+        FormatPriceMultiplier(BalancedRoutingPolicy.DefaultMaximumPriceMultiplier);
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
     [ObservableProperty] private bool _persistCredentials;
     [ObservableProperty]
@@ -112,12 +113,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         MarkRoutingSettingsChanged();
     }
 
-    partial void OnMinimumPriceMultiplierChanged(decimal value)
+    partial void OnMinimumPriceMultiplierTextChanged(string value)
     {
         MarkRoutingSettingsChanged();
     }
 
-    partial void OnMaximumPriceMultiplierChanged(decimal value)
+    partial void OnMaximumPriceMultiplierTextChanged(string value)
     {
         MarkRoutingSettingsChanged();
     }
@@ -680,8 +681,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             BaseUrl = settings.BaseUrl;
             RoutingMode = settings.RoutingMode;
             GroupStickiness = (decimal)settings.CreatePolicy().MinimumScoreAdvantageToSwitch;
-            MinimumPriceMultiplier = (decimal)settings.MinimumPriceMultiplier;
-            MaximumPriceMultiplier = (decimal)settings.MaximumPriceMultiplier;
+            MinimumPriceMultiplierText = FormatPriceMultiplier(settings.MinimumPriceMultiplier);
+            MaximumPriceMultiplierText = FormatPriceMultiplier(settings.MaximumPriceMultiplier);
             PollingIntervalSeconds = settings.PollingIntervalSeconds;
             PersistCredentials = settings.PersistCredentials;
             SelectedThemeChoice = ThemeChoices.FirstOrDefault(choice => choice.Mode == settings.ThemeMode)
@@ -698,6 +699,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void SaveSettings()
     {
+        var (minimumPriceMultiplier, maximumPriceMultiplier) = ParsePriceRange();
         var selectedIds = Keys.Where(key => key.Selected).Select(key => key.Id).ToArray();
         var existing = _store.Load().Settings;
         var loadedGroupIds = Groups.Select(group => group.Id).ToHashSet();
@@ -713,8 +715,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             BaseUrl = BaseUrl.Trim(),
             RoutingMode = RoutingMode,
             GroupStickiness = (double)GroupStickiness,
-            MinimumPriceMultiplier = (double)MinimumPriceMultiplier,
-            MaximumPriceMultiplier = (double)MaximumPriceMultiplier,
+            MinimumPriceMultiplier = minimumPriceMultiplier,
+            MaximumPriceMultiplier = maximumPriceMultiplier,
             PollingIntervalSeconds = (int)PollingIntervalSeconds,
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
@@ -731,6 +733,29 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _store.Save(settings, PersistCredentials ? credentials : null);
         _loadedCredentials = credentials;
     }
+
+    private (double Minimum, double Maximum) ParsePriceRange()
+    {
+        if (!TryParsePriceMultiplier(MinimumPriceMultiplierText, out var minimum) ||
+            !TryParsePriceMultiplier(MaximumPriceMultiplierText, out var maximum) ||
+            minimum > maximum)
+        {
+            throw new ArgumentException("价格范围必须是非负有限数值，且最小值不能大于最大值。");
+        }
+
+        return (minimum, maximum);
+    }
+
+    private static bool TryParsePriceMultiplier(string text, out double value)
+    {
+        var normalized = text.Trim().Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out value) &&
+               double.IsFinite(value) &&
+               value >= 0;
+    }
+
+    private static string FormatPriceMultiplier(double value) =>
+        value.ToString("0.################", CultureInfo.InvariantCulture);
 
     private PersistentCredentials BuildCredentials()
     {

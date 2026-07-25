@@ -81,6 +81,21 @@ function formatScore(value) {
   return `${value > 0 ? "+" : ""}${value.toFixed(4)}`;
 }
 
+function parsePriceMultiplier(selector) {
+  const rawValue = $(selector).value.trim().replace(",", ".");
+  const value = rawValue === "" ? Number.NaN : Number(rawValue);
+  return Number.isFinite(value) && value >= 0 ? value : Number.NaN;
+}
+
+function readPriceRange() {
+  const minimum = parsePriceMultiplier("#minimumPriceMultiplier");
+  const maximum = parsePriceMultiplier("#maximumPriceMultiplier");
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || minimum > maximum) {
+    throw new Error("价格范围必须是非负有限数值，且最小值不能大于最大值。");
+  }
+  return { minimum, maximum };
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -227,6 +242,7 @@ function settingsPayload() {
   const routingMode = $('input[name="routingMode"]:checked')?.value || "balanced";
   const password = $("#password").value;
   const bearerToken = $("#bearerToken").value;
+  const priceRange = readPriceRange();
   return {
     baseUrl: $("#baseUrl").value.trim(),
     email: $("#email").value.trim(),
@@ -236,8 +252,8 @@ function settingsPayload() {
     clearBearerToken: state.clearToken,
     routingMode,
     groupStickiness: Number.parseFloat($("#groupStickiness").value),
-    minimumPriceMultiplier: Number.parseFloat($("#minimumPriceMultiplier").value),
-    maximumPriceMultiplier: Number.parseFloat($("#maximumPriceMultiplier").value),
+    minimumPriceMultiplier: priceRange.minimum,
+    maximumPriceMultiplier: priceRange.maximum,
     pollingIntervalSeconds: Number.parseInt($("#pollingInterval").value, 10),
     persistCredentials: $("#persistCredentials").checked,
     themeMode: $("#themeSelect").value,

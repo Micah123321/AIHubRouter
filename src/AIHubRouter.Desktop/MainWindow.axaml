@@ -64,9 +64,9 @@
             <CheckBox Grid.Row="1" Grid.Column="9" Content="安全保存认证" IsChecked="{Binding PersistCredentials}" HorizontalAlignment="Right" VerticalAlignment="Center" />
             <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="6" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
               <TextBlock Text="价格范围" VerticalAlignment="Center" />
-              <NumericUpDown Width="105" Minimum="0" Maximum="100" Increment="0.001" FormatString="0.000" Value="{Binding MinimumPriceMultiplier}" />
+              <TextBox Width="105" Classes="field" Text="{Binding MinimumPriceMultiplierText}" MaxLength="20" />
               <TextBlock Text="至" VerticalAlignment="Center" />
-              <NumericUpDown Width="105" Minimum="0" Maximum="100" Increment="0.001" FormatString="0.000" Value="{Binding MaximumPriceMultiplier}" />
+              <TextBox Width="105" Classes="field" Text="{Binding MaximumPriceMultiplierText}" MaxLength="20" />
             </StackPanel>
           </Grid>
         </Border>
