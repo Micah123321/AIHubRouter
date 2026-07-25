@@ -18,6 +18,7 @@ var tests = new (string Name, Action Body)[]
     ("Lowest available authorized group", TestLowestAvailableGroup),
     ("Blacklisted group is excluded", TestBlacklistedGroupIsExcluded),
     ("Blacklisted group is excluded from balanced evaluation", TestBalancedEvaluationExcludesBlacklistedGroup),
+    ("Price range is a hard routing gate", TestPriceRangeIsHardRoutingGate),
     ("Confidence hard gate precedes price and speed", TestConfidenceHardGatePrecedesPriceAndSpeed),
     ("User rate override", TestUserRateOverride),
     ("Latest status controls eligibility", TestLatestStatusControlsEligibility),
@@ -48,6 +49,7 @@ var tests = new (string Name, Action Body)[]
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
     ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
     ("Manual route rejects blacklisted group", TestManualRouteRejectsBlacklistedGroup),
+    ("Manual route rejects out-of-range group", TestManualRouteRejectsOutOfRangeGroup),
     ("Manual route clears state after terminal authentication failure", TestManualRouteClearsStateAfterTerminalAuthenticationFailure),
     ("Manual route preserves changes across authentication retry", TestManualRoutePreservesChangesAcrossAuthenticationRetry),
     ("Encrypted settings roundtrip", TestEncryptedSettingsRoundtrip),
@@ -378,6 +380,31 @@ static void TestBalancedEvaluationExcludesBlacklistedGroup()
     Assert(evaluation.Recommended?.Group.Id == 2 &&
            evaluation.EligibleCandidates.All(candidate => candidate.Group.Id != 1),
         "A blacklisted group entered balanced evaluation.");
+}
+
+static void TestPriceRangeIsHardRoutingGate()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        new[]
+        {
+            Provider(1, 0.04, true, 1, now, latency: 100),
+            Provider(2, 0.10, true, 1, now, latency: 2_000),
+            Provider(3, 0.01, true, 1, now, latency: 50)
+        },
+        new[] { Group(1), Group(2), Group(3) },
+        new Dictionary<long, double> { [3] = 0.151 },
+        new BalancedRoutingPolicy
+        {
+            MinimumPriceMultiplier = 0.05,
+            MaximumPriceMultiplier = 0.15
+        },
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 2 &&
+           evaluation.EligibleCandidates.Count == 1 &&
+           evaluation.EligibleCandidates.Single().Group.Id == 2,
+        "A price outside the configured range entered routing evaluation.");
 }
 
 static void TestConfidenceHardGatePrecedesPriceAndSpeed()
@@ -957,6 +984,40 @@ static void TestManualRouteRejectsBlacklistedGroup()
     Assert(api.UpdateCalls == 0, "Manual route updated a Key for a blacklisted group.");
     Assert(stateStore.Current.CurrentGroupId == 1,
         "Manual route changed the persisted state for a blacklisted group.");
+}
+
+static void TestManualRouteRejectsOutOfRangeGroup()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(now);
+    var stateStore = new MemoryRouteStateStore(new RouteState { CurrentGroupId = 1 });
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        MaximumPriceMultiplier = 0.01
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        stateStore,
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var rejected = false;
+    try
+    {
+        service.RouteManuallyAsync(2).GetAwaiter().GetResult();
+    }
+    catch (InvalidOperationException exception) when (exception.Message.StartsWith("所选分组不在允许价格范围", StringComparison.Ordinal))
+    {
+        rejected = true;
+    }
+
+    Assert(rejected, "Manual route accepted an out-of-range group.");
+    Assert(api.UpdateCalls == 0, "Manual route updated a Key for an out-of-range group.");
+    Assert(stateStore.Current.CurrentGroupId == 1,
+        "Manual route changed the persisted state for an out-of-range group.");
 }
 
 static void TestManualRouteClearsStateAfterTerminalAuthenticationFailure()

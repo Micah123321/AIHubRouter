@@ -327,6 +327,7 @@ public sealed class RoutingService : IDisposable
         ManualRoutingProgress progress)
     {
         var now = _utcNow();
+        var policy = _settings.CreatePolicy();
         await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
 
         if (_settings.BlacklistedGroupIds.Contains(groupId))
@@ -339,6 +340,25 @@ public sealed class RoutingService : IDisposable
             group.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
             group.Platform.Equals(_settings.Platform, StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException("所选方案不可用，或当前账号没有该分组权限。" );
+        var usageStatsTask = client.GetGroupUsageStatsAsync(
+            policy.Platform,
+            GroupUsageEstimator.DefaultSampleLimit,
+            cancellationToken);
+        var targetMultiplier = _cachedRates.TryGetValue(targetGroup.Id, out var overriddenMultiplier)
+            ? overriddenMultiplier
+            : GroupUsageEstimator.Estimate(
+                    [await usageStatsTask],
+                    now,
+                    policy.MaximumStatusAge)
+                .FirstOrDefault(provider => provider.GroupId == targetGroup.Id)
+                ?.PriceMultiplier;
+        if (targetMultiplier is not { } multiplier ||
+            !double.IsFinite(multiplier) ||
+            !RoutingEngine.IsWithinPriceRange(multiplier, policy))
+        {
+            throw new InvalidOperationException(
+                $"所选分组不在允许价格范围 {policy.MinimumPriceMultiplier:0.####}-{policy.MaximumPriceMultiplier:0.####} 内，或当前无法确认其倍率。");
+        }
         var selectedKeys = ResolveSelectedKeys(_cachedKeys);
         if (selectedKeys.Count == 0)
         {

@@ -20,6 +20,8 @@ public sealed record PersistentAppSettings
     public string Platform { get; init; } = "openai";
     public RoutingMode RoutingMode { get; init; } = RoutingMode.Balanced;
     public double? GroupStickiness { get; init; }
+    public double MinimumPriceMultiplier { get; init; } = BalancedRoutingPolicy.DefaultMinimumPriceMultiplier;
+    public double MaximumPriceMultiplier { get; init; } = BalancedRoutingPolicy.DefaultMaximumPriceMultiplier;
     public int PollingIntervalSeconds { get; init; } = 60;
     public int AccountCacheSeconds { get; init; } = 300;
     public bool SmoothRendering { get; init; } = true;
@@ -36,6 +38,8 @@ public sealed record PersistentAppSettings
             Platform = string.IsNullOrWhiteSpace(Platform) ? "openai" : Platform,
             Mode = RoutingMode,
             MinimumScoreAdvantageOverride = GroupStickiness,
+            MinimumPriceMultiplier = MinimumPriceMultiplier,
+            MaximumPriceMultiplier = MaximumPriceMultiplier,
             MaximumStatusAge = TimeSpan.FromMinutes(15),
             BlacklistedGroupIds = BlacklistedGroupIds
                 .Where(groupId => groupId > 0)

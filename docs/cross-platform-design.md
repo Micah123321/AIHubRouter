@@ -91,6 +91,7 @@ weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 - 不设置切换冷却或最短驻留时间。
 - 不要求候选连续出现多次。
 - 新候选必须比当前有效分组高出“分组粘性”（内部字段 `MinimumScoreAdvantageToSwitch`），默认值为 `0.10`，可由用户配置。
+- 只有生效倍率位于价格范围内的分组才会进入候选池；默认范围为 `0.00x` 到 `0.15x`（含边界），这是不可被加权评分或手动切换绕过的硬约束。
 - 只持久化当前候选分组。
 
 候选相对最低倍率的必要速度收益为：

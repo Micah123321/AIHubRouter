@@ -37,6 +37,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _bearerToken = string.Empty;
     [ObservableProperty] private decimal _groupStickiness =
         (decimal)BalancedRoutingPolicy.DefaultMinimumScoreAdvantageToSwitch;
+    [ObservableProperty] private decimal _minimumPriceMultiplier =
+        (decimal)BalancedRoutingPolicy.DefaultMinimumPriceMultiplier;
+    [ObservableProperty] private decimal _maximumPriceMultiplier =
+        (decimal)BalancedRoutingPolicy.DefaultMaximumPriceMultiplier;
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
     [ObservableProperty] private bool _persistCredentials;
     [ObservableProperty]
@@ -104,6 +108,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     partial void OnGroupStickinessChanged(decimal value)
+    {
+        MarkRoutingSettingsChanged();
+    }
+
+    partial void OnMinimumPriceMultiplierChanged(decimal value)
+    {
+        MarkRoutingSettingsChanged();
+    }
+
+    partial void OnMaximumPriceMultiplierChanged(decimal value)
+    {
+        MarkRoutingSettingsChanged();
+    }
+
+    private void MarkRoutingSettingsChanged()
     {
         _routingSettingsStale = true;
         _routingSettingsVersion++;
@@ -661,6 +680,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             BaseUrl = settings.BaseUrl;
             RoutingMode = settings.RoutingMode;
             GroupStickiness = (decimal)settings.CreatePolicy().MinimumScoreAdvantageToSwitch;
+            MinimumPriceMultiplier = (decimal)settings.MinimumPriceMultiplier;
+            MaximumPriceMultiplier = (decimal)settings.MaximumPriceMultiplier;
             PollingIntervalSeconds = settings.PollingIntervalSeconds;
             PersistCredentials = settings.PersistCredentials;
             SelectedThemeChoice = ThemeChoices.FirstOrDefault(choice => choice.Mode == settings.ThemeMode)
@@ -692,6 +713,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             BaseUrl = BaseUrl.Trim(),
             RoutingMode = RoutingMode,
             GroupStickiness = (double)GroupStickiness,
+            MinimumPriceMultiplier = (double)MinimumPriceMultiplier,
+            MaximumPriceMultiplier = (double)MaximumPriceMultiplier,
             PollingIntervalSeconds = (int)PollingIntervalSeconds,
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,

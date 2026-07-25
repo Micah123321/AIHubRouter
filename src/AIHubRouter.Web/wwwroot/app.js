@@ -98,6 +98,8 @@ function hydrateSettings(settings, force = false) {
   $("#password").value = "";
   $("#bearerToken").value = "";
   $("#groupStickiness").value = settings.groupStickiness;
+  $("#minimumPriceMultiplier").value = settings.minimumPriceMultiplier;
+  $("#maximumPriceMultiplier").value = settings.maximumPriceMultiplier;
   $("#pollingInterval").value = settings.pollingIntervalSeconds;
   $("#persistCredentials").checked = settings.persistCredentials;
   $("#themeSelect").value = enumValue(settings.themeMode);
@@ -234,6 +236,8 @@ function settingsPayload() {
     clearBearerToken: state.clearToken,
     routingMode,
     groupStickiness: Number.parseFloat($("#groupStickiness").value),
+    minimumPriceMultiplier: Number.parseFloat($("#minimumPriceMultiplier").value),
+    maximumPriceMultiplier: Number.parseFloat($("#maximumPriceMultiplier").value),
     pollingIntervalSeconds: Number.parseInt($("#pollingInterval").value, 10),
     persistCredentials: $("#persistCredentials").checked,
     themeMode: $("#themeSelect").value,

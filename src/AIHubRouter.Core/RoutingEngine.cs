@@ -37,6 +37,7 @@ public static class RoutingEngine
                 return new RouteCandidate(provider, group, effectiveRate, hasOverride);
             })
             .Where(candidate => candidate.EffectiveMultiplier >= 0 && double.IsFinite(candidate.EffectiveMultiplier))
+            .Where(candidate => candidate.EffectiveMultiplier <= BalancedRoutingPolicy.DefaultMaximumPriceMultiplier)
             .GroupBy(candidate => candidate.Group.Id)
             .Select(group => group
                 .OrderBy(candidate => candidate.EffectiveMultiplier)
@@ -85,6 +86,7 @@ public static class RoutingEngine
                 return new RouteCandidate(provider, group, effectiveRate, hasOverride);
             })
             .Where(candidate => candidate.EffectiveMultiplier >= 0 && double.IsFinite(candidate.EffectiveMultiplier))
+            .Where(candidate => IsWithinPriceRange(candidate.EffectiveMultiplier, policy))
             .GroupBy(candidate => candidate.Group.Id)
             .Select(group => group
                 .OrderBy(candidate => NormalizeLatency(candidate.Provider.FirstTokenLatencyMs))
@@ -208,6 +210,10 @@ public static class RoutingEngine
 
     private static bool IsKnownLatency(double? latency) =>
         latency is > 0 && double.IsFinite(latency.Value);
+
+    internal static bool IsWithinPriceRange(double multiplier, BalancedRoutingPolicy policy) =>
+        multiplier >= policy.MinimumPriceMultiplier &&
+        multiplier <= policy.MaximumPriceMultiplier;
 
     private static bool NearlyEqual(double left, double right) =>
         Math.Abs(left - right) <= 1e-12;

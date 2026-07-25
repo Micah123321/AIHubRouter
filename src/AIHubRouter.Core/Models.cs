@@ -190,12 +190,16 @@ public enum RoutingMode
 public sealed record BalancedRoutingPolicy
 {
     public const double DefaultMinimumScoreAdvantageToSwitch = 0.10;
+    public const double DefaultMinimumPriceMultiplier = 0;
+    public const double DefaultMaximumPriceMultiplier = 0.15;
 
     public string Platform { get; init; } = "openai";
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
     public TimeSpan MaximumStatusAge { get; init; } = TimeSpan.FromMinutes(15);
     public double? PriceWeightOverride { get; init; }
     public double? MinimumScoreAdvantageOverride { get; init; }
+    public double MinimumPriceMultiplier { get; init; } = DefaultMinimumPriceMultiplier;
+    public double MaximumPriceMultiplier { get; init; } = DefaultMaximumPriceMultiplier;
     public IReadOnlyCollection<long> BlacklistedGroupIds { get; init; } = [];
 
     public double PriceWeight => PriceWeightOverride ?? Mode switch
@@ -231,6 +235,14 @@ public sealed record BalancedRoutingPolicy
             (minimumScoreAdvantage < 0 || !double.IsFinite(minimumScoreAdvantage)))
         {
             throw new ArgumentOutOfRangeException(nameof(MinimumScoreAdvantageOverride));
+        }
+
+        if (MinimumPriceMultiplier < 0 ||
+            !double.IsFinite(MinimumPriceMultiplier) ||
+            !double.IsFinite(MaximumPriceMultiplier) ||
+            MaximumPriceMultiplier < MinimumPriceMultiplier)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaximumPriceMultiplier));
         }
     }
 }

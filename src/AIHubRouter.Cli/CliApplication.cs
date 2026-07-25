@@ -377,6 +377,8 @@ internal static class CliApplication
         var platform = GetOption(args, "--platform");
         var mode = GetOption(args, "--mode");
         var groupStickiness = GetDoubleOption(args, "--group-stickiness");
+        var minimumPrice = GetDoubleOption(args, "--min-price");
+        var maximumPrice = GetDoubleOption(args, "--max-price");
         var interval = GetIntOption(args, "--interval");
         var selectedKeys = GetOption(args, "--selected-keys");
         var blacklistedGroups = GetOption(args, "--blacklisted-groups");
@@ -392,6 +394,16 @@ internal static class CliApplication
         if (groupStickiness is < 0 || groupStickiness is { } value && !double.IsFinite(value))
         {
             throw new ArgumentException("--group-stickiness 必须是非负有限数值。");
+        }
+
+        var resolvedMinimumPrice = minimumPrice ?? settings.MinimumPriceMultiplier;
+        var resolvedMaximumPrice = maximumPrice ?? settings.MaximumPriceMultiplier;
+        if (resolvedMinimumPrice < 0 ||
+            !double.IsFinite(resolvedMinimumPrice) ||
+            !double.IsFinite(resolvedMaximumPrice) ||
+            resolvedMaximumPrice < resolvedMinimumPrice)
+        {
+            throw new ArgumentException("价格范围必须是非负有限数值，且最小值不能大于最大值。");
         }
 
         long[]? parsedKeys = null;
@@ -426,6 +438,8 @@ internal static class CliApplication
                 ? settings.RoutingMode
                 : Enum.Parse<RoutingMode>(mode, ignoreCase: true),
             GroupStickiness = groupStickiness ?? settings.GroupStickiness,
+            MinimumPriceMultiplier = resolvedMinimumPrice,
+            MaximumPriceMultiplier = resolvedMaximumPrice,
             PollingIntervalSeconds = interval is null
                 ? settings.PollingIntervalSeconds
                 : Math.Clamp(interval.Value, 30, 3600),
@@ -583,6 +597,8 @@ internal static class CliApplication
             pollingIntervalSeconds = settings.PollingIntervalSeconds,
             routingMode = settings.RoutingMode.ToString(),
             groupStickiness = settings.CreatePolicy().MinimumScoreAdvantageToSwitch,
+            minimumPriceMultiplier = settings.MinimumPriceMultiplier,
+            maximumPriceMultiplier = settings.MaximumPriceMultiplier,
             blacklistedGroupCount = settings.BlacklistedGroupIds.Length,
             selectedKeyCount = settings.SelectedKeyIds.Length
         };
@@ -801,6 +817,8 @@ internal static class CliApplication
               --platform <openai|anthropic|gemini|antigravity|grok>
               --mode <economy|balanced|speed>
               --group-stickiness <non-negative-number>
+              --min-price <non-negative-number>
+              --max-price <non-negative-number>
               --interval <30-3600>
               --selected-keys <id,id,...>
               --blacklisted-groups <id,id,...>

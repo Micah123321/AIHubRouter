@@ -59,6 +59,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 BaseUrl = request.BaseUrl.Trim().TrimEnd('/'),
                 RoutingMode = request.RoutingMode,
                 GroupStickiness = request.GroupStickiness,
+                MinimumPriceMultiplier = request.MinimumPriceMultiplier,
+                MaximumPriceMultiplier = request.MaximumPriceMultiplier,
                 PollingIntervalSeconds = Math.Clamp(request.PollingIntervalSeconds, 30, 3600),
                 PersistCredentials = request.PersistCredentials,
                 ThemeMode = request.ThemeMode,
@@ -84,6 +86,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _statusKind = "success";
                 if (oldSettings.RoutingMode != settings.RoutingMode ||
                     oldSettings.GroupStickiness != settings.GroupStickiness ||
+                    oldSettings.MinimumPriceMultiplier != settings.MinimumPriceMultiplier ||
+                    oldSettings.MaximumPriceMultiplier != settings.MaximumPriceMultiplier ||
                     !string.Equals(oldSettings.BaseUrl, settings.BaseUrl, StringComparison.OrdinalIgnoreCase) ||
                     !oldSettings.BlacklistedGroupIds.SequenceEqual(settings.BlacklistedGroupIds))
                 {
@@ -344,6 +348,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 !string.IsNullOrWhiteSpace(_credentials.BearerToken),
                 settings.RoutingMode,
                 settings.CreatePolicy().MinimumScoreAdvantageToSwitch,
+                settings.MinimumPriceMultiplier,
+                settings.MaximumPriceMultiplier,
                 settings.PollingIntervalSeconds,
                 settings.PersistCredentials,
                 _store.CanPersistCredentials,
@@ -476,6 +482,16 @@ public sealed class WebRouterCoordinator : BackgroundService
         if (request.GroupStickiness < 0 || !double.IsFinite(request.GroupStickiness))
         {
             throw new ArgumentOutOfRangeException(nameof(request.GroupStickiness), "分组粘性必须是非负有限数值。");
+        }
+
+        if (request.MinimumPriceMultiplier < 0 ||
+            !double.IsFinite(request.MinimumPriceMultiplier) ||
+            !double.IsFinite(request.MaximumPriceMultiplier) ||
+            request.MaximumPriceMultiplier < request.MinimumPriceMultiplier)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request.MaximumPriceMultiplier),
+                "价格范围必须是非负有限数值，且最小值不能大于最大值。");
         }
     }
 
