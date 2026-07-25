@@ -97,6 +97,7 @@ function hydrateSettings(settings, force = false) {
   $("#email").value = settings.email;
   $("#password").value = "";
   $("#bearerToken").value = "";
+  $("#groupStickiness").value = settings.groupStickiness;
   $("#pollingInterval").value = settings.pollingIntervalSeconds;
   $("#persistCredentials").checked = settings.persistCredentials;
   $("#themeSelect").value = enumValue(settings.themeMode);
@@ -170,7 +171,7 @@ function renderProviders(providers) {
       <td title="${escapeHtml(provider.plan)}">${escapeHtml(provider.plan || "-")}</td>
       <td>${Number.isFinite(provider.multiplier) ? `${formatNumber(provider.multiplier)}x` : "-"}</td>
       <td>${Number.isFinite(provider.latency) ? `${provider.latency.toFixed(0)} ms` : "-"}</td>
-      <td>${formatPercent(provider.successRate)}</td>
+      <td>${Number.isFinite(provider.confidence) ? `${formatPercent(provider.confidence)} / ${provider.sampleCount}` : "-"}</td>
       <td>${formatScore(provider.weightedScore)}</td>
       <td><span class="state-badge ${stateClass(provider.state)}">${escapeHtml(provider.state)}</span></td>
       <td>${formatDate(provider.checkedAt)}</td>
@@ -232,6 +233,7 @@ function settingsPayload() {
     clearPassword: state.clearPassword,
     clearBearerToken: state.clearToken,
     routingMode,
+    groupStickiness: Number.parseFloat($("#groupStickiness").value),
     pollingIntervalSeconds: Number.parseInt($("#pollingInterval").value, 10),
     persistCredentials: $("#persistCredentials").checked,
     themeMode: $("#themeSelect").value,
@@ -389,7 +391,7 @@ $$(".sort-button").forEach(button => button.addEventListener("click", () => {
     state.sortDescending = !state.sortDescending;
   } else {
     state.sortField = button.dataset.sort;
-    state.sortDescending = ["successRate", "weightedScore"].includes(state.sortField);
+    state.sortDescending = ["confidence", "weightedScore"].includes(state.sortField);
   }
   renderProviders(state.dashboard?.providers || []);
 }));

@@ -220,10 +220,18 @@ public sealed class RoutingService : IDisposable
         CancellationToken cancellationToken)
     {
         var now = _utcNow();
-        var summaryTask = client.GetProviderSummaryAsync(cancellationToken);
+        var policy = _settings.CreatePolicy();
+        var usageStatsTask = client.GetGroupUsageStatsAsync(
+            policy.Platform,
+            GroupUsageEstimator.DefaultSampleLimit,
+            cancellationToken);
         await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
 
-        var summary = await summaryTask;
+        var usageStats = new[] { await usageStatsTask };
+        var providers = GroupUsageEstimator.Estimate(
+            usageStats,
+            now,
+            policy.MaximumStatusAge);
         var selectedKeys = ResolveSelectedKeys(_cachedKeys);
         if (selectedKeys.Count == 0)
         {
@@ -233,9 +241,8 @@ public sealed class RoutingService : IDisposable
 
         var observedGroupId = ResolveObservedGroup(selectedKeys);
         var state = _stateStore.Load();
-        var policy = _settings.CreatePolicy();
         var evaluation = RoutingEngine.Evaluate(
-            summary.Apis,
+            providers,
             _cachedGroups,
             _cachedRates,
             policy,
@@ -302,7 +309,7 @@ public sealed class RoutingService : IDisposable
         return new RoutingCycleResult(
             decisionResult.Decision,
             evaluation,
-            summary.Apis,
+            providers,
             _cachedGroups,
             _cachedRates,
             _cachedKeys,

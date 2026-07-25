@@ -101,6 +101,10 @@
             <label><input type="radio" name="routingMode" value="balanced"><span>均衡</span></label>
             <label><input type="radio" name="routingMode" value="speed"><span>极速</span></label>
           </div>
+          <label class="inline-field" for="groupStickiness">
+            <span>分组粘性</span>
+            <input id="groupStickiness" type="number" min="0" max="10" step="0.01">
+          </label>
           <label class="inline-field" for="pollingInterval">
             <span>间隔</span>
             <input id="pollingInterval" type="number" min="30" max="3600" step="30">
@@ -155,10 +159,10 @@
                 <th>方案</th>
                 <th><button class="sort-button" type="button" data-sort="multiplier">倍率 <span></span></button></th>
                 <th><button class="sort-button" type="button" data-sort="latency">首字 <span></span></button></th>
-                <th><button class="sort-button" type="button" data-sort="successRate">6h 可用率 <span></span></button></th>
+                <th><button class="sort-button" type="button" data-sort="confidence">置信度 / 样本 <span></span></button></th>
                 <th><button class="sort-button" type="button" data-sort="weightedScore">加权得分 <span></span></button></th>
                 <th>状态</th>
-                <th>检测时间</th>
+                <th>最后样本</th>
               </tr>
             </thead>
             <tbody id="providerRows"><tr><td class="empty-state" colspan="9">刷新后显示方案</td></tr></tbody>

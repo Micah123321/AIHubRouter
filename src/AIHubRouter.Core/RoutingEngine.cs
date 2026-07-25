@@ -24,6 +24,7 @@ public static class RoutingEngine
 
         return providers
             .Where(provider => provider.Enabled && provider.Available)
+            .Where(HasSufficientConfidence)
             .Where(provider => provider.GroupId is > 0 && groups.ContainsKey(provider.GroupId.Value))
             .Where(provider => provider.Platform.Equals(criteria.Platform, StringComparison.OrdinalIgnoreCase))
             .Where(provider => provider.PriceMultiplier >= 0 && double.IsFinite(provider.PriceMultiplier))
@@ -71,6 +72,7 @@ public static class RoutingEngine
 
         var eligible = providers
             .Where(provider => provider.Enabled && provider.Available)
+            .Where(HasSufficientConfidence)
             .Where(provider => provider.GroupId is > 0 && groups.ContainsKey(provider.GroupId.Value))
             .Where(provider => provider.Platform.Equals(policy.Platform, StringComparison.OrdinalIgnoreCase))
             .Where(provider => provider.PriceMultiplier >= 0 && double.IsFinite(provider.PriceMultiplier))
@@ -145,7 +147,7 @@ public static class RoutingEngine
                 Candidate = candidate,
                 Score = CalculateTradeoffScore(
                     minimumMultiplier,
-                    baselineLatency,
+                    baseline,
                     candidate,
                     policy.PriceWeight,
                     policy.LatencyWeight)
@@ -177,6 +179,9 @@ public static class RoutingEngine
             : double.MaxValue;
     }
 
+    private static bool HasSufficientConfidence(ProviderStatus provider) =>
+        provider.LatencyConfidence is >= GroupUsageEstimator.MinimumConfidence;
+
     public static double? CalculateWeightedScore(
         RouteEvaluation evaluation,
         RouteCandidate candidate)
@@ -195,7 +200,7 @@ public static class RoutingEngine
 
         return CalculateTradeoffScore(
             minimumMultiplier.Value,
-            baselineLatency.Value,
+            evaluation.Baseline!,
             candidate,
             evaluation.PriceWeight,
             evaluation.LatencyWeight);
@@ -209,16 +214,28 @@ public static class RoutingEngine
 
     private static double CalculateTradeoffScore(
         double minimumMultiplier,
-        double baselineLatency,
+        RouteCandidate baseline,
         RouteCandidate candidate,
         double priceWeight,
         double latencyWeight)
     {
         var pricePremiumRatio =
             (candidate.EffectiveMultiplier - minimumMultiplier) / minimumMultiplier;
-        var speedupRatio =
-            baselineLatency / candidate.Provider.FirstTokenLatencyMs!.Value - 1;
+        var conservativeBaselineLatency = GetConservativeLatency(
+            baseline,
+            baseline.Provider.FirstTokenLatencyMs!.Value);
+        var conservativeCandidateLatency = GetConservativeLatency(candidate, candidate.Provider.FirstTokenLatencyMs!.Value);
+        var speedupRatio = conservativeBaselineLatency / conservativeCandidateLatency - 1;
         return latencyWeight * speedupRatio - priceWeight * pricePremiumRatio;
+    }
+
+    private static double GetConservativeLatency(RouteCandidate? candidate, double latency)
+    {
+        var confidence = candidate?.Provider.LatencyConfidence;
+        var uncertaintyPenalty = confidence is { } value && double.IsFinite(value)
+            ? Math.Clamp(1 - value, 0, 1)
+            : 1;
+        return latency * (1 + uncertaintyPenalty);
     }
 
     private static bool IsFresh(DateTimeOffset? checkedAt, DateTimeOffset now, TimeSpan maximumAge)

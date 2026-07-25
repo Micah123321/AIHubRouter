@@ -19,6 +19,7 @@ public sealed record PersistentAppSettings
     public bool AllowInsecureLoopback { get; init; }
     public string Platform { get; init; } = "openai";
     public RoutingMode RoutingMode { get; init; } = RoutingMode.Balanced;
+    public double? GroupStickiness { get; init; }
     public int PollingIntervalSeconds { get; init; } = 60;
     public int AccountCacheSeconds { get; init; } = 300;
     public bool SmoothRendering { get; init; } = true;
@@ -34,6 +35,7 @@ public sealed record PersistentAppSettings
         {
             Platform = string.IsNullOrWhiteSpace(Platform) ? "openai" : Platform,
             Mode = RoutingMode,
+            MinimumScoreAdvantageOverride = GroupStickiness,
             MaximumStatusAge = TimeSpan.FromMinutes(15),
             BlacklistedGroupIds = BlacklistedGroupIds
                 .Where(groupId => groupId > 0)

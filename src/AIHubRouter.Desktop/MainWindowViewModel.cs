@@ -35,6 +35,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _email = string.Empty;
     [ObservableProperty] private string _password = string.Empty;
     [ObservableProperty] private string _bearerToken = string.Empty;
+    [ObservableProperty] private decimal _groupStickiness =
+        (decimal)BalancedRoutingPolicy.DefaultMinimumScoreAdvantageToSwitch;
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
     [ObservableProperty] private bool _persistCredentials;
     [ObservableProperty]
@@ -61,7 +63,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public string PlanHeader => SortHeader("方案", "Plan");
     public string MultiplierHeader => SortHeader("倍率", "Multiplier");
     public string LatencyHeader => SortHeader("首字", "Latency");
-    public string SuccessRateHeader => SortHeader("6h 可用率", "SuccessRate");
+    public string ConfidenceHeader => SortHeader("置信度 / 样本", "Confidence");
     public string WeightedScoreHeader => SortHeader("加权得分", "WeightedScore");
     public bool CanChangeRoutingMode => !IsBusy;
 
@@ -98,6 +100,13 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _routingSettingsVersion++;
         SelectedProvider = null;
         Providers.Clear();
+        CandidateSummary = "目标分组：请刷新后计算";
+    }
+
+    partial void OnGroupStickinessChanged(decimal value)
+    {
+        _routingSettingsStale = true;
+        _routingSettingsVersion++;
         CandidateSummary = "目标分组：请刷新后计算";
     }
 
@@ -207,7 +216,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void SortProviders(string? field)
     {
-        if (field is not ("GroupId" or "Plan" or "Multiplier" or "Latency" or "SuccessRate" or "WeightedScore"))
+        if (field is not ("GroupId" or "Plan" or "Multiplier" or "Latency" or "Confidence" or "WeightedScore"))
         {
             return;
         }
@@ -219,7 +228,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         else
         {
             _providerSortField = field;
-            _providerSortDescending = field is "SuccessRate" or "WeightedScore";
+            _providerSortDescending = field is "Confidence" or "WeightedScore";
         }
 
         SortProviderRows();
@@ -227,7 +236,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(PlanHeader));
         OnPropertyChanged(nameof(MultiplierHeader));
         OnPropertyChanged(nameof(LatencyHeader));
-        OnPropertyChanged(nameof(SuccessRateHeader));
+        OnPropertyChanged(nameof(ConfidenceHeader));
         OnPropertyChanged(nameof(WeightedScoreHeader));
     }
 
@@ -614,7 +623,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             "GroupId" => OrderNumeric(row => row.GroupIdValue),
             "Multiplier" => OrderNumeric(row => row.MultiplierValue),
             "Latency" => OrderNumeric(row => row.LatencyValue),
-            "SuccessRate" => OrderNumeric(row => row.SuccessRateValue),
+            "Confidence" => OrderNumeric(row => row.ConfidenceValue),
             "WeightedScore" => OrderNumeric(row => row.WeightedScoreValue),
             _ => OrderNumeric(row => row.WeightedScoreValue)
         };
@@ -651,6 +660,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _loadedCredentials = snapshot.Credentials ?? new PersistentCredentials();
             BaseUrl = settings.BaseUrl;
             RoutingMode = settings.RoutingMode;
+            GroupStickiness = (decimal)settings.CreatePolicy().MinimumScoreAdvantageToSwitch;
             PollingIntervalSeconds = settings.PollingIntervalSeconds;
             PersistCredentials = settings.PersistCredentials;
             SelectedThemeChoice = ThemeChoices.FirstOrDefault(choice => choice.Mode == settings.ThemeMode)
@@ -681,6 +691,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             BaseUrl = BaseUrl.Trim(),
             RoutingMode = RoutingMode,
+            GroupStickiness = (double)GroupStickiness,
             PollingIntervalSeconds = (int)PollingIntervalSeconds,
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
@@ -793,8 +804,10 @@ public sealed class ProviderRowViewModel : ObservableObject
         Latency = LatencyValue is { } latencyValue
             ? $"{latencyValue:0} ms"
             : "-";
-        SuccessRateValue = provider.SuccessRate6h;
-        SuccessRate = provider.SuccessRate6h is { } success ? $"{success:P1}" : "-";
+        ConfidenceValue = provider.LatencyConfidence;
+        Confidence = provider.LatencyConfidence is { } confidence
+            ? $"{confidence:P0} / {provider.UsageSampleCount}"
+            : "-";
         ApplyEvaluation(evaluation);
         _baseState = !provider.Enabled ? "停用"
             : !provider.Available ? "异常"
@@ -829,8 +842,8 @@ public sealed class ProviderRowViewModel : ObservableObject
     public string Multiplier { get; }
     public double? LatencyValue { get; }
     public string Latency { get; }
-    public double? SuccessRateValue { get; }
-    public string SuccessRate { get; }
+    public double? ConfidenceValue { get; }
+    public string Confidence { get; }
     public double? WeightedScoreValue => _weightedScoreValue;
     public string WeightedScore => _weightedScore;
     public bool Blacklisted

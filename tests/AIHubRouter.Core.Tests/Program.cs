@@ -9,17 +9,23 @@ var tests = new (string Name, Action Body)[]
     ("Bearer token normalization", TestBearerNormalization),
     ("Token extraction from cookie", TestCookieTokenExtraction),
     ("Null provider availability is unavailable", TestNullProviderAvailabilityIsUnavailable),
-    ("Null provider success rate is unknown", TestNullProviderSuccessRateIsUnknown),
+    ("Usage stats map real TTFT and last use", TestUsageStatsMapRealTtftAndLastUse),
+    ("Continuous freshness changes confidence", TestContinuousFreshnessChangesConfidence),
+    ("Confidence penalizes latency score", TestConfidencePenalizesLatencyScore),
+    ("One fresh sample has insufficient confidence", TestOneFreshSampleHasInsufficientConfidence),
+    ("Stale last use is excluded", TestStaleLastUseIsExcluded),
+    ("Future last use is excluded", TestFutureLastUseIsExcluded),
     ("Lowest available authorized group", TestLowestAvailableGroup),
     ("Blacklisted group is excluded", TestBlacklistedGroupIsExcluded),
     ("Blacklisted group is excluded from balanced evaluation", TestBalancedEvaluationExcludesBlacklistedGroup),
+    ("Confidence hard gate precedes price and speed", TestConfidenceHardGatePrecedesPriceAndSpeed),
     ("User rate override", TestUserRateOverride),
     ("Latest status controls eligibility", TestLatestStatusControlsEligibility),
     ("Stale status rejection", TestStaleStatusRejection),
     ("Balanced mode buys meaningful latency", TestBalancedModeBuysLatency),
     ("Balanced mode rejects catastrophic cheap latency", TestBalancedModeRejectsCatastrophicCheapLatency),
-    ("Balanced mode keeps price for moderate speed gap", TestBalancedModeKeepsPriceForModerateGap),
-    ("Balanced mode keeps cheap route for a common latency gap", TestBalancedModeKeepsCheapRouteInCommonRange),
+    ("Balanced mode buys meaningful speed gain", TestBalancedModeBuysSpeedForModerateGap),
+    ("Balanced mode holds a marginal speed gain", TestBalancedModeHoldsMarginalSpeedGain),
     ("Balanced mode escapes extreme latency at double price", TestBalancedModeEscapesExtremeLatency),
     ("Balanced mode rejects weak latency value", TestBalancedModeRejectsWeakLatencyValue),
     ("Economy mode protects price", TestEconomyModeProtectsPrice),
@@ -37,6 +43,7 @@ var tests = new (string Name, Action Body)[]
     ("Profile settings changes signal hot reload", TestProfileSettingsChangeSignal),
     ("Unavailable credential storage fails before settings write", TestUnavailableCredentialStorageIsAtomic),
     ("Legacy hard-gate settings are ignored", TestLegacyHardGateSettingsAreIgnored),
+    ("Group stickiness persists as policy override", TestGroupStickinessPersistsAsPolicyOverride),
     ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
     ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
@@ -81,9 +88,18 @@ if (Environment.GetEnvironmentVariable("AIHUB_SMOKE_TEST") == "1")
     try
     {
         using var client = new AIHubClient("https://aihub.top");
-        var summary = await client.GetProviderSummaryAsync();
-        Assert(summary.Apis.Count > 0, "Public provider endpoint returned no entries.");
-        Console.WriteLine($"PASS Public API smoke test ({summary.Apis.Count} entries)");
+        var pages = new[] { await client.GetGroupUsageStatsAsync(
+            "openai",
+            GroupUsageEstimator.DefaultSampleLimit) };
+        var providers = GroupUsageEstimator.Estimate(
+            pages,
+            DateTimeOffset.UtcNow,
+            TimeSpan.FromMinutes(15));
+        var trustedCount = providers.Count(provider => provider.Available);
+        Assert(providers.Count > 0, "Public usage stats endpoint returned no entries.");
+        Assert(trustedCount > 0, "Public usage stats produced no fresh, trusted groups.");
+        Console.WriteLine(
+            $"PASS Public API smoke test ({providers.Count} groups, {trustedCount} trusted)");
     }
     catch (Exception exception)
     {
@@ -110,58 +126,206 @@ static void TestNullProviderAvailabilityIsUnavailable()
 {
     var handler = new StubHttpMessageHandler(_ => JsonResponse("""
         {
-          "apis": [
-            {
-              "id": "provider-null-availability",
+          "code": 0,
+          "message": "success",
+          "data": {
+            "items": [{
+              "code": "A016-Free",
               "group_id": 51,
-              "planType": "A016-Free",
               "platform": "openai",
-              "priceMultiplier": 0.005,
-              "available": null,
-              "enabled": true
-            }
-          ]
+              "rate_multiplier": 0.005,
+              "avg_ttft_ms": null,
+              "sample_count": 0,
+              "last_sample_at": null
+            }],
+            "total": 1,
+            "sample_limit": 100
+          }
         }
         """));
     using var client = new AIHubClient("https://example.test", messageHandler: handler);
 
-    var summary = client.GetProviderSummaryAsync(CancellationToken.None).GetAwaiter().GetResult();
+    var now = new DateTimeOffset(2026, 7, 25, 12, 34, 45, TimeSpan.Zero);
+    var usageStats = client.GetGroupUsageStatsAsync("openai").GetAwaiter().GetResult();
+    var providers = GroupUsageEstimator.Estimate([usageStats], now, TimeSpan.FromMinutes(15));
 
-    Assert(summary.Apis.Count == 1 && !summary.Apis[0].Available,
-        "A null provider availability was not treated as unavailable.");
+    Assert(providers.Count == 1 && !providers[0].Available,
+        "A usage group without samples was not treated as unavailable.");
 }
 
-static void TestNullProviderSuccessRateIsUnknown()
+static void TestUsageStatsMapRealTtftAndLastUse()
 {
-    var handler = new StubHttpMessageHandler(_ => JsonResponse("""
-        {
-          "apis": [
+    var lastUsed = new DateTimeOffset(2026, 7, 25, 12, 34, 45, TimeSpan.Zero);
+    var page = new GroupUsageStatsPage
+    {
+        SampleLimit = 100,
+        Items =
+        [
+            new GroupUsageStat
             {
-              "id": "provider-null-success-rate",
-              "group_id": 2,
-              "planType": "A001-Free",
-              "platform": "openai",
-              "priceMultiplier": 0.01,
-              "available": true,
-              "enabled": true,
-              "successRates": {
-                "5m": null,
-                "6h": 0.875
-              }
+                Code = "A004-Pro",
+                Platform = "openai",
+                RateMultiplier = 0.17,
+                AverageTtftMs = 3011.6,
+                SampleCount = 100,
+                LastSampleAt = lastUsed,
+                GroupId = 12
             }
-          ]
-        }
-        """));
-    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+        ]
+    };
 
-    var summary = client.GetProviderSummaryAsync(CancellationToken.None).GetAwaiter().GetResult();
-    var provider = summary.Apis.Single();
+    var provider = GroupUsageEstimator.Estimate(
+        [page],
+        lastUsed,
+        TimeSpan.FromMinutes(15)).Single();
 
-    Assert(provider.SuccessRates.TryGetValue("5m", out var fiveMinuteRate) && fiveMinuteRate is null,
-        "A null success rate was not preserved as unknown.");
-    Assert(provider.SuccessRate6h == 0.875,
-        "A numeric success rate changed while reading a nullable window.");
+    Assert(provider.GroupId == 12 && provider.FirstTokenLatencyMs == 3011.6,
+        "Real usage TTFT was not mapped to the route candidate.");
+    Assert(provider.CheckedAt == lastUsed && provider.UsageSampleCount == 100 && provider.Available,
+        "Last use or sample count was not mapped to candidate freshness.");
+    Assert(provider.LatencyConfidence is > 0.99 and <= 1,
+        "A fresh full sample did not receive high confidence.");
 }
+
+static void TestStaleLastUseIsExcluded()
+{
+    var now = new DateTimeOffset(2026, 7, 25, 12, 30, 0, TimeSpan.Zero);
+    var page = new GroupUsageStatsPage
+    {
+        Items =
+        [
+            new GroupUsageStat
+            {
+                Code = "stale-group",
+                Platform = "openai",
+                RateMultiplier = 0.01,
+                AverageTtftMs = 500,
+                SampleCount = 100,
+                LastSampleAt = now.AddHours(-3),
+                GroupId = 2
+            }
+        ]
+    };
+    var providers = GroupUsageEstimator.Estimate(
+        [page],
+        now,
+        TimeSpan.FromMinutes(15));
+
+    var evaluation = RoutingEngine.Evaluate(
+        providers,
+        [Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+
+    Assert(providers.Single().LatencyConfidence == 0 &&
+           evaluation.Recommended is null &&
+           evaluation.EligibleCandidates.Count == 0,
+        "A group whose last real request was hours ago entered the candidate pool.");
+}
+
+static void TestContinuousFreshnessChangesConfidence()
+{
+    var now = new DateTimeOffset(2026, 7, 25, 12, 30, 0, TimeSpan.Zero);
+    var fresh = GroupUsageEstimator.Estimate(
+        [UsagePage(100, 1_000, 100, now)],
+        now,
+        TimeSpan.FromMinutes(15)).Single();
+    var halfOld = GroupUsageEstimator.Estimate(
+        [UsagePage(100, 1_000, 100, now.AddMinutes(-7.5))],
+        now,
+        TimeSpan.FromMinutes(15)).Single();
+
+    Assert(fresh.LatencyConfidence is { } freshConfidence &&
+           halfOld.LatencyConfidence is { } halfOldConfidence &&
+           freshConfidence > halfOldConfidence,
+        "Confidence did not decrease continuously as the last sample aged.");
+    Assert(halfOld.LatencyConfidence is > 0 &&
+           fresh.LatencyConfidence is { } currentFreshConfidence &&
+           halfOld.LatencyConfidence < currentFreshConfidence,
+        "Continuous freshness collapsed to a discrete window decision.");
+}
+
+static void TestConfidencePenalizesLatencyScore()
+{
+    var now = DateTimeOffset.UtcNow;
+    var highConfidence = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 1, now, latency: 10_000, confidence: 1),
+            Provider(2, 0.021, true, 1, now, latency: 1_000, confidence: 1)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+    var lowConfidence = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 1, now, latency: 10_000, confidence: 1),
+            Provider(2, 0.021, true, 1, now, latency: 1_000, confidence: 0.20)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+
+    var highScore = RoutingEngine.CalculateWeightedScore(
+        highConfidence,
+        highConfidence.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+    var lowScore = RoutingEngine.CalculateWeightedScore(
+        lowConfidence,
+        lowConfidence.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+
+    Assert(highScore is { } high && high > 0 && lowScore is { } low && low < high,
+        "Low-confidence latency was not penalized in the weighted score.");
+}
+
+static void TestOneFreshSampleHasInsufficientConfidence()
+{
+    var now = new DateTimeOffset(2026, 7, 25, 12, 30, 0, TimeSpan.Zero);
+    var provider = GroupUsageEstimator.Estimate(
+        [UsagePage(1, 1_000, 1, now)],
+        now,
+        TimeSpan.FromMinutes(15)).Single();
+
+    Assert(provider.LatencyConfidence is > 0 and < GroupUsageEstimator.MinimumConfidence,
+        "A single sample did not receive low confidence.");
+    Assert(!provider.Available,
+        "A group backed by only one request entered the candidate pool.");
+}
+
+static void TestFutureLastUseIsExcluded()
+{
+    var now = new DateTimeOffset(2026, 7, 25, 12, 30, 0, TimeSpan.Zero);
+    var provider = GroupUsageEstimator.Estimate(
+        [UsagePage(100, 1_000, 100, now.AddMinutes(2))],
+        now,
+        TimeSpan.FromMinutes(15)).Single();
+
+    Assert(provider.LatencyConfidence == 0 && !provider.Available,
+        "An implausible future sample timestamp was treated as trustworthy.");
+}
+
+static GroupUsageStatsPage UsagePage(
+    int sampleLimit,
+    double averageTtftMs,
+    int sampleCount,
+    DateTimeOffset lastSampleAt) => new()
+{
+    SampleLimit = sampleLimit,
+    Items =
+    [
+        new GroupUsageStat
+        {
+            Code = "Group 2",
+            Platform = "openai",
+            RateMultiplier = 0.02,
+            AverageTtftMs = averageTtftMs,
+            SampleCount = sampleCount,
+            LastSampleAt = lastSampleAt,
+            GroupId = 2
+        }
+    ]
+};
 
 static void TestLowestAvailableGroup()
 {
@@ -214,6 +378,36 @@ static void TestBalancedEvaluationExcludesBlacklistedGroup()
     Assert(evaluation.Recommended?.Group.Id == 2 &&
            evaluation.EligibleCandidates.All(candidate => candidate.Group.Id != 1),
         "A blacklisted group entered balanced evaluation.");
+}
+
+static void TestConfidenceHardGatePrecedesPriceAndSpeed()
+{
+    var now = DateTimeOffset.UtcNow;
+    var providers = new[]
+    {
+        Provider(1, 0.001, true, 1, now, latency: 100, confidence: 0.19),
+        Provider(2, 0.02, true, 1, now, latency: 2_000, confidence: 0.80)
+    };
+    var groups = new[] { Group(1), Group(2) };
+
+    var cheapest = RoutingEngine.SelectCheapest(
+        providers,
+        groups,
+        new Dictionary<long, double>(),
+        Criteria(),
+        now);
+    var evaluation = RoutingEngine.Evaluate(
+        providers,
+        groups,
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced),
+        now);
+
+    Assert(cheapest?.Group.Id == 2,
+        "The cheapest selector admitted a low-confidence group.");
+    Assert(evaluation.Recommended?.Group.Id == 2 &&
+           evaluation.EligibleCandidates.All(candidate => candidate.Group.Id != 1),
+        "Price or speed scoring ran before the confidence hard gate.");
 }
 
 static void TestUserRateOverride()
@@ -287,7 +481,7 @@ static void TestEconomyModeProtectsPrice()
     var providers = new[]
     {
         Provider(1, 0.02, true, 0.99, now, latency: 2_000),
-        Provider(2, 0.022, true, 0.99, now, latency: 1_000)
+        Provider(2, 0.03, true, 0.99, now, latency: 1_000)
     };
     var evaluation = RoutingEngine.Evaluate(
         providers,
@@ -317,7 +511,7 @@ static void TestBalancedModeRejectsCatastrophicCheapLatency()
         "Balanced mode accepted a 94% latency regression for a 40% price reduction.");
 }
 
-static void TestBalancedModeKeepsPriceForModerateGap()
+static void TestBalancedModeBuysSpeedForModerateGap()
 {
     var now = DateTimeOffset.UtcNow;
     var evaluation = RoutingEngine.Evaluate(
@@ -331,19 +525,19 @@ static void TestBalancedModeKeepsPriceForModerateGap()
         Policy(RoutingMode.Balanced),
         now);
 
-    Assert(evaluation.Recommended?.Group.Id == 1,
-        "Balanced mode paid a 67% premium for a moderate latency gap.");
+    Assert(evaluation.Recommended?.Group.Id == 2,
+        "Balanced mode did not buy a meaningful latency improvement.");
 }
 
-static void TestBalancedModeKeepsCheapRouteInCommonRange()
+static void TestBalancedModeHoldsMarginalSpeedGain()
 {
     var now = DateTimeOffset.UtcNow;
     var policy = Policy(RoutingMode.Balanced);
     var evaluation = RoutingEngine.Evaluate(
         new[]
         {
-            Provider(1, 0.03, true, 0.99, now, latency: 9_000),
-            Provider(2, 0.05, true, 0.99, now, latency: 2_000)
+            Provider(1, 0.03, true, 0.99, now, latency: 1_000),
+            Provider(2, 0.0301, true, 0.99, now, latency: 980)
         },
         new[] { Group(1), Group(2) },
         new Dictionary<long, double>(),
@@ -357,7 +551,7 @@ static void TestBalancedModeKeepsCheapRouteInCommonRange()
         observedCurrentGroupId: 1);
 
     Assert(!result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 1,
-        "Balanced mode left a usable cheap route for a small weighted advantage.");
+        "Balanced mode switched for a marginal weighted advantage.");
 }
 
 static void TestBalancedModeEscapesExtremeLatency()
@@ -507,7 +701,7 @@ static void TestCloseCheaperScoreKeepsCurrentGroup()
     var evaluation = RoutingEngine.Evaluate(
         new[]
         {
-            Provider(1, 0.0201, true, 0.99, now, latency: 981),
+            Provider(1, 0.0201, true, 0.99, now, latency: 999),
             Provider(2, 0.02, true, 0.99, now, latency: 1_000)
         },
         new[] { Group(1), Group(2) },
@@ -903,12 +1097,35 @@ static void TestLegacyHardGateSettingsAreIgnored()
 
         var settings = store.Load().Settings;
         var policy = settings.CreatePolicy();
-        Assert(Math.Abs(policy.PriceWeight - 0.90) < 0.0001,
+        Assert(Math.Abs(policy.PriceWeight - 0.50) < 0.0001,
             "Legacy settings changed the balanced price weight.");
-        Assert(Math.Abs(policy.LatencyWeight - 0.10) < 0.0001,
+        Assert(Math.Abs(policy.LatencyWeight - 0.50) < 0.0001,
             "Legacy settings changed the balanced latency weight.");
-        Assert(Math.Abs(policy.MinimumScoreAdvantageToSwitch - 0.05) < 0.0001,
+        Assert(Math.Abs(policy.MinimumScoreAdvantageToSwitch - 0.10) < 0.0001,
             "Legacy settings changed the score hysteresis threshold.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestGroupStickinessPersistsAsPolicyOverride()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        var store = new AppSettingsStore(
+            directory,
+            new UnavailableCredentialProtector("unit test unavailable protector"));
+        store.Save(new PersistentAppSettings { GroupStickiness = 0.42 }, null);
+
+        var policy = store.Load().Settings.CreatePolicy();
+        Assert(Math.Abs(policy.MinimumScoreAdvantageToSwitch - 0.42) < 0.0001,
+            "Persisted group stickiness did not reach the routing policy.");
     }
     finally
     {
@@ -1427,7 +1644,8 @@ static ProviderStatus Provider(
     double success,
     DateTimeOffset checkedAt,
     double? latency = 1000,
-    bool warning = false)
+    bool warning = false,
+    double confidence = 1)
 {
     return new ProviderStatus
     {
@@ -1440,6 +1658,7 @@ static ProviderStatus Provider(
         Enabled = true,
         CheckedAt = checkedAt,
         FirstTokenLatencyMs = latency,
+        LatencyConfidence = confidence,
         SuccessRates = new Dictionary<string, double?> { ["6h"] = success },
         WarningReasons = warning
             ? [new ProviderWarningReason { Type = "test_warning", Message = "Synthetic warning" }]
@@ -1505,23 +1724,25 @@ sealed class StubAIHubApiClient(
 {
     public int UpdateCalls { get; private set; }
 
-    public Task<MonitorSummary> GetProviderSummaryAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult(new MonitorSummary
+    public Task<GroupUsageStatsPage> GetGroupUsageStatsAsync(
+        string platform,
+        int samples = 100,
+        CancellationToken cancellationToken = default,
+        double? maxRate = null) =>
+        Task.FromResult(new GroupUsageStatsPage
         {
-            Apis =
+            SampleLimit = samples,
+            Items =
             [
-                new ProviderStatus
+                new GroupUsageStat
                 {
-                    Id = "provider-2",
+                    Code = "Fast",
                     GroupId = 2,
-                    PlanType = "Fast",
                     Platform = "openai",
-                    PriceMultiplier = 0.02,
-                    Available = true,
-                    Enabled = true,
-                    CheckedAt = now,
-                    FirstTokenLatencyMs = 500,
-                    SuccessRates = new Dictionary<string, double?> { ["6h"] = 1 }
+                    RateMultiplier = 0.02,
+                    AverageTtftMs = 500,
+                    SampleCount = samples,
+                    LastSampleAt = now
                 }
             ]
         });

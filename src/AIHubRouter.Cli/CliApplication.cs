@@ -376,6 +376,7 @@ internal static class CliApplication
         var baseUrl = GetOption(args, "--base-url");
         var platform = GetOption(args, "--platform");
         var mode = GetOption(args, "--mode");
+        var groupStickiness = GetDoubleOption(args, "--group-stickiness");
         var interval = GetIntOption(args, "--interval");
         var selectedKeys = GetOption(args, "--selected-keys");
         var blacklistedGroups = GetOption(args, "--blacklisted-groups");
@@ -386,6 +387,11 @@ internal static class CliApplication
         if (mode is not null && !Enum.TryParse<RoutingMode>(mode, ignoreCase: true, out _))
         {
             throw new ArgumentException("--mode 必须是 economy、balanced 或 speed。" );
+        }
+
+        if (groupStickiness is < 0 || groupStickiness is { } value && !double.IsFinite(value))
+        {
+            throw new ArgumentException("--group-stickiness 必须是非负有限数值。");
         }
 
         long[]? parsedKeys = null;
@@ -419,6 +425,7 @@ internal static class CliApplication
             RoutingMode = mode is null
                 ? settings.RoutingMode
                 : Enum.Parse<RoutingMode>(mode, ignoreCase: true),
+            GroupStickiness = groupStickiness ?? settings.GroupStickiness,
             PollingIntervalSeconds = interval is null
                 ? settings.PollingIntervalSeconds
                 : Math.Clamp(interval.Value, 30, 3600),
@@ -483,7 +490,7 @@ internal static class CliApplication
             .ToHashSet();
         return new
         {
-            schemaVersion = 2,
+            schemaVersion = 3,
             eventType = "routingCycle",
             processId = Environment.ProcessId,
             result.DryRun,
@@ -504,7 +511,9 @@ internal static class CliApplication
                     groupName = candidate.Group.Name,
                     multiplier = candidate.EffectiveMultiplier,
                     firstTokenLatencyMs = candidate.Provider.FirstTokenLatencyMs,
-                    successRate6h = candidate.Provider.SuccessRate6h,
+                    latencyConfidence = candidate.Provider.LatencyConfidence,
+                    usageSampleCount = candidate.Provider.UsageSampleCount,
+                    lastSampleAt = candidate.Provider.CheckedAt,
                     pricePremiumPercent = CalculatePricePremium(evaluation, candidate),
                     speedupRatio = CalculateSpeedupRatio(evaluation, candidate),
                     weightedScore = CalculateWeightedScore(evaluation, candidate),
@@ -520,6 +529,9 @@ internal static class CliApplication
                 targetGroupName = result.Decision.Target?.Group.Name,
                 multiplier = result.Decision.Target?.EffectiveMultiplier,
                 firstTokenLatencyMs = result.Decision.Target?.Provider.FirstTokenLatencyMs,
+                latencyConfidence = result.Decision.Target?.Provider.LatencyConfidence,
+                usageSampleCount = result.Decision.Target?.Provider.UsageSampleCount,
+                lastSampleAt = result.Decision.Target?.Provider.CheckedAt,
                 result.Decision.PricePremiumPercent,
                 result.Decision.LatencyImprovementPercent
             },
@@ -570,6 +582,7 @@ internal static class CliApplication
             timestamp = DateTimeOffset.UtcNow,
             pollingIntervalSeconds = settings.PollingIntervalSeconds,
             routingMode = settings.RoutingMode.ToString(),
+            groupStickiness = settings.CreatePolicy().MinimumScoreAdvantageToSwitch,
             blacklistedGroupCount = settings.BlacklistedGroupIds.Length,
             selectedKeyCount = settings.SelectedKeyIds.Length
         };
@@ -666,7 +679,15 @@ internal static class CliApplication
             return null;
         }
 
-        return baseline.Value / latency.Value - 1;
+        var baselineConfidence = evaluation.Baseline?.Provider.LatencyConfidence;
+        var candidateConfidence = candidate.Provider.LatencyConfidence;
+        var baselinePenalty = baselineConfidence is { } baseValue && double.IsFinite(baseValue)
+            ? 1 + Math.Clamp(1 - baseValue, 0, 1)
+            : 2;
+        var candidatePenalty = candidateConfidence is { } candidateValue && double.IsFinite(candidateValue)
+            ? 1 + Math.Clamp(1 - candidateValue, 0, 1)
+            : 2;
+        return baseline.Value * baselinePenalty / (latency.Value * candidatePenalty) - 1;
     }
 
     private static double? CalculateWeightedScore(RouteEvaluation evaluation, RouteCandidate candidate)
@@ -730,6 +751,23 @@ internal static class CliApplication
             : throw new ArgumentException($"{name} 必须是整数。" );
     }
 
+    private static double? GetDoubleOption(string[] args, string name)
+    {
+        var value = GetOption(args, name);
+        if (value is null)
+        {
+            return null;
+        }
+
+        return double.TryParse(
+            value,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var result)
+            ? result
+            : throw new ArgumentException($"{name} 必须是数值。");
+    }
+
     private static bool HasFlag(string[] args, string name) =>
         args.Any(value => value.Equals(name, StringComparison.OrdinalIgnoreCase));
 
@@ -762,6 +800,7 @@ internal static class CliApplication
               --base-url <https-url>
               --platform <openai|anthropic|gemini|antigravity|grok>
               --mode <economy|balanced|speed>
+              --group-stickiness <non-negative-number>
               --interval <30-3600>
               --selected-keys <id,id,...>
               --blacklisted-groups <id,id,...>

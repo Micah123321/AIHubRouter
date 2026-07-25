@@ -58,6 +58,7 @@ public sealed class WebRouterCoordinator : BackgroundService
             {
                 BaseUrl = request.BaseUrl.Trim().TrimEnd('/'),
                 RoutingMode = request.RoutingMode,
+                GroupStickiness = request.GroupStickiness,
                 PollingIntervalSeconds = Math.Clamp(request.PollingIntervalSeconds, 30, 3600),
                 PersistCredentials = request.PersistCredentials,
                 ThemeMode = request.ThemeMode,
@@ -82,6 +83,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _status = "配置已保存。";
                 _statusKind = "success";
                 if (oldSettings.RoutingMode != settings.RoutingMode ||
+                    oldSettings.GroupStickiness != settings.GroupStickiness ||
                     !string.Equals(oldSettings.BaseUrl, settings.BaseUrl, StringComparison.OrdinalIgnoreCase) ||
                     !oldSettings.BlacklistedGroupIds.SequenceEqual(settings.BlacklistedGroupIds))
                 {
@@ -341,6 +343,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 !string.IsNullOrWhiteSpace(_credentials.Password),
                 !string.IsNullOrWhiteSpace(_credentials.BearerToken),
                 settings.RoutingMode,
+                settings.CreatePolicy().MinimumScoreAdvantageToSwitch,
                 settings.PollingIntervalSeconds,
                 settings.PersistCredentials,
                 _store.CanPersistCredentials,
@@ -390,7 +393,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 : provider.PlanType,
             double.IsFinite(multiplier) ? multiplier : null,
             provider.FirstTokenLatencyMs is >= 0 and var latency && double.IsFinite(latency) ? latency : null,
-            provider.SuccessRate6h,
+            provider.LatencyConfidence,
+            provider.UsageSampleCount,
             score,
             state,
             provider.CheckedAt,
@@ -467,6 +471,11 @@ public sealed class WebRouterCoordinator : BackgroundService
         if (request.PollingIntervalSeconds is < 30 or > 3600)
         {
             throw new ArgumentOutOfRangeException(nameof(request.PollingIntervalSeconds), "轮询间隔必须在 30 到 3600 秒之间。");
+        }
+
+        if (request.GroupStickiness < 0 || !double.IsFinite(request.GroupStickiness))
+        {
+            throw new ArgumentOutOfRangeException(nameof(request.GroupStickiness), "分组粘性必须是非负有限数值。");
         }
     }
 

@@ -36,11 +36,11 @@ tests/
 
 候选必须同时满足：
 
-1. 供应商和分组均为启用状态。
-2. 最新监测字段 `available` 为 `true`；“可用”和带警告原因的“警告”都可进入评估，错误状态直接排除。
-3. 供应商平台与策略平台一致。
-4. 账号拥有目标分组权限。
-5. 监测时间不超过 `MaximumStatusAge`，且未来偏差不超过 1 分钟。
+1. 分组为启用状态，实时用量统计包含有效 TTFT 样本。
+2. 最后样本时间不超过 `MaximumStatusAge`（默认 15 分钟），且未来偏差不超过 1 分钟。
+3. 实时数据置信度不低于 `0.20`。
+4. 统计平台与策略平台一致。
+5. 账号拥有目标分组权限。
 6. 倍率为有限且非负数。
 7. 分组 ID 不在持久化黑名单中。
 
@@ -48,11 +48,26 @@ tests/
 
 ### 4.2 价格与延迟权衡
 
-只要存在有效首 Token 实测值，缺失或非法延迟的候选就不参与本轮竞争。程序从有实测值的候选中选出最低倍率基准，并计算其他候选相对基准的权衡得分：
+每个路由周期读取每组最近 `100` 条请求的统计结果。新鲜度使用连续指数衰减，而不是把样本数量窗口当成离散权重：
+
+```text
+freshness = exp(-ln(2) * max(lastSampleAge, 0) / (MaximumStatusAge / 2))
+volume = 1 - exp(-effectiveSampleCount / 20)
+stability = 1 / (1 + coefficientOfVariation)
+confidence = freshness * volume * stability
+```
+
+当前接口返回的是聚合 TTFT 与最后样本时间；如果接口返回逐条样本，程序会按每条样本的时间计算连续权重。缺失、非法或低置信度延迟的候选不参与本轮竞争。为避免低置信度的低延迟获得虚假的速度优势，评分使用保守延迟：
+
+```text
+conservativeLatency = averageLatency * (1 + (1 - confidence))
+```
+
+程序从可信候选中选出最低倍率基准，并计算其他候选相对基准的权衡得分：
 
 ```text
 pricePremiumRatio = (candidateRate - minimumRate) / minimumRate
-speedupRatio = baselineLatency / candidateLatency - 1
+speedupRatio = conservativeBaselineLatency / conservativeCandidateLatency - 1
 weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 ```
 
@@ -62,20 +77,20 @@ weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 
 | 模式 | `priceWeight` | `latencyWeight` | 决策倾向 |
 |---|---:|---:|---|
-| Economy | 0.98 | 0.02 | 极强倍率倾向 |
-| Balanced | 0.90 | 0.10 | 价格优先，只响应很大的速度差距 |
-| Speed | 0.75 | 0.25 | 在价格约束下提高速度敏感度 |
+| Economy | 0.80 | 0.20 | 价格优先，保留速度约束 |
+| Balanced | 0.50 | 0.50 | 价格与首字速度同等权衡 |
+| Speed | 0.20 | 0.80 | 速度优先，保留价格约束 |
 
 最低倍率为 0 时，仅在零倍率候选中按延迟选择。全部候选都缺失延迟时回退到最低倍率，避免虚构速度收益。默认使用 `Balanced`。
 
 ### 4.3 权重稳定机制
 
-倍率通常稳定，而首 Token 延迟会随网络和服务负载波动。算法除了提高倍率权重、降低首字速度权重，还在切换时使用最小得分优势抑制频繁切换：
+首 Token 延迟会随网络和服务负载波动。算法通过置信度修正、保守延迟和最小得分优势抑制频繁切换：
 
 - 不设置固定延迟上限。
 - 不设置切换冷却或最短驻留时间。
 - 不要求候选连续出现多次。
-- 新候选必须比当前有效分组高出 `MinimumScoreAdvantageToSwitch`，默认值为 `0.05`。
+- 新候选必须比当前有效分组高出“分组粘性”（内部字段 `MinimumScoreAdvantageToSwitch`），默认值为 `0.10`，可由用户配置。
 - 只持久化当前候选分组。
 
 候选相对最低倍率的必要速度收益为：
@@ -84,9 +99,9 @@ weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 speedupRatio > pricePremiumRatio * priceWeight / latencyWeight
 ```
 
-Balanced 中右侧系数为 9，候选每增加 10% 倍率溢价，至少需要额外约 90% 的速度收益才能抵消价格损失。当前分组仍有效且双方得分可计算时，只有新候选的得分优势大于默认门槛 `0.05` 才立即切换。初始路由、当前分组失效或无法比较得分时不应用该门槛。
+Balanced 中右侧系数为 1，候选每增加 10% 倍率溢价，至少需要额外约 10% 的速度收益才能抵消价格损失。当前分组仍有效且双方得分可计算时，只有新候选的得分优势大于配置的分组粘性（默认 `0.10`）才立即切换。初始路由、当前分组失效或无法比较得分时不应用该门槛。
 
-这个门槛使用加权得分单位，而不是百分比。Balanced 中，价格相同的两个分组需要形成约 2 倍的实际延迟差才会离开当前分组；速度相同时，价格改善需要超过约 5.56%。算法不设置固定或软延迟边界，极端延迟仍通过同一加权公式参与决策。
+这个门槛使用加权得分单位，而不是百分比。Balanced 中，价格相同的两个分组需要约 20% 的速度收益才能超过默认切换门槛；速度相同时，价格改善需要超过约 20%。算法不设置固定或软延迟边界，极端延迟仍通过同一加权公式参与决策。
 
 ### 4.4 可解释结果
 
@@ -107,7 +122,7 @@ public interface IRouteSelector;
 `RoutingService` 负责一个完整周期：
 
 1. 确保 session 可用。
-2. 获取监测数据。
+2. 从 `aihub.top` 获取每组最近 100 条真实用量的统计结果。
 3. 读取带 TTL 的分组、倍率和 Key 缓存。
 4. 计算候选与加权决策。
 5. `dry-run` 时只返回决策。
@@ -118,7 +133,7 @@ public interface IRouteSelector;
 
 - 每个进程复用一个 `SocketsHttpHandler` 和一个 `HttpClient`。
 - 分组、用户倍率和 Key 默认缓存 5 分钟。
-- 供应商监测每个路由周期刷新。
+- 真实用量统计及其最后样本时间每个路由周期刷新。
 - `watch` 使用 `PeriodicTimer`，不忙轮询。
 - 同一 profile 使用跨平台排他文件锁，阻止 GUI 与 CLI 同时写入。
 

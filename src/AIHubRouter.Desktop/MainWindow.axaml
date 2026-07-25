@@ -50,16 +50,18 @@
         </Border>
 
         <Border Grid.Row="1" Classes="section-rule">
-          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,Auto,24,Auto,125,*">
-            <TextBlock Grid.Row="0" Grid.ColumnSpan="7" Text="路由策略" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
+          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,Auto,24,Auto,105,18,Auto,125,*">
+            <TextBlock Grid.Row="0" Grid.ColumnSpan="10" Text="路由策略" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
             <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="0">
               <RadioButton Content="省钱" GroupName="mode" IsChecked="{Binding IsEconomy}" IsEnabled="{Binding CanChangeRoutingMode}" Padding="14,7" />
               <RadioButton Content="均衡" GroupName="mode" IsChecked="{Binding IsBalanced}" IsEnabled="{Binding CanChangeRoutingMode}" Padding="14,7" />
               <RadioButton Content="极速" GroupName="mode" IsChecked="{Binding IsSpeed}" IsEnabled="{Binding CanChangeRoutingMode}" Padding="14,7" />
             </StackPanel>
-            <TextBlock Grid.Row="1" Grid.Column="4" Text="间隔 秒" VerticalAlignment="Center" />
-            <NumericUpDown Grid.Row="1" Grid.Column="5" Minimum="30" Maximum="3600" Increment="30" Value="{Binding PollingIntervalSeconds}" />
-            <CheckBox Grid.Row="1" Grid.Column="6" Content="安全保存认证" IsChecked="{Binding PersistCredentials}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+            <TextBlock Grid.Row="1" Grid.Column="4" Text="分组粘性" VerticalAlignment="Center" />
+            <NumericUpDown Grid.Row="1" Grid.Column="5" Minimum="0" Maximum="10" Increment="0.01" FormatString="0.00" Value="{Binding GroupStickiness}" />
+            <TextBlock Grid.Row="1" Grid.Column="7" Text="间隔 秒" VerticalAlignment="Center" />
+            <NumericUpDown Grid.Row="1" Grid.Column="8" Minimum="30" Maximum="3600" Increment="30" Value="{Binding PollingIntervalSeconds}" />
+            <CheckBox Grid.Row="1" Grid.Column="9" Content="安全保存认证" IsChecked="{Binding PersistCredentials}" HorizontalAlignment="Right" VerticalAlignment="Center" />
           </Grid>
         </Border>
 
@@ -82,10 +84,10 @@
                 <Button Grid.Column="2" Classes="table-header" Content="{Binding PlanHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Plan" />
                 <Button Grid.Column="3" Classes="table-header" Content="{Binding MultiplierHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Multiplier" />
                 <Button Grid.Column="4" Classes="table-header" Content="{Binding LatencyHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Latency" />
-                <Button Grid.Column="5" Classes="table-header" Content="{Binding SuccessRateHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="SuccessRate" />
+                <Button Grid.Column="5" Classes="table-header" Content="{Binding ConfidenceHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Confidence" />
                 <Button Grid.Column="6" Classes="table-header" Content="{Binding WeightedScoreHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="WeightedScore" />
                 <TextBlock Grid.Column="7" Text="状态" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="8" Text="检测时间" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="8" Text="最后样本" VerticalAlignment="Center" FontWeight="SemiBold" />
               </Grid>
               <ListBox Grid.Row="1" ItemsSource="{Binding Providers}" SelectedItem="{Binding SelectedProvider}" SelectionMode="Single" BorderThickness="0">
                 <ListBox.ItemTemplate>
@@ -107,7 +109,7 @@
                       <TextBlock Grid.Column="2" Text="{Binding Plan}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="3" Text="{Binding Multiplier}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="4" Text="{Binding Latency}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="5" Text="{Binding SuccessRate}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="5" Text="{Binding Confidence}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="6" Text="{Binding WeightedScore}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="7" Text="{Binding State}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="8" Text="{Binding CheckedAt}" VerticalAlignment="Center" />

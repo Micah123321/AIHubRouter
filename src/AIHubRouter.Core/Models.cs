@@ -2,16 +2,51 @@ using System.Text.Json.Serialization;
 
 namespace AIHubRouter.Core;
 
-public sealed class MonitorSummary
+public sealed class GroupUsageStatsPage
 {
-    [JsonPropertyName("apis")]
-    public List<ProviderStatus> Apis { get; init; } = [];
+    [JsonPropertyName("items")]
+    public List<GroupUsageStat> Items { get; init; } = [];
 
-    [JsonPropertyName("generatedAt")]
-    public DateTimeOffset? GeneratedAt { get; init; }
+    [JsonPropertyName("total")]
+    public int Total { get; init; }
 
-    [JsonPropertyName("monitoringActive")]
-    public bool MonitoringActive { get; init; }
+    [JsonPropertyName("sample_limit")]
+    public int SampleLimit { get; init; }
+}
+
+public sealed class GroupUsageStat
+{
+    [JsonPropertyName("code")]
+    public string Code { get; init; } = string.Empty;
+
+    [JsonPropertyName("platform")]
+    public string Platform { get; init; } = string.Empty;
+
+    [JsonPropertyName("rate_multiplier")]
+    public double RateMultiplier { get; init; }
+
+    [JsonPropertyName("avg_ttft_ms")]
+    public double? AverageTtftMs { get; init; }
+
+    [JsonPropertyName("sample_count")]
+    public int SampleCount { get; init; }
+
+    [JsonPropertyName("last_sample_at")]
+    public DateTimeOffset? LastSampleAt { get; init; }
+
+    [JsonPropertyName("group_id")]
+    public long GroupId { get; init; }
+
+    // Newer API versions may expose the raw observations alongside aggregates.
+    [JsonPropertyName("samples")]
+    public List<GroupUsageSample> Samples { get; init; } = [];
+}
+
+public sealed class GroupUsageSample
+{
+    public DateTimeOffset? Timestamp { get; init; }
+
+    public double? FirstTokenLatencyMs { get; init; }
 }
 
 public sealed class ProviderStatus
@@ -43,6 +78,10 @@ public sealed class ProviderStatus
 
     [JsonPropertyName("firstTokenLatencyMs")]
     public double? FirstTokenLatencyMs { get; init; }
+
+    public int UsageSampleCount { get; init; }
+
+    public double? LatencyConfidence { get; init; }
 
     [JsonPropertyName("outputTokensPerSecond")]
     public double? OutputTokensPerSecond { get; init; }
@@ -150,7 +189,7 @@ public enum RoutingMode
 
 public sealed record BalancedRoutingPolicy
 {
-    public const double DefaultMinimumScoreAdvantageToSwitch = 0.05;
+    public const double DefaultMinimumScoreAdvantageToSwitch = 0.10;
 
     public string Platform { get; init; } = "openai";
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
@@ -161,10 +200,10 @@ public sealed record BalancedRoutingPolicy
 
     public double PriceWeight => PriceWeightOverride ?? Mode switch
     {
-        RoutingMode.Economy => 0.98,
-        RoutingMode.Balanced => 0.90,
-        RoutingMode.Speed => 0.75,
-        _ => 0.90
+        RoutingMode.Economy => 0.80,
+        RoutingMode.Balanced => 0.50,
+        RoutingMode.Speed => 0.20,
+        _ => 0.50
     };
 
     public double LatencyWeight => 1 - PriceWeight;

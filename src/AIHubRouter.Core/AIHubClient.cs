@@ -8,7 +8,11 @@ namespace AIHubRouter.Core;
 
 public interface IAIHubApiClient : IDisposable
 {
-    Task<MonitorSummary> GetProviderSummaryAsync(CancellationToken cancellationToken = default);
+    Task<GroupUsageStatsPage> GetGroupUsageStatsAsync(
+        string platform,
+        int samples = 100,
+        CancellationToken cancellationToken = default,
+        double? maxRate = null);
     Task<JsonElement> ValidateLoginAsync(CancellationToken cancellationToken = default);
     Task<AuthSession> LoginAsync(LoginCredentials credentials, CancellationToken cancellationToken = default);
     Task<AuthSession> RefreshSessionAsync(string refreshToken, CancellationToken cancellationToken = default);
@@ -22,7 +26,8 @@ public sealed class AIHubClient : IAIHubApiClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        NumberHandling = JsonNumberHandling.AllowReadingFromString
     };
 
     private readonly HttpClient _httpClient;
@@ -81,9 +86,41 @@ public sealed class AIHubClient : IAIHubApiClient
         };
     }
 
-    public async Task<MonitorSummary> GetProviderSummaryAsync(CancellationToken cancellationToken = default)
+    public async Task<GroupUsageStatsPage> GetGroupUsageStatsAsync(
+        string platform,
+        int samples = 100,
+        CancellationToken cancellationToken = default,
+        double? maxRate = null)
     {
-        return await SendAsync<MonitorSummary>(HttpMethod.Get, "/api/v1/public/monitor/summary", null, cancellationToken);
+        if (string.IsNullOrWhiteSpace(platform))
+        {
+            throw new ArgumentException("平台不能为空。", nameof(platform));
+        }
+
+        if (samples <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(samples), "样本数必须大于 0。" );
+        }
+
+        if (maxRate is { } requestedRate &&
+            (!double.IsFinite(requestedRate) || requestedRate < 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxRate), "最大倍率必须是非负有限数值。" );
+        }
+
+        var encodedPlatform = Uri.EscapeDataString(platform.Trim());
+        var query = $"samples={samples}&platform={encodedPlatform}";
+        if (maxRate is { } rate)
+        {
+            query += $"&max_rate={Uri.EscapeDataString(rate.ToString(System.Globalization.CultureInfo.InvariantCulture))}";
+        }
+
+        var data = await SendAsync<JsonElement>(
+            HttpMethod.Get,
+            $"/api/v1/public/groups/usage-stats?{query}",
+            null,
+            cancellationToken);
+        return GroupUsageStatsParser.Parse(data, samples);
     }
 
     public async Task<JsonElement> ValidateLoginAsync(CancellationToken cancellationToken = default)
