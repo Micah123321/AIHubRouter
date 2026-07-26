@@ -275,12 +275,17 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         IsBusy = true;
         try
         {
+            var selectedKeyIds = Keys
+                .Where(key => key.Selected)
+                .Select(key => key.Id)
+                .ToArray();
             SaveSettings();
             ResetService();
             EnsureService();
             var result = await _service!.RouteManuallyAsync(
                 selected.GroupIdValue.Value,
-                forceAccountRefresh: true);
+                forceAccountRefresh: true,
+                selectedKeyIds: selectedKeyIds);
             ApplyManualResult(result, selected);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -384,7 +389,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             EnsureService();
-            var result = await _service!.RunOnceAsync(dryRun, forceRefresh, cancellationToken);
+            var result = await _service!.RunOnceAsync(
+                dryRun,
+                forceRefresh,
+                cancellationToken,
+                CaptureSelectedKeyIds());
             if (settingsVersion == _routingSettingsVersion)
             {
                 ApplyResult(result);
@@ -498,7 +507,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         var selected = result.SelectedKeyIds.ToHashSet();
         foreach (var key in result.Keys)
         {
-            Keys.Add(new KeyRowViewModel(key, selected.Contains(key.Id)));
+            Keys.Add(CreateKeyRow(key, selected.Contains(key.Id)));
         }
 
         if (_manualRouteGroupId is { } manualGroupId)
@@ -572,7 +581,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         var selectedKeyIds = result.SelectedKeyIds.ToHashSet();
         foreach (var key in result.Keys)
         {
-            Keys.Add(new KeyRowViewModel(key, selectedKeyIds.Contains(key.Id)));
+            Keys.Add(CreateKeyRow(key, selectedKeyIds.Contains(key.Id)));
         }
 
         var actualGroupIds = result.Keys
@@ -670,6 +679,25 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         _providerSortField == field
             ? $"{label} {(_providerSortDescending ? "↓" : "↑")}"
             : label;
+
+    private long[]? CaptureSelectedKeyIds() =>
+        Keys.Count == 0
+            ? null
+            : Keys.Where(key => key.Selected).Select(key => key.Id).ToArray();
+
+    private KeyRowViewModel CreateKeyRow(ApiKeyInfo key, bool selected)
+    {
+        var row = new KeyRowViewModel(key, selected);
+        row.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(KeyRowViewModel.Selected))
+            {
+                _routingSettingsStale = true;
+                _routingSettingsVersion++;
+            }
+        };
+        return row;
+    }
 
     private void Load()
     {

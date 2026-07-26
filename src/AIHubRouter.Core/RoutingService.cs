@@ -146,7 +146,8 @@ public sealed class RoutingService : IDisposable
     public async Task<RoutingCycleResult> RunOnceAsync(
         bool dryRun = false,
         bool forceAccountRefresh = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<long>? selectedKeyIds = null)
     {
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -155,7 +156,12 @@ public sealed class RoutingService : IDisposable
                 cancellationToken);
             try
             {
-                return await RunCoreAsync(client, dryRun, forceAccountRefresh, cancellationToken);
+                return await RunCoreAsync(
+                    client,
+                    dryRun,
+                    forceAccountRefresh,
+                    cancellationToken,
+                    selectedKeyIds);
             }
             catch (AIHubApiException exception)
                 when (attempt == 0 && exception.IsAuthenticationFailure && CanRenewAutomatically())
@@ -170,7 +176,8 @@ public sealed class RoutingService : IDisposable
     public async Task<ManualRoutingResult> RouteManuallyAsync(
         long groupId,
         bool forceAccountRefresh = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<long>? selectedKeyIds = null)
     {
         if (groupId <= 0)
         {
@@ -190,7 +197,8 @@ public sealed class RoutingService : IDisposable
                     groupId,
                     forceAccountRefresh,
                     cancellationToken,
-                    progress);
+                    progress,
+                    selectedKeyIds);
             }
             catch (AIHubApiException exception)
                 when (attempt == 0 && exception.IsAuthenticationFailure && CanRenewAutomatically())
@@ -217,7 +225,8 @@ public sealed class RoutingService : IDisposable
         IAIHubApiClient client,
         bool dryRun,
         bool forceAccountRefresh,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<long>? selectedKeyIds)
     {
         var now = _utcNow();
         var policy = _settings.CreatePolicy();
@@ -232,7 +241,7 @@ public sealed class RoutingService : IDisposable
             usageStats,
             now,
             policy.MaximumStatusAge);
-        var selectedKeys = ResolveSelectedKeys(_cachedKeys);
+        var selectedKeys = ResolveSelectedKeys(_cachedKeys, selectedKeyIds);
         if (selectedKeys.Count == 0)
         {
             throw new InvalidOperationException(
@@ -324,7 +333,8 @@ public sealed class RoutingService : IDisposable
         long groupId,
         bool forceAccountRefresh,
         CancellationToken cancellationToken,
-        ManualRoutingProgress progress)
+        ManualRoutingProgress progress,
+        IReadOnlyCollection<long>? selectedKeyIds)
     {
         var now = _utcNow();
         var policy = _settings.CreatePolicy();
@@ -359,7 +369,7 @@ public sealed class RoutingService : IDisposable
             throw new InvalidOperationException(
                 $"所选分组不在允许价格范围 {policy.MinimumPriceMultiplier:0.####}-{policy.MaximumPriceMultiplier:0.####} 内，或当前无法确认其倍率。");
         }
-        var selectedKeys = ResolveSelectedKeys(_cachedKeys);
+        var selectedKeys = ResolveSelectedKeys(_cachedKeys, selectedKeyIds);
         if (selectedKeys.Count == 0)
         {
             throw new InvalidOperationException(
@@ -446,9 +456,11 @@ public sealed class RoutingService : IDisposable
         _accountCacheExpiresAt = now.AddSeconds(Math.Clamp(_settings.AccountCacheSeconds, 30, 3600));
     }
 
-    private IReadOnlyList<ApiKeyInfo> ResolveSelectedKeys(IReadOnlyList<ApiKeyInfo> keys)
+    private IReadOnlyList<ApiKeyInfo> ResolveSelectedKeys(
+        IReadOnlyList<ApiKeyInfo> keys,
+        IReadOnlyCollection<long>? selectedKeyIds = null)
     {
-        var selectedIds = KeySelectionPolicy.Resolve(
+        var selectedIds = selectedKeyIds ?? KeySelectionPolicy.Resolve(
             _settings.KeySelectionInitialized,
             _settings.SelectedKeyIds,
             keys);

@@ -47,7 +47,9 @@ var tests = new (string Name, Action Body)[]
     ("Group stickiness persists as policy override", TestGroupStickinessPersistsAsPolicyOverride),
     ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
+    ("Automatic route honors explicit multi-key selection", TestAutomaticRouteHonorsExplicitMultiKeySelection),
     ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
+    ("Manual route honors explicit multi-key selection", TestManualRouteHonorsExplicitMultiKeySelection),
     ("Manual route rejects blacklisted group", TestManualRouteRejectsBlacklistedGroup),
     ("Manual route rejects out-of-range group", TestManualRouteRejectsOutOfRangeGroup),
     ("Manual route clears state after terminal authentication failure", TestManualRouteClearsStateAfterTerminalAuthenticationFailure),
@@ -924,6 +926,38 @@ static void TestDryRunNeverUpdatesKey()
     Assert(api.UpdateCalls == 0, "Dry run called UpdateKeyGroupAsync.");
 }
 
+static void TestAutomaticRouteHonorsExplicitMultiKeySelection()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        keys:
+        [
+            new ApiKeyInfo { Id = 10, Name = "First", Status = "active", GroupId = 1 },
+            new ApiKeyInfo { Id = 11, Name = "Second", Status = "active", GroupId = 1 }
+        ]);
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [11]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RunOnceAsync(
+        selectedKeyIds: new long[] { 10, 11 }).GetAwaiter().GetResult();
+
+    Assert(api.UpdateCalls == 2, "Automatic route did not update every explicitly selected Key.");
+    Assert(result.SelectedKeyIds.Order().SequenceEqual(new long[] { 10, 11 }),
+        "Automatic route did not return every explicitly selected Key.");
+    Assert(result.Keys.Where(key => key.Id is 10 or 11).All(key => key.GroupId == 2),
+        "Automatic route did not return the updated group for every explicitly selected Key.");
+}
+
 static void TestManualRouteUpdatesSelectedKeysAndState()
 {
     var now = DateTimeOffset.UtcNow;
@@ -950,6 +984,39 @@ static void TestManualRouteUpdatesSelectedKeysAndState()
         "Manual route did not return the updated Key group.");
     Assert(stateStore.Current.CurrentGroupId == 2,
         "Manual route did not persist the selected group as current.");
+}
+
+static void TestManualRouteHonorsExplicitMultiKeySelection()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        keys:
+        [
+            new ApiKeyInfo { Id = 10, Name = "First", Status = "active", GroupId = 1 },
+            new ApiKeyInfo { Id = 11, Name = "Second", Status = "active", GroupId = 1 }
+        ]);
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [11]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RouteManuallyAsync(
+        2,
+        selectedKeyIds: new long[] { 10, 11 }).GetAwaiter().GetResult();
+
+    Assert(api.UpdateCalls == 2, "Manual route did not update every explicitly selected Key.");
+    Assert(result.SelectedKeyIds.Order().SequenceEqual(new long[] { 10, 11 }),
+        "Manual route did not return every explicitly selected Key.");
+    Assert(result.Keys.Where(key => key.Id is 10 or 11).All(key => key.GroupId == 2),
+        "Manual route did not return the updated group for every explicitly selected Key.");
 }
 
 static void TestManualRouteRejectsBlacklistedGroup()
