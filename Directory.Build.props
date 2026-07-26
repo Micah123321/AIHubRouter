@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <VersionPrefix>1.0.11</VersionPrefix>
+    <VersionPrefix>1.0.12</VersionPrefix>
     <NuGetAudit>false</NuGetAudit>
     <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
     <EnableCompressionInSingleFile Condition="'$(RuntimeIdentifier)' != 'osx-arm64'">true</EnableCompressionInSingleFile>
