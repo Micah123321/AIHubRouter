@@ -24,7 +24,7 @@ public static class RoutingEngine
 
         return providers
             .Where(provider => provider.Enabled && provider.Available)
-            .Where(HasSufficientConfidence)
+            .Where(provider => HasSufficientConfidence(provider, criteria.MinimumConfidence))
             .Where(provider => provider.GroupId is > 0 && groups.ContainsKey(provider.GroupId.Value))
             .Where(provider => provider.Platform.Equals(criteria.Platform, StringComparison.OrdinalIgnoreCase))
             .Where(provider => provider.PriceMultiplier >= 0 && double.IsFinite(provider.PriceMultiplier))
@@ -73,7 +73,7 @@ public static class RoutingEngine
 
         var eligible = providers
             .Where(provider => provider.Enabled && provider.Available)
-            .Where(HasSufficientConfidence)
+            .Where(provider => HasSufficientConfidence(provider, policy.MinimumConfidence))
             .Where(provider => provider.GroupId is > 0 && groups.ContainsKey(provider.GroupId.Value))
             .Where(provider => provider.Platform.Equals(policy.Platform, StringComparison.OrdinalIgnoreCase))
             .Where(provider => provider.PriceMultiplier >= 0 && double.IsFinite(provider.PriceMultiplier))
@@ -103,7 +103,9 @@ public static class RoutingEngine
                 eligible,
                 null,
                 policy.PriceWeight,
-                policy.LatencyWeight);
+                policy.LatencyWeight,
+                policy.ConfidenceImpact,
+                policy.MinimumConfidence);
         }
 
         var measured = eligible
@@ -126,7 +128,9 @@ public static class RoutingEngine
                 cheapest,
                 minimumMultiplier,
                 policy.PriceWeight,
-                policy.LatencyWeight);
+                policy.LatencyWeight,
+                policy.ConfidenceImpact,
+                policy.MinimumConfidence);
         }
 
         var baseline = cheapest[0];
@@ -140,7 +144,9 @@ public static class RoutingEngine
                 cheapest,
                 minimumMultiplier,
                 policy.PriceWeight,
-                policy.LatencyWeight);
+                policy.LatencyWeight,
+                policy.ConfidenceImpact,
+                policy.MinimumConfidence);
         }
 
         var tradeoff = decisionPool
@@ -152,7 +158,8 @@ public static class RoutingEngine
                     baseline,
                     candidate,
                     policy.PriceWeight,
-                    policy.LatencyWeight)
+                    policy.LatencyWeight,
+                    policy.ConfidenceImpact)
             })
             .Where(candidate =>
                 candidate.Candidate.Group.Id == baseline.Group.Id ||
@@ -171,7 +178,9 @@ public static class RoutingEngine
             tradeoff.Length > 0 ? tradeoff : cheapest,
             minimumMultiplier,
             policy.PriceWeight,
-            policy.LatencyWeight);
+            policy.LatencyWeight,
+            policy.ConfidenceImpact,
+            policy.MinimumConfidence);
     }
 
     internal static double NormalizeLatency(double? latency)
@@ -181,8 +190,10 @@ public static class RoutingEngine
             : double.MaxValue;
     }
 
-    private static bool HasSufficientConfidence(ProviderStatus provider) =>
-        provider.LatencyConfidence is >= GroupUsageEstimator.MinimumConfidence;
+    private static bool HasSufficientConfidence(ProviderStatus provider, double minimumConfidence) =>
+        provider.LatencyConfidence is { } confidence &&
+        double.IsFinite(confidence) &&
+        confidence >= minimumConfidence;
 
     public static double? CalculateWeightedScore(
         RouteEvaluation evaluation,
@@ -205,7 +216,8 @@ public static class RoutingEngine
             evaluation.Baseline!,
             candidate,
             evaluation.PriceWeight,
-            evaluation.LatencyWeight);
+            evaluation.LatencyWeight,
+            evaluation.ConfidenceImpact);
     }
 
     private static bool IsKnownLatency(double? latency) =>
@@ -223,25 +235,34 @@ public static class RoutingEngine
         RouteCandidate baseline,
         RouteCandidate candidate,
         double priceWeight,
-        double latencyWeight)
+        double latencyWeight,
+        double confidenceImpact)
     {
         var pricePremiumRatio =
             (candidate.EffectiveMultiplier - minimumMultiplier) / minimumMultiplier;
         var conservativeBaselineLatency = GetConservativeLatency(
             baseline,
-            baseline.Provider.FirstTokenLatencyMs!.Value);
-        var conservativeCandidateLatency = GetConservativeLatency(candidate, candidate.Provider.FirstTokenLatencyMs!.Value);
+            baseline.Provider.FirstTokenLatencyMs!.Value,
+            confidenceImpact);
+        var conservativeCandidateLatency = GetConservativeLatency(
+            candidate,
+            candidate.Provider.FirstTokenLatencyMs!.Value,
+            confidenceImpact);
         var speedupRatio = conservativeBaselineLatency / conservativeCandidateLatency - 1;
         return latencyWeight * speedupRatio - priceWeight * pricePremiumRatio;
     }
 
-    private static double GetConservativeLatency(RouteCandidate? candidate, double latency)
+    private static double GetConservativeLatency(
+        RouteCandidate? candidate,
+        double latency,
+        double confidenceImpact)
     {
         var confidence = candidate?.Provider.LatencyConfidence;
-        var uncertaintyPenalty = confidence is { } value && double.IsFinite(value)
-            ? Math.Clamp(1 - value, 0, 1)
-            : 1;
-        return latency * (1 + uncertaintyPenalty);
+        var effectiveConfidence = confidence is { } value && double.IsFinite(value)
+            ? Math.Clamp(value, 0, 1)
+            : 0;
+        var uncertaintyPenalty = Math.Clamp(1 - effectiveConfidence, 0, 1);
+        return latency * (1 + confidenceImpact * uncertaintyPenalty);
     }
 
     private static bool IsFresh(DateTimeOffset? checkedAt, DateTimeOffset now, TimeSpan maximumAge)

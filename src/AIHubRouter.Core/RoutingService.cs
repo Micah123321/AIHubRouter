@@ -240,7 +240,8 @@ public sealed class RoutingService : IDisposable
         var providers = GroupUsageEstimator.Estimate(
             usageStats,
             now,
-            policy.MaximumStatusAge);
+            policy.MaximumStatusAge,
+            policy.MinimumConfidence);
         var selectedKeys = ResolveSelectedKeys(_cachedKeys, selectedKeyIds);
         if (selectedKeys.Count == 0)
         {
@@ -359,7 +360,8 @@ public sealed class RoutingService : IDisposable
             : GroupUsageEstimator.Estimate(
                     [await usageStatsTask],
                     now,
-                    policy.MaximumStatusAge)
+                    policy.MaximumStatusAge,
+                    policy.MinimumConfidence)
                 .FirstOrDefault(provider => provider.GroupId == targetGroup.Id)
                 ?.PriceMultiplier;
         if (targetMultiplier is not { } multiplier ||

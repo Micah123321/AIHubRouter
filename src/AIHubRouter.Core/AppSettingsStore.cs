@@ -22,6 +22,8 @@ public sealed record PersistentAppSettings
     public double? GroupStickiness { get; init; }
     public double MinimumPriceMultiplier { get; init; } = BalancedRoutingPolicy.DefaultMinimumPriceMultiplier;
     public double MaximumPriceMultiplier { get; init; } = BalancedRoutingPolicy.DefaultMaximumPriceMultiplier;
+    public double ConfidenceImpact { get; init; } = BalancedRoutingPolicy.DefaultConfidenceImpact;
+    public double MinimumConfidence { get; init; } = BalancedRoutingPolicy.DefaultMinimumConfidence;
     public int PollingIntervalSeconds { get; init; } = 60;
     public int AccountCacheSeconds { get; init; } = 300;
     public bool SmoothRendering { get; init; } = true;
@@ -40,6 +42,8 @@ public sealed record PersistentAppSettings
             MinimumScoreAdvantageOverride = GroupStickiness,
             MinimumPriceMultiplier = MinimumPriceMultiplier,
             MaximumPriceMultiplier = MaximumPriceMultiplier,
+            ConfidenceImpact = ConfidenceImpact,
+            MinimumConfidence = MinimumConfidence,
             MaximumStatusAge = TimeSpan.FromMinutes(15),
             BlacklistedGroupIds = BlacklistedGroupIds
                 .Where(groupId => groupId > 0)

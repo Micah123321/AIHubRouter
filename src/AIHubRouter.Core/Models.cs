@@ -172,7 +172,8 @@ public sealed class PaginatedResponse<T>
 public sealed record RoutingCriteria(
     string Platform,
     TimeSpan MaximumStatusAge,
-    IReadOnlyCollection<long>? BlacklistedGroupIds = null);
+    IReadOnlyCollection<long>? BlacklistedGroupIds = null,
+    double MinimumConfidence = BalancedRoutingPolicy.DefaultMinimumConfidence);
 
 public sealed record RouteCandidate(
     ProviderStatus Provider,
@@ -192,6 +193,8 @@ public sealed record BalancedRoutingPolicy
     public const double DefaultMinimumScoreAdvantageToSwitch = 0.10;
     public const double DefaultMinimumPriceMultiplier = 0;
     public const double DefaultMaximumPriceMultiplier = 0.15;
+    public const double DefaultConfidenceImpact = 1;
+    public const double DefaultMinimumConfidence = 0.90;
 
     public string Platform { get; init; } = "openai";
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
@@ -200,6 +203,8 @@ public sealed record BalancedRoutingPolicy
     public double? MinimumScoreAdvantageOverride { get; init; }
     public double MinimumPriceMultiplier { get; init; } = DefaultMinimumPriceMultiplier;
     public double MaximumPriceMultiplier { get; init; } = DefaultMaximumPriceMultiplier;
+    public double ConfidenceImpact { get; init; } = DefaultConfidenceImpact;
+    public double MinimumConfidence { get; init; } = DefaultMinimumConfidence;
     public IReadOnlyCollection<long> BlacklistedGroupIds { get; init; } = [];
 
     public double PriceWeight => PriceWeightOverride ?? Mode switch
@@ -244,6 +249,20 @@ public sealed record BalancedRoutingPolicy
         {
             throw new ArgumentOutOfRangeException(nameof(MaximumPriceMultiplier));
         }
+
+        if (ConfidenceImpact is < 0 or > 2 || !double.IsFinite(ConfidenceImpact))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ConfidenceImpact),
+                "置信度影响强度必须在 0 到 2 之间。");
+        }
+
+        if (MinimumConfidence is < 0 or > 1 || !double.IsFinite(MinimumConfidence))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(MinimumConfidence),
+                "最低置信度必须在 0 到 1 之间。");
+        }
     }
 }
 
@@ -254,7 +273,9 @@ public sealed record RouteEvaluation(
     IReadOnlyList<RouteCandidate> TradeoffCandidates,
     double? MinimumMultiplier,
     double PriceWeight,
-    double LatencyWeight);
+    double LatencyWeight,
+    double ConfidenceImpact,
+    double MinimumConfidence);
 
 public enum RouteDecisionReason
 {

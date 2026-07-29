@@ -12,6 +12,8 @@ var tests = new (string Name, Action Body)[]
     ("Usage stats map real TTFT and last use", TestUsageStatsMapRealTtftAndLastUse),
     ("Continuous freshness changes confidence", TestContinuousFreshnessChangesConfidence),
     ("Confidence penalizes latency score", TestConfidencePenalizesLatencyScore),
+    ("Confidence impact controls latency penalty", TestConfidenceImpactControlsLatencyPenalty),
+    ("Raw variance does not affect confidence", TestRawVarianceDoesNotAffectConfidence),
     ("One fresh sample has insufficient confidence", TestOneFreshSampleHasInsufficientConfidence),
     ("Stale last use is excluded", TestStaleLastUseIsExcluded),
     ("Future last use is excluded", TestFutureLastUseIsExcluded),
@@ -188,7 +190,7 @@ static void TestUsageStatsMapRealTtftAndLastUse()
     Assert(provider.CheckedAt == lastUsed && provider.UsageSampleCount == 100 && provider.Available,
         "Last use or sample count was not mapped to candidate freshness.");
     Assert(provider.LatencyConfidence is > 0.99 and <= 1,
-        "A fresh full sample did not receive high confidence.");
+        "Fresh aggregate confidence did not reflect sample volume.");
 }
 
 static void TestStaleLastUseIsExcluded()
@@ -265,7 +267,7 @@ static void TestConfidencePenalizesLatencyScore()
     var lowConfidence = RoutingEngine.Evaluate(
         [
             Provider(1, 0.02, true, 1, now, latency: 10_000, confidence: 1),
-            Provider(2, 0.021, true, 1, now, latency: 1_000, confidence: 0.20)
+            Provider(2, 0.021, true, 1, now, latency: 1_000, confidence: 0.95)
         ],
         [Group(1), Group(2)],
         new Dictionary<long, double>(),
@@ -281,6 +283,76 @@ static void TestConfidencePenalizesLatencyScore()
 
     Assert(highScore is { } high && high > 0 && lowScore is { } low && low < high,
         "Low-confidence latency was not penalized in the weighted score.");
+}
+
+static void TestConfidenceImpactControlsLatencyPenalty()
+{
+    var now = DateTimeOffset.UtcNow;
+    var providers = new[]
+    {
+        Provider(1, 0.02, true, 1, now, latency: 10_000, confidence: 1),
+        Provider(2, 0.021, true, 1, now, latency: 1_000, confidence: 0.95)
+    };
+    var groups = new[] { Group(1), Group(2) };
+    var withoutPenalty = RoutingEngine.Evaluate(
+        providers,
+        groups,
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ConfidenceImpact = 0 },
+        now);
+    var withStrongPenalty = RoutingEngine.Evaluate(
+        providers,
+        groups,
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ConfidenceImpact = 2 },
+        now);
+
+    var scoreWithoutPenalty = RoutingEngine.CalculateWeightedScore(
+        withoutPenalty,
+        withoutPenalty.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+    var scoreWithStrongPenalty = RoutingEngine.CalculateWeightedScore(
+        withStrongPenalty,
+        withStrongPenalty.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+
+    Assert(scoreWithoutPenalty is { } unpenalized &&
+           scoreWithStrongPenalty is { } penalized &&
+           unpenalized > penalized,
+        "Changing confidence impact did not change the weighted latency score.");
+}
+
+static void TestRawVarianceDoesNotAffectConfidence()
+{
+    var now = DateTimeOffset.UtcNow;
+    GroupUsageStatsPage Page(long groupId, params double[] latencies) => new()
+    {
+        Items =
+        [
+            new GroupUsageStat
+            {
+                Code = $"group-{groupId}",
+                Platform = "openai",
+                RateMultiplier = 0.1,
+                SampleCount = latencies.Length,
+                LastSampleAt = now,
+                GroupId = groupId,
+                Samples = latencies.Select(latency => new GroupUsageSample
+                {
+                    Timestamp = now,
+                    FirstTokenLatencyMs = latency
+                }).ToList()
+            }
+        ]
+    };
+
+    var stable = GroupUsageEstimator.Estimate(
+        [Page(1, 1_000, 1_000, 1_000)], now, TimeSpan.FromMinutes(15)).Single();
+    var variable = GroupUsageEstimator.Estimate(
+        [Page(2, 100, 1_000, 1_900)], now, TimeSpan.FromMinutes(15)).Single();
+
+    Assert(stable.LatencyConfidence is { } stableConfidence &&
+           variable.LatencyConfidence is { } variableConfidence &&
+           Math.Abs(stableConfidence - variableConfidence) < 1e-12,
+        "Latency variance unexpectedly changed confidence.");
 }
 
 static void TestOneFreshSampleHasInsufficientConfidence()
@@ -414,8 +486,8 @@ static void TestConfidenceHardGatePrecedesPriceAndSpeed()
     var now = DateTimeOffset.UtcNow;
     var providers = new[]
     {
-        Provider(1, 0.001, true, 1, now, latency: 100, confidence: 0.19),
-        Provider(2, 0.02, true, 1, now, latency: 2_000, confidence: 0.80)
+        Provider(1, 0.001, true, 1, now, latency: 100, confidence: 0.89),
+        Provider(2, 0.02, true, 1, now, latency: 2_000, confidence: 0.90)
     };
     var groups = new[] { Group(1), Group(2) };
 

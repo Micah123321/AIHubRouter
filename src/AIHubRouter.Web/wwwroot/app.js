@@ -96,6 +96,14 @@ function readPriceRange() {
   return { minimum, maximum };
 }
 
+function readBoundedNumber(selector, minimum, maximum, label) {
+  const value = Number.parseFloat($(selector).value);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${label}必须在 ${minimum} 到 ${maximum} 之间。`);
+  }
+  return value;
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -115,6 +123,8 @@ function hydrateSettings(settings, force = false) {
   $("#groupStickiness").value = settings.groupStickiness;
   $("#minimumPriceMultiplier").value = settings.minimumPriceMultiplier;
   $("#maximumPriceMultiplier").value = settings.maximumPriceMultiplier;
+  $("#confidenceImpact").value = settings.confidenceImpact;
+  $("#minimumConfidence").value = settings.minimumConfidence;
   $("#pollingInterval").value = settings.pollingIntervalSeconds;
   $("#persistCredentials").checked = settings.persistCredentials;
   $("#themeSelect").value = enumValue(settings.themeMode);
@@ -254,6 +264,8 @@ function settingsPayload() {
     groupStickiness: Number.parseFloat($("#groupStickiness").value),
     minimumPriceMultiplier: priceRange.minimum,
     maximumPriceMultiplier: priceRange.maximum,
+    confidenceImpact: readBoundedNumber("#confidenceImpact", 0, 2, "置信度影响强度"),
+    minimumConfidence: readBoundedNumber("#minimumConfidence", 0, 1, "最低置信度"),
     pollingIntervalSeconds: Number.parseInt($("#pollingInterval").value, 10),
     persistCredentials: $("#persistCredentials").checked,
     themeMode: $("#themeSelect").value,

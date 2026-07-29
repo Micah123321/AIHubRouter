@@ -38,7 +38,7 @@ tests/
 
 1. 分组为启用状态，实时用量统计包含有效 TTFT 样本。
 2. 最后样本时间不超过 `MaximumStatusAge`（默认 15 分钟），且未来偏差不超过 1 分钟。
-3. 实时数据置信度不低于 `0.20`。
+3. 实时数据置信度不低于可配置的最低门槛，默认 `0.10`。
 4. 统计平台与策略平台一致。
 5. 账号拥有目标分组权限。
 6. 倍率为有限且非负数。
@@ -53,14 +53,19 @@ tests/
 ```text
 freshness = exp(-ln(2) * max(lastSampleAge, 0) / (MaximumStatusAge / 2))
 volume = 1 - exp(-effectiveSampleCount / 20)
-stability = 1 / (1 + coefficientOfVariation)
-confidence = freshness * volume * stability
+confidence = freshness * volume
 ```
 
 当前接口返回的是聚合 TTFT 与最后样本时间；如果接口返回逐条样本，程序会按每条样本的时间计算连续权重。缺失、非法或低置信度延迟的候选不参与本轮竞争。为避免低置信度的低延迟获得虚假的速度优势，评分使用保守延迟：
 
 ```text
 conservativeLatency = averageLatency * (1 + (1 - confidence))
+```
+
+默认最低置信度为 `0.90`，低于门槛的候选直接排除。可配置的置信度影响系数 `alpha` 将保守延迟扩展为：
+
+```text
+conservativeLatency = averageLatency * (1 + alpha * (1 - confidence))
 ```
 
 程序从可信候选中选出最低倍率基准，并计算其他候选相对基准的权衡得分：

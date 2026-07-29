@@ -8,4 +8,8 @@
     <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..'))=/_/</PathMap>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="AIHubRouter.Core.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -4,18 +4,24 @@ public static class GroupUsageEstimator
 {
     public const int DefaultSampleLimit = 100;
 
-    public const double MinimumConfidence = 0.20;
+    public const double MinimumConfidence = BalancedRoutingPolicy.DefaultMinimumConfidence;
     private static readonly TimeSpan MaximumFutureSkew = TimeSpan.FromMinutes(1);
 
     public static IReadOnlyList<ProviderStatus> Estimate(
         IEnumerable<GroupUsageStatsPage> pages,
         DateTimeOffset now,
-        TimeSpan maximumAge)
+        TimeSpan maximumAge,
+        double minimumConfidence = BalancedRoutingPolicy.DefaultMinimumConfidence)
     {
         ArgumentNullException.ThrowIfNull(pages);
         if (maximumAge <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(maximumAge));
+        }
+
+        if (minimumConfidence is < 0 or > 1 || !double.IsFinite(minimumConfidence))
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumConfidence));
         }
 
         var observations = pages
@@ -24,7 +30,7 @@ public static class GroupUsageEstimator
             .GroupBy(item => item.GroupId);
 
         return observations
-            .Select(group => EstimateGroup(group, now, maximumAge))
+            .Select(group => EstimateGroup(group, now, maximumAge, minimumConfidence))
             .OrderBy(provider => provider.GroupId)
             .ToArray();
     }
@@ -32,7 +38,8 @@ public static class GroupUsageEstimator
     private static ProviderStatus EstimateGroup(
         IEnumerable<GroupUsageStat> group,
         DateTimeOffset now,
-        TimeSpan maximumAge)
+        TimeSpan maximumAge,
+        double minimumConfidence)
     {
         var all = group.ToArray();
         var metadata = all
@@ -52,7 +59,7 @@ public static class GroupUsageEstimator
 
         if (usable.AverageTtftMs is null)
         {
-            return CreateProvider(metadata, null, 0, 0, null);
+            return CreateProvider(metadata, null, 0, 0, null, minimumConfidence);
         }
 
         return CreateProvider(
@@ -60,7 +67,8 @@ public static class GroupUsageEstimator
             usable.AverageTtftMs,
             usable.SampleCount,
             usable.Confidence,
-            usable.LatestSampleAt);
+            usable.LatestSampleAt,
+            minimumConfidence);
     }
 
     private static EstimateResult EstimateRawSamples(
@@ -119,14 +127,6 @@ public static class GroupUsageEstimator
     {
         var totalWeight = observations.Sum(sample => sample.Weight);
         var weightedMean = observations.Sum(sample => sample.Latency * sample.Weight) / totalWeight;
-        var weightedVariance = observations.Sum(sample =>
-        {
-            var difference = sample.Latency - weightedMean;
-            return sample.Weight * difference * difference;
-        }) / totalWeight;
-        var coefficientOfVariation = weightedMean > 0
-            ? Math.Sqrt(weightedVariance) / weightedMean
-            : double.PositiveInfinity;
         var freshness = Math.Clamp(
             observations.Average(sample => sample.Weight),
             0,
@@ -135,8 +135,7 @@ public static class GroupUsageEstimator
             totalWeight * totalWeight / observations.Sum(sample => sample.Weight * sample.Weight);
         effectiveSampleCount *= freshness;
         var volume = 1 - Math.Exp(-effectiveSampleCount / 20d);
-        var stability = 1 / (1 + coefficientOfVariation);
-        var confidence = Math.Clamp(freshness * volume * stability, 0, 1);
+        var confidence = Math.Clamp(freshness * volume, 0, 1);
         return new EstimateResult(
             weightedMean,
             sampleCount,
@@ -163,7 +162,8 @@ public static class GroupUsageEstimator
         double? weightedMean,
         int sampleCount,
         double confidence,
-        DateTimeOffset? latestSampleAt)
+        DateTimeOffset? latestSampleAt,
+        double minimumConfidence)
     {
         return new ProviderStatus
         {
@@ -172,7 +172,7 @@ public static class GroupUsageEstimator
             PlanType = item.Code,
             Platform = item.Platform,
             PriceMultiplier = item.RateMultiplier,
-            Available = weightedMean is > 0 && confidence >= MinimumConfidence,
+            Available = weightedMean is > 0 && confidence >= minimumConfidence,
             Enabled = true,
             CheckedAt = latestSampleAt,
             FirstTokenLatencyMs = weightedMean,

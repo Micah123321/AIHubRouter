@@ -42,6 +42,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         FormatPriceMultiplier(BalancedRoutingPolicy.DefaultMinimumPriceMultiplier);
     [ObservableProperty] private string _maximumPriceMultiplierText =
         FormatPriceMultiplier(BalancedRoutingPolicy.DefaultMaximumPriceMultiplier);
+    [ObservableProperty] private decimal _confidenceImpact =
+        (decimal)BalancedRoutingPolicy.DefaultConfidenceImpact;
+    [ObservableProperty] private decimal _minimumConfidence =
+        (decimal)BalancedRoutingPolicy.DefaultMinimumConfidence;
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
     [ObservableProperty] private bool _persistCredentials;
     [ObservableProperty]
@@ -122,6 +126,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         MarkRoutingSettingsChanged();
     }
+
+    partial void OnConfidenceImpactChanged(decimal value) => MarkRoutingSettingsChanged();
+
+    partial void OnMinimumConfidenceChanged(decimal value) => MarkRoutingSettingsChanged();
 
     private void MarkRoutingSettingsChanged()
     {
@@ -711,6 +719,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             GroupStickiness = (decimal)settings.CreatePolicy().MinimumScoreAdvantageToSwitch;
             MinimumPriceMultiplierText = FormatPriceMultiplier(settings.MinimumPriceMultiplier);
             MaximumPriceMultiplierText = FormatPriceMultiplier(settings.MaximumPriceMultiplier);
+            ConfidenceImpact = (decimal)settings.ConfidenceImpact;
+            MinimumConfidence = (decimal)settings.MinimumConfidence;
             PollingIntervalSeconds = settings.PollingIntervalSeconds;
             PersistCredentials = settings.PersistCredentials;
             SelectedThemeChoice = ThemeChoices.FirstOrDefault(choice => choice.Mode == settings.ThemeMode)
@@ -745,6 +755,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             GroupStickiness = (double)GroupStickiness,
             MinimumPriceMultiplier = minimumPriceMultiplier,
             MaximumPriceMultiplier = maximumPriceMultiplier,
+            ConfidenceImpact = (double)ConfidenceImpact,
+            MinimumConfidence = (double)MinimumConfidence,
             PollingIntervalSeconds = (int)PollingIntervalSeconds,
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
@@ -752,6 +764,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             SelectedKeyIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds,
             BlacklistedGroupIds = Groups.Count > 0 ? blacklistedGroupIds : existing.BlacklistedGroupIds
         };
+        settings.CreatePolicy().Validate();
         var credentials = BuildCredentials();
         if (PersistCredentials && !_store.CanPersistCredentials)
         {

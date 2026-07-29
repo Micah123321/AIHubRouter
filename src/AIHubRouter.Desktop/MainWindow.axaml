@@ -50,7 +50,7 @@
         </Border>
 
         <Border Grid.Row="1" Classes="section-rule">
-          <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="Auto,Auto,Auto,24,Auto,105,18,Auto,125,*">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="Auto,Auto,Auto,24,Auto,105,18,Auto,125,*">
             <TextBlock Grid.Row="0" Grid.ColumnSpan="10" Text="路由策略" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
             <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="0">
               <RadioButton Content="省钱" GroupName="mode" IsChecked="{Binding IsEconomy}" IsEnabled="{Binding CanChangeRoutingMode}" Padding="14,7" />
@@ -68,6 +68,14 @@
               <TextBlock Text="至" VerticalAlignment="Center" />
               <TextBox Width="105" Classes="field" Text="{Binding MaximumPriceMultiplierText}" MaxLength="20" />
             </StackPanel>
+            <Expander Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="10" Header="置信度高级设置" Margin="0,10,0,0">
+              <Grid ColumnDefinitions="Auto,100,18,Auto,100" Margin="0,10,0,0">
+                <TextBlock Grid.Column="0" Text="影响强度" VerticalAlignment="Center" />
+                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="2" Increment="0.05" FormatString="0.00" Value="{Binding ConfidenceImpact}" ToolTip.Tip="范围 0-2" />
+                <TextBlock Grid.Column="3" Text="最低置信度" VerticalAlignment="Center" />
+                <NumericUpDown Grid.Column="4" Minimum="0" Maximum="1" Increment="0.01" FormatString="0.00" Value="{Binding MinimumConfidence}" ToolTip.Tip="范围 0-1" />
+              </Grid>
+            </Expander>
           </Grid>
         </Border>
 

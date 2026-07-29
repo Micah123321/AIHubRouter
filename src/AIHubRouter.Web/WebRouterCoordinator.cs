@@ -61,6 +61,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 GroupStickiness = request.GroupStickiness,
                 MinimumPriceMultiplier = request.MinimumPriceMultiplier,
                 MaximumPriceMultiplier = request.MaximumPriceMultiplier,
+                ConfidenceImpact = request.ConfidenceImpact,
+                MinimumConfidence = request.MinimumConfidence,
                 PollingIntervalSeconds = Math.Clamp(request.PollingIntervalSeconds, 30, 3600),
                 PersistCredentials = request.PersistCredentials,
                 ThemeMode = request.ThemeMode,
@@ -88,6 +90,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                     oldSettings.GroupStickiness != settings.GroupStickiness ||
                     oldSettings.MinimumPriceMultiplier != settings.MinimumPriceMultiplier ||
                     oldSettings.MaximumPriceMultiplier != settings.MaximumPriceMultiplier ||
+                    oldSettings.ConfidenceImpact != settings.ConfidenceImpact ||
+                    oldSettings.MinimumConfidence != settings.MinimumConfidence ||
                     !string.Equals(oldSettings.BaseUrl, settings.BaseUrl, StringComparison.OrdinalIgnoreCase) ||
                     !oldSettings.BlacklistedGroupIds.SequenceEqual(settings.BlacklistedGroupIds))
                 {
@@ -350,6 +354,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 settings.CreatePolicy().MinimumScoreAdvantageToSwitch,
                 settings.MinimumPriceMultiplier,
                 settings.MaximumPriceMultiplier,
+                settings.ConfidenceImpact,
+                settings.MinimumConfidence,
                 settings.PollingIntervalSeconds,
                 settings.PersistCredentials,
                 _store.CanPersistCredentials,
@@ -493,6 +499,13 @@ public sealed class WebRouterCoordinator : BackgroundService
                 nameof(request.MaximumPriceMultiplier),
                 "价格范围必须是非负有限数值，且最小值不能大于最大值。");
         }
+
+        var policy = new BalancedRoutingPolicy
+        {
+            ConfidenceImpact = request.ConfidenceImpact,
+            MinimumConfidence = request.MinimumConfidence
+        };
+        policy.Validate();
     }
 
     private static PersistentAppSettings ApplyEnvironmentSettings(PersistentAppSettings settings)

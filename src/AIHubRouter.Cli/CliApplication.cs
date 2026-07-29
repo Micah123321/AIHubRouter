@@ -379,6 +379,8 @@ internal static class CliApplication
         var groupStickiness = GetDoubleOption(args, "--group-stickiness");
         var minimumPrice = GetDoubleOption(args, "--min-price");
         var maximumPrice = GetDoubleOption(args, "--max-price");
+        var confidenceImpact = GetDoubleOption(args, "--confidence-impact");
+        var minimumConfidence = GetDoubleOption(args, "--min-confidence");
         var interval = GetIntOption(args, "--interval");
         var selectedKeys = GetOption(args, "--selected-keys");
         var blacklistedGroups = GetOption(args, "--blacklisted-groups");
@@ -405,6 +407,13 @@ internal static class CliApplication
         {
             throw new ArgumentException("价格范围必须是非负有限数值，且最小值不能大于最大值。");
         }
+
+        var confidencePolicy = new BalancedRoutingPolicy
+        {
+            ConfidenceImpact = confidenceImpact ?? settings.ConfidenceImpact,
+            MinimumConfidence = minimumConfidence ?? settings.MinimumConfidence
+        };
+        confidencePolicy.Validate();
 
         long[]? parsedKeys = null;
         if (selectedKeys is not null)
@@ -440,6 +449,8 @@ internal static class CliApplication
             GroupStickiness = groupStickiness ?? settings.GroupStickiness,
             MinimumPriceMultiplier = resolvedMinimumPrice,
             MaximumPriceMultiplier = resolvedMaximumPrice,
+            ConfidenceImpact = confidencePolicy.ConfidenceImpact,
+            MinimumConfidence = confidencePolicy.MinimumConfidence,
             PollingIntervalSeconds = interval is null
                 ? settings.PollingIntervalSeconds
                 : Math.Clamp(interval.Value, 30, 3600),
@@ -599,6 +610,8 @@ internal static class CliApplication
             groupStickiness = settings.CreatePolicy().MinimumScoreAdvantageToSwitch,
             minimumPriceMultiplier = settings.MinimumPriceMultiplier,
             maximumPriceMultiplier = settings.MaximumPriceMultiplier,
+            confidenceImpact = settings.ConfidenceImpact,
+            minimumConfidence = settings.MinimumConfidence,
             blacklistedGroupCount = settings.BlacklistedGroupIds.Length,
             selectedKeyCount = settings.SelectedKeyIds.Length
         };
@@ -819,6 +832,8 @@ internal static class CliApplication
               --group-stickiness <non-negative-number>
               --min-price <non-negative-number>
               --max-price <non-negative-number>
+              --confidence-impact <0-2>
+              --min-confidence <0-1>
               --interval <30-3600>
               --selected-keys <id,id,...>
               --blacklisted-groups <id,id,...>

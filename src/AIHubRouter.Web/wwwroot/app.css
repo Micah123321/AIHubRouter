@@ -210,6 +210,15 @@ input::placeholder { color: color-mix(in srgb, var(--muted) 72%, transparent); }
 .inline-field { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .inline-field input { width: 92px; }
 .price-range input { width: 92px; }
+.advanced-settings { margin-top: 12px; color: var(--muted); }
+.advanced-settings summary { width: max-content; cursor: pointer; color: var(--text); font-size: 13px; user-select: none; }
+.advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 12px 18px;
+  margin-top: 12px;
+}
+.advanced-grid .field { grid-template-columns: minmax(88px, auto) minmax(80px, 1fr); }
 .switch-field, .auto-route-control { display: inline-flex; align-items: center; gap: 9px; color: var(--text); user-select: none; }
 .switch-field input, .auto-route-control input { position: absolute; opacity: 0; pointer-events: none; }
 .switch {
@@ -344,6 +353,7 @@ input:focus-visible + .switch { box-shadow: 0 0 0 3px color-mix(in srgb, var(--f
   .command-bar { top: 91px; }
   .connection-grid { grid-template-columns: 1fr 1fr; }
   .field.wide-field { grid-column: span 1; }
+  .advanced-grid { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 620px) {
@@ -356,6 +366,7 @@ input:focus-visible + .switch { box-shadow: 0 0 0 3px color-mix(in srgb, var(--f
   .connection-grid { grid-template-columns: 1fr; gap: 10px; }
   .field { grid-template-columns: 54px minmax(0, 1fr); }
   .strategy-row { align-items: flex-start; gap: 14px; }
+  .advanced-grid { grid-template-columns: 1fr; }
   .segmented { grid-template-columns: repeat(3, minmax(72px, 1fr)); width: 100%; }
   .switch-field { margin-left: 0; }
   .command-bar { top: 94px; margin-left: -14px; margin-right: -14px; padding-left: 14px; padding-right: 14px; }
