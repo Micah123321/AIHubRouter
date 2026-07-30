@@ -1303,6 +1303,16 @@ static void TestLegacyHardGateSettingsAreIgnored()
             "Legacy settings changed the balanced latency weight.");
         Assert(Math.Abs(policy.MinimumScoreAdvantageToSwitch - 0.10) < 0.0001,
             "Legacy settings changed the score hysteresis threshold.");
+
+        var economy = policy with { Mode = RoutingMode.Economy };
+        Assert(Math.Abs(economy.PriceWeight - 0.90) < 0.0001 &&
+               Math.Abs(economy.LatencyWeight - 0.10) < 0.0001,
+            "Economy mode weights are not 90/10.");
+
+        var speed = policy with { Mode = RoutingMode.Speed };
+        Assert(Math.Abs(speed.PriceWeight - 0.10) < 0.0001 &&
+               Math.Abs(speed.LatencyWeight - 0.90) < 0.0001,
+            "Speed mode weights are not 10/90.");
     }
     finally
     {

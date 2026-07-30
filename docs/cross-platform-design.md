@@ -82,9 +82,9 @@ weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 
 | 模式 | `priceWeight` | `latencyWeight` | 决策倾向 |
 |---|---:|---:|---|
-| Economy | 0.80 | 0.20 | 价格优先，保留速度约束 |
+| Economy | 0.90 | 0.10 | 价格优先，保留速度约束 |
 | Balanced | 0.50 | 0.50 | 价格与首字速度同等权衡 |
-| Speed | 0.20 | 0.80 | 速度优先，保留价格约束 |
+| Speed | 0.10 | 0.90 | 速度优先，保留价格约束 |
 
 最低倍率为 0 时，仅在零倍率候选中按延迟选择。全部候选都缺失延迟时回退到最低倍率，避免虚构速度收益。默认使用 `Balanced`。
 

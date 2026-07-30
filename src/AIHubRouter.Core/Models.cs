@@ -209,9 +209,9 @@ public sealed record BalancedRoutingPolicy
 
     public double PriceWeight => PriceWeightOverride ?? Mode switch
     {
-        RoutingMode.Economy => 0.80,
+        RoutingMode.Economy => 0.90,
         RoutingMode.Balanced => 0.50,
-        RoutingMode.Speed => 0.20,
+        RoutingMode.Speed => 0.10,
         _ => 0.50
     };
 
