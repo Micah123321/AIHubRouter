@@ -1,4 +1,4 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -6,6 +6,8 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AIHubRouter.Core", "src\AIHubRouter.Core\AIHubRouter.Core.csproj", "{0A3C3ED2-A877-4FFC-B04F-6DDE7D72A52C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AIHubRouter.Browser", "src\AIHubRouter.Browser\AIHubRouter.Browser.csproj", "{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AIHubRouter.Cli", "src\AIHubRouter.Cli\AIHubRouter.Cli.csproj", "{7720013B-A333-4FAA-BDFC-072EAF1784C3}"
 EndProject
@@ -39,6 +41,18 @@ Global
 		{0A3C3ED2-A877-4FFC-B04F-6DDE7D72A52C}.Release|x64.Build.0 = Release|Any CPU
 		{0A3C3ED2-A877-4FFC-B04F-6DDE7D72A52C}.Release|x86.ActiveCfg = Release|Any CPU
 		{0A3C3ED2-A877-4FFC-B04F-6DDE7D72A52C}.Release|x86.Build.0 = Release|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Debug|x64.Build.0 = Debug|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Debug|x86.Build.0 = Debug|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Release|x64.ActiveCfg = Release|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Release|x64.Build.0 = Release|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Release|x86.ActiveCfg = Release|Any CPU
+		{BC7F25CF-1CEB-4225-AC8D-DD2A45F78494}.Release|x86.Build.0 = Release|Any CPU
 		{7720013B-A333-4FAA-BDFC-072EAF1784C3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{7720013B-A333-4FAA-BDFC-072EAF1784C3}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7720013B-A333-4FAA-BDFC-072EAF1784C3}.Debug|x64.ActiveCfg = Debug|Any CPU

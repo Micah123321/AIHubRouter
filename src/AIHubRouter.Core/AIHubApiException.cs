@@ -2,7 +2,7 @@ using System.Net;
 
 namespace AIHubRouter.Core;
 
-public sealed class AIHubApiException : Exception
+public class AIHubApiException : Exception
 {
     public AIHubApiException(string message, HttpStatusCode? statusCode = null, string? apiCode = null)
         : base(message)

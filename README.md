@@ -122,6 +122,17 @@ aihub-router config set [options]
 
 密码和 Token 不接受普通命令行参数，可通过 stdin、安全凭据文件或环境变量提供。运行 `aihub-router --help` 查看完整选项。
 
+## 站点开启 Cloudflare 5 秒盾怎么办
+
+当站点管理员开启 Cloudflare 5 秒盾（或人机验证）时，程序化请求会被拦截并返回“Just a moment”挑战页。AIHubRouter 会自动识别，并调用本机 Edge/Chrome 自动通过挑战（先无头模式，失败后弹出浏览器窗口；若出现“确认您是真人 / Verify you are human”请手动点击一次）。过盾成功后，登录与路由请求会自动携带浏览器获得的 Cookie 与 User-Agent，无需手动复制。如果自动过盾不可用（例如 Linux 服务器未安装浏览器），或验证需要人工介入：
+
+1. 用浏览器打开站点首页，等待 5 秒盾自动通过（若出现“确认您是真人 / Verify you are human”，手动点击一次）。
+2. 在浏览器开发者工具（F12）→ Network → 任意请求 → Request Headers 中复制整行 `Cookie`（需包含 `cf_clearance`）。
+3. 桌面端：粘贴到“连接与认证”区域的 **Cookie** 字段后保存。
+4. CLI：通过环境变量提供：`AIHUB_COOKIE='...' ./cli/aihub-router auth login --email <email> --password-stdin`（`route`/`watch` 也会自动携带该 Cookie）。
+
+> 提示：`cf_clearance` 会过期。若再次遇到挑战提示，程序会自动再次过盾，也可手动用浏览器获取新 Cookie；还可以联系站长对 API 路径关闭挑战或加入 IP 白名单。
+
 可通过桌面端的“黑名单分组”勾选要排除的分组，也可以使用 CLI 保存分组 ID：
 
 ```bash

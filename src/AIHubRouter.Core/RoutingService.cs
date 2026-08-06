@@ -7,7 +7,8 @@ public interface IAIHubClientFactory
         string? bearerToken,
         string? cookie,
         string? userAgent,
-        bool allowInsecureLoopback);
+        bool allowInsecureLoopback,
+        ICloudflareChallengeSolver? cloudflareChallengeSolver = null);
 }
 
 public sealed class AIHubClientFactory : IAIHubClientFactory
@@ -17,14 +18,16 @@ public sealed class AIHubClientFactory : IAIHubClientFactory
         string? bearerToken,
         string? cookie,
         string? userAgent,
-        bool allowInsecureLoopback)
+        bool allowInsecureLoopback,
+        ICloudflareChallengeSolver? cloudflareChallengeSolver = null)
     {
         return new AIHubClient(
             baseUrl,
             bearerToken,
             cookie,
             userAgent,
-            allowInsecureLoopback: allowInsecureLoopback);
+            allowInsecureLoopback: allowInsecureLoopback,
+            cloudflareChallengeSolver: cloudflareChallengeSolver);
     }
 }
 
@@ -106,6 +109,7 @@ public sealed class RoutingService : IDisposable
     private readonly PersistentAppSettings _settings;
     private readonly IRouteStateStore _stateStore;
     private readonly IAIHubClientFactory _clientFactory;
+    private readonly ICloudflareChallengeSolver? _cloudflareChallengeSolver;
     private readonly Func<PersistentCredentials, CancellationToken, Task>? _persistCredentials;
     private readonly Func<DateTimeOffset> _utcNow;
     private PersistentCredentials _credentials;
@@ -124,12 +128,14 @@ public sealed class RoutingService : IDisposable
         IRouteStateStore stateStore,
         IAIHubClientFactory? clientFactory = null,
         Func<PersistentCredentials, CancellationToken, Task>? persistCredentials = null,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        ICloudflareChallengeSolver? cloudflareChallengeSolver = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _credentials = credentials ?? throw new ArgumentNullException(nameof(credentials));
         _stateStore = stateStore ?? throw new ArgumentNullException(nameof(stateStore));
         _clientFactory = clientFactory ?? new AIHubClientFactory();
+        _cloudflareChallengeSolver = cloudflareChallengeSolver;
         _persistCredentials = persistCredentials;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
 
@@ -518,7 +524,8 @@ public sealed class RoutingService : IDisposable
             null,
             _credentials.Cookie,
             _credentials.UserAgent,
-            _settings.AllowInsecureLoopback);
+            _settings.AllowInsecureLoopback,
+            _cloudflareChallengeSolver);
         var coordinator = new SessionCoordinator(
             _sessionClient.RefreshSessionAsync,
             _sessionClient.LoginAsync,
@@ -545,7 +552,8 @@ public sealed class RoutingService : IDisposable
             bearerToken,
             _credentials.Cookie,
             _credentials.UserAgent,
-            _settings.AllowInsecureLoopback);
+            _settings.AllowInsecureLoopback,
+            _cloudflareChallengeSolver);
         _authenticatedClientToken = bearerToken;
         return _authenticatedClient;
     }

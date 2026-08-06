@@ -69,6 +69,13 @@ var tests = new (string Name, Action Body)[]
     ("Authentication error hides server message", TestAuthenticationErrorHidesServerMessage),
     ("Business error hides server message", TestBusinessErrorHidesServerMessage),
     ("Interactive login requirement is rejected", TestInteractiveLoginRequirementIsRejected),
+    ("Authentication rejection shows status hint", TestAuthenticationRejectionShowsStatusHint),
+    ("Authentication validation error shows format hint", TestAuthenticationValidationErrorShowsFormatHint),
+    ("Cloudflare JS challenge is detected", TestCloudflareJsChallengeIsDetected),
+    ("Cloudflare interactive challenge is detected", TestCloudflareInteractiveChallengeIsDetected),
+    ("Cloudflare challenge solves and retries with cookies", TestCloudflareChallengeSolverRetriesWithCookies),
+    ("Cloudflare solver failure does not retry forever", TestCloudflareSolverFailureDoesNotRetryForever),
+    ("JSON 403 business error is not a Cloudflare challenge", TestJsonBusinessErrorIsNotCloudflareChallenge),
     ("Empty key selection roundtrips", TestEmptyKeySelectionRoundtrips),
     ("First key selection chooses first active key", TestFirstKeySelectionChoosesFirstActiveKey),
     ("Initialized empty key selection stays empty", TestInitializedEmptyKeySelectionStaysEmpty)
@@ -1757,6 +1764,72 @@ static void TestBusinessErrorHidesServerMessage()
     }
 }
 
+static void TestAuthenticationRejectionShowsStatusHint()
+{
+    const string serverMessage = "invalid email or password";
+    var handler = new StubHttpMessageHandler(request =>
+    {
+        Assert(request.RequestUri?.AbsolutePath == "/api/v1/auth/login", "Login used the wrong endpoint.");
+        return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent(
+                "{\"code\":401,\"message\":\"" + serverMessage + "\",\"reason\":\"INVALID_CREDENTIALS\"}",
+                Encoding.UTF8,
+                "application/json")
+        };
+    });
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    try
+    {
+        client.LoginAsync(
+            new LoginCredentials("user@example.test", "wrong-password"),
+            CancellationToken.None).GetAwaiter().GetResult();
+        throw new InvalidOperationException("Rejected login was accepted.");
+    }
+    catch (AIHubApiException exception)
+    {
+        Assert(exception.ApiCode == "401", "Authentication rejection discarded the API code.");
+        Assert(
+            exception.Message.Contains("邮箱或密码错误", StringComparison.Ordinal),
+            "Authentication rejection lacks a status hint.");
+        Assert(
+            !exception.Message.Contains(serverMessage, StringComparison.Ordinal),
+            "Authentication rejection exposed the server message.");
+    }
+}
+
+static void TestAuthenticationValidationErrorShowsFormatHint()
+{
+    var handler = new StubHttpMessageHandler(request =>
+    {
+        Assert(request.RequestUri?.AbsolutePath == "/api/v1/auth/login", "Login used the wrong endpoint.");
+        return new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent(
+                "{\"code\":400,\"message\":\"Invalid request: Password is required\"}",
+                Encoding.UTF8,
+                "application/json")
+        };
+    });
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    try
+    {
+        client.LoginAsync(
+            new LoginCredentials("user@example.test", "password"),
+            CancellationToken.None).GetAwaiter().GetResult();
+        throw new InvalidOperationException("Rejected login was accepted.");
+    }
+    catch (AIHubApiException exception)
+    {
+        Assert(exception.ApiCode == "400", "Validation rejection discarded the API code.");
+        Assert(
+            exception.Message.Contains("认证请求无效", StringComparison.Ordinal),
+            "Validation rejection lacks a format hint.");
+    }
+}
+
 static void TestInteractiveLoginRequirementIsRejected()
 {
     const string temporaryToken = "temporary-two-factor-token-must-not-leak";
@@ -1779,6 +1852,172 @@ static void TestInteractiveLoginRequirementIsRejected()
     }
 }
 
+static void TestCloudflareJsChallengeIsDetected()
+{
+    var handler = new StubHttpMessageHandler(_ => ChallengeResponse("""
+        <!DOCTYPE html>
+        <html>
+          <head><title>Just a moment...</title></head>
+          <body>
+            <div class="main-wrapper" role="main">
+              <div class="ctp-checkbox-label">Enable JavaScript and cookies to continue</div>
+            </div>
+          </body>
+        </html>
+        """));
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    try
+    {
+        client.GetAvailableGroupsAsync(CancellationToken.None).GetAwaiter().GetResult();
+        throw new InvalidOperationException("Cloudflare challenge was accepted.");
+    }
+    catch (CloudflareChallengeException exception)
+    {
+        Assert(exception.ChallengeKind == CloudflareChallengeKind.JsChallenge, "JS challenge was misclassified.");
+        Assert(!exception.IsAuthenticationFailure, "Cloudflare challenge was classified as an authentication failure.");
+    }
+}
+
+static void TestCloudflareInteractiveChallengeIsDetected()
+{
+    var handler = new StubHttpMessageHandler(_ => ChallengeResponse("""
+        <!DOCTYPE html>
+        <html>
+          <head><title>Attention Required! | Cloudflare</title></head>
+          <body>
+            <div class="cf-chl-widget"><label>Verify you are human</label></div>
+          </body>
+        </html>
+        """));
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    try
+    {
+        client.GetAvailableGroupsAsync(CancellationToken.None).GetAwaiter().GetResult();
+        throw new InvalidOperationException("Interactive challenge was accepted.");
+    }
+    catch (CloudflareChallengeException exception)
+    {
+        Assert(exception.ChallengeKind == CloudflareChallengeKind.InteractiveChallenge, "Interactive challenge was misclassified.");
+    }
+}
+
+static void TestCloudflareChallengeSolverRetriesWithCookies()
+{
+    var callCount = 0;
+    string? seenCookieHeader = null;
+    string? seenUserAgent = null;
+    var handler = new StubHttpMessageHandler(request =>
+    {
+        callCount++;
+        seenCookieHeader = request.Headers.TryGetValues("Cookie", out var values)
+            ? string.Join("; ", values)
+            : null;
+        seenUserAgent = request.Headers.TryGetValues("User-Agent", out var agents)
+            ? string.Join("; ", agents)
+            : null;
+        if (callCount == 1)
+        {
+            return ChallengeResponse("""
+                <!DOCTYPE html>
+                <html>
+                  <head><title>Just a moment...</title></head>
+                  <body></body>
+                </html>
+                """);
+        }
+
+        return JsonResponse("""
+            {"code":0,"message":"ok","data":[{"id":1,"name":"Group 1","platform":"openai","status":"active"}]}
+            """);
+    });
+    using var solver = new StubCloudflareChallengeSolver(_ =>
+        new CloudflareChallengeSolution(
+            "SyntheticBrowser/1.0",
+            new Dictionary<string, string>
+            {
+                ["cf_clearance"] = "clearance-token",
+                ["__cf_bm"] = "bm-token"
+            }));
+    using var client = new AIHubClient(
+        "https://example.test",
+        messageHandler: handler,
+        cloudflareChallengeSolver: solver);
+
+    var groups = client.GetAvailableGroupsAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+    Assert(callCount == 2, "Solver retry did not send exactly two requests.");
+    Assert(solver.SolveCalls == 1, "Solver was not invoked exactly once.");
+    Assert(
+        seenCookieHeader is not null &&
+        seenCookieHeader.Contains("cf_clearance=clearance-token", StringComparison.Ordinal),
+        "Solved cookie was not attached to the retry.");
+    Assert(
+        seenUserAgent == "SyntheticBrowser/1.0",
+        "Solver-provided User-Agent was not used for the retry.");
+    Assert(groups.Count == 1, "Successful retry did not parse the response.");
+}
+
+static void TestCloudflareSolverFailureDoesNotRetryForever()
+{
+    var callCount = 0;
+    var handler = new StubHttpMessageHandler(_ =>
+    {
+        callCount++;
+        return ChallengeResponse("""
+            <!DOCTYPE html>
+            <html>
+              <head><title>Just a moment...</title></head>
+              <body></body>
+            </html>
+            """);
+    });
+    using var solver = new StubCloudflareChallengeSolver(_ => null);
+    using var client = new AIHubClient(
+        "https://example.test",
+        messageHandler: handler,
+        cloudflareChallengeSolver: solver);
+
+    try
+    {
+        client.GetAvailableGroupsAsync(CancellationToken.None).GetAwaiter().GetResult();
+        throw new InvalidOperationException("Unsolved challenge was accepted.");
+    }
+    catch (CloudflareChallengeException)
+    {
+        Assert(callCount == 1, "Solver failure triggered more than one request.");
+        Assert(solver.SolveCalls == 1, "Solver was invoked more than once.");
+    }
+}
+
+static void TestJsonBusinessErrorIsNotCloudflareChallenge()
+{
+    var handler = new StubHttpMessageHandler(_ =>
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent("""{"code":403,"message":"forbidden","data":null}""", Encoding.UTF8, "application/json")
+        };
+        response.Headers.TryAddWithoutValidation("Server", "cloudflare");
+        return response;
+    });
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    try
+    {
+        client.GetAvailableGroupsAsync(CancellationToken.None).GetAwaiter().GetResult();
+        throw new InvalidOperationException("JSON 403 was accepted.");
+    }
+    catch (CloudflareChallengeException)
+    {
+        throw new InvalidOperationException("JSON 403 was misclassified as a Cloudflare challenge.");
+    }
+    catch (AIHubApiException exception)
+    {
+        Assert(exception.StatusCode == HttpStatusCode.Forbidden, "JSON 403 lost its status code.");
+    }
+}
 static void TestEmptyKeySelectionRoundtrips()
 {
     if (!OperatingSystem.IsWindows())
@@ -1847,6 +2086,17 @@ static HttpResponseMessage JsonResponse(string json)
     };
 }
 
+static HttpResponseMessage ChallengeResponse(string body, HttpStatusCode status = HttpStatusCode.Forbidden)
+{
+    var response = new HttpResponseMessage(status)
+    {
+        Content = new StringContent(body, Encoding.UTF8, "text/html")
+    };
+    response.Headers.TryAddWithoutValidation("Server", "cloudflare");
+    response.Headers.TryAddWithoutValidation("CF-Ray", "test-ray-hkg");
+    return response;
+}
+
 static ProviderStatus Provider(
     long groupId,
     double rate,
@@ -1908,6 +2158,24 @@ sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage
     }
 }
 
+sealed class StubCloudflareChallengeSolver(
+    Func<Uri, CloudflareChallengeSolution?> solver) : ICloudflareChallengeSolver
+{
+    public int SolveCalls { get; private set; }
+
+    public Task<CloudflareChallengeSolution?> SolveAsync(
+        Uri origin,
+        CancellationToken cancellationToken)
+    {
+        SolveCalls++;
+        return Task.FromResult(solver(origin));
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
 sealed class MemoryRouteStateStore(RouteState? initial = null) : IRouteStateStore
 {
     private RouteState _state = initial ?? new();
@@ -1923,7 +2191,8 @@ sealed class StubAIHubClientFactory(IAIHubApiClient client) : IAIHubClientFactor
         string? bearerToken,
         string? cookie,
         string? userAgent,
-        bool allowInsecureLoopback) => client;
+        bool allowInsecureLoopback,
+        ICloudflareChallengeSolver? cloudflareChallengeSolver = null) => client;
 }
 
 sealed class StubAIHubApiClient(

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\AIHubRouter.Browser\AIHubRouter.Browser.csproj" />
     <ProjectReference Include="..\AIHubRouter.Core\AIHubRouter.Core.csproj" />
     <PackageReference Include="Avalonia" Version="12.1.0" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.0" />

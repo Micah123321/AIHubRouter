@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\AIHubRouter.Browser\AIHubRouter.Browser.csproj" />
     <ProjectReference Include="..\AIHubRouter.Core\AIHubRouter.Core.csproj" />
     <InternalsVisibleTo Include="AIHubRouter.Core.Tests" />
   </ItemGroup>

@@ -2,12 +2,16 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AIHubRouter.Browser;
 using AIHubRouter.Core;
 
 namespace AIHubRouter.Cli;
 
 internal static class CliApplication
 {
+    private static readonly Lazy<PlaywrightCloudflareChallengeSolver> CloudflareSolver =
+        new(() => new PlaywrightCloudflareChallengeSolver());
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -102,6 +106,7 @@ internal static class CliApplication
 
         var snapshot = store.Load();
         var settings = ApplyEnvironmentSettings(snapshot.Settings);
+        var credentials = ApplyEnvironmentCredentials(snapshot.Credentials ?? new PersistentCredentials());
         var persist = HasFlag(args, "--persist");
         switch (args[0].ToLowerInvariant())
         {
@@ -116,11 +121,14 @@ internal static class CliApplication
                 var password = await ReadSecretLineAsync("Password: ", cancellationToken);
                 using var client = new AIHubClient(
                     settings.BaseUrl,
-                    allowInsecureLoopback: settings.AllowInsecureLoopback);
+                    cookie: credentials.Cookie,
+                    userAgent: credentials.UserAgent,
+                    allowInsecureLoopback: settings.AllowInsecureLoopback,
+                    cloudflareChallengeSolver: CloudflareSolver.Value);
                 var session = await client.LoginAsync(
                     new LoginCredentials(email, password),
                     cancellationToken);
-                var credentials = new PersistentCredentials
+                var savedCredentials = new PersistentCredentials
                 {
                     Email = email.Trim(),
                     Password = password,
@@ -137,7 +145,7 @@ internal static class CliApplication
                             throw new InvalidOperationException(store.CredentialProtection);
                         }
 
-                        store.Save(settings with { PersistCredentials = true }, credentials);
+                        store.Save(settings with { PersistCredentials = true }, savedCredentials);
                     }
 
                     Console.WriteLine(persist
@@ -161,7 +169,10 @@ internal static class CliApplication
                 using var client = new AIHubClient(
                     settings.BaseUrl,
                     token,
-                    allowInsecureLoopback: settings.AllowInsecureLoopback);
+                    credentials.Cookie,
+                    credentials.UserAgent,
+                    allowInsecureLoopback: settings.AllowInsecureLoopback,
+                    cloudflareChallengeSolver: CloudflareSolver.Value);
                 await client.ValidateLoginAsync(cancellationToken);
                 if (persist)
                 {
@@ -312,7 +323,8 @@ internal static class CliApplication
                 }
 
                 return Task.CompletedTask;
-            });
+            },
+            cloudflareChallengeSolver: CloudflareSolver.Value);
     }
 
     private static async Task<bool> WaitForWatchEventAsync(

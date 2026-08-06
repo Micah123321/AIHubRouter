@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using Avalonia;
 using Avalonia.Styling;
+using AIHubRouter.Browser;
 using AIHubRouter.Core;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -19,6 +20,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     ];
 
     private readonly AppSettingsStore _store = new();
+    private readonly PlaywrightCloudflareChallengeSolver _cloudflareChallengeSolver = new();
     private RoutingService? _service;
     private ProfileLock? _profileLock;
     private CancellationTokenSource? _autoRoutingCancellation;
@@ -36,6 +38,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _email = string.Empty;
     [ObservableProperty] private string _password = string.Empty;
     [ObservableProperty] private string _bearerToken = string.Empty;
+    [ObservableProperty] private string _cookie = string.Empty;
     [ObservableProperty] private decimal _groupStickiness =
         (decimal)BalancedRoutingPolicy.DefaultMinimumScoreAdvantageToSwitch;
     [ObservableProperty] private string _minimumPriceMultiplierText =
@@ -445,7 +448,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 }
 
                 return Task.CompletedTask;
-            });
+            },
+            cloudflareChallengeSolver: _cloudflareChallengeSolver);
         _routingSettingsStale = false;
     }
 
@@ -728,6 +732,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Email = _loadedCredentials.Email;
             Password = _loadedCredentials.Password;
             BearerToken = _loadedCredentials.BearerToken;
+            Cookie = _loadedCredentials.Cookie;
         }
         catch (Exception exception)
         {
@@ -804,7 +809,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             Email = Email.Trim(),
             Password = Password,
-            BearerToken = BearerToken
+            BearerToken = BearerToken,
+            Cookie = Cookie.Trim()
         };
     }
 
@@ -849,6 +855,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         StopManualMonitoring();
         StopAutoRouting();
         ResetService();
+        _cloudflareChallengeSolver.Dispose();
     }
 }
 

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\AIHubRouter.Core\AIHubRouter.Core.csproj" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.61.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>AIHubRouter.Browser</AssemblyName>
+    <RootNamespace>AIHubRouter.Browser</RootNamespace>
+  </PropertyGroup>
+
+</Project>

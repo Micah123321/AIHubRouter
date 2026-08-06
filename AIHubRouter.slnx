@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/AIHubRouter.Browser/AIHubRouter.Browser.csproj" />
     <Project Path="src/AIHubRouter.Cli/AIHubRouter.Cli.csproj" />
     <Project Path="src/AIHubRouter.Core/AIHubRouter.Core.csproj" />
     <Project Path="src/AIHubRouter.Desktop/AIHubRouter.Desktop.csproj" />

@@ -10,7 +10,7 @@ $textExtensions = @(
     ".sln", ".slnx", ".targets", ".txt", ".xml"
 )
 $binaryExtensions = @("", ".dll", ".dylib", ".exe", ".so")
-$excludedDirectories = @(".git", ".worktrees", "artifacts", "bin", "obj")
+$excludedDirectories = @(".git", ".worktrees", "artifacts", "bin", "obj", ".playwright")
 
 if ($Path.Count -eq 0) {
     $Path = @(
@@ -60,9 +60,12 @@ function Get-ScanFiles([string[]]$roots) {
                     continue
                 }
 
+                $relative = Get-RelativePath $entry.FullName $candidate.FullName
+                $segments = $relative -split '[\\/]'
+                if ($segments | Where-Object { $_ -eq '.playwright' } | Select-Object -First 1) {
+                    continue
+                }
                 if (-not $isBuildRoot) {
-                    $relative = Get-RelativePath $entry.FullName $candidate.FullName
-                    $segments = $relative -split '[\\/]'
                     if ($segments | Where-Object { $_ -in $excludedDirectories } | Select-Object -First 1) {
                         continue
                     }

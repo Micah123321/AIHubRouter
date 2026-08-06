@@ -36,6 +36,11 @@ public sealed class AIHubClient : IAIHubApiClient
     private readonly string _cookie;
     private readonly string _userAgent;
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly ICloudflareChallengeSolver? _cloudflareChallengeSolver;
+    private readonly object _solvedCookiesLock = new();
+    private IReadOnlyDictionary<string, string>? _solvedCookies;
+    private string? _solvedUserAgent;
+    private string? _lastChallengeSolverError;
 
     public AIHubClient(
         string baseUrl,
@@ -45,13 +50,15 @@ public sealed class AIHubClient : IAIHubApiClient
         TimeSpan? timeout = null,
         HttpMessageHandler? messageHandler = null,
         Func<DateTimeOffset>? utcNow = null,
-        bool allowInsecureLoopback = false)
+        bool allowInsecureLoopback = false,
+        ICloudflareChallengeSolver? cloudflareChallengeSolver = null)
     {
         _origin = NormalizeOrigin(baseUrl, allowInsecureLoopback);
         _bearerToken = CredentialParser.NormalizeBearerToken(bearerToken);
         _cookie = CredentialParser.NormalizeCookie(cookie);
         _userAgent = CredentialParser.NormalizeUserAgent(userAgent);
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        _cloudflareChallengeSolver = cloudflareChallengeSolver;
 
         if (string.IsNullOrEmpty(_bearerToken))
         {
@@ -229,32 +236,37 @@ public sealed class AIHubClient : IAIHubApiClient
         CancellationToken cancellationToken)
     {
         var isAuthenticationEndpoint = path.StartsWith("/api/v1/auth/", StringComparison.OrdinalIgnoreCase);
-        using var request = new HttpRequestMessage(method, new Uri(_origin, path));
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9,en;q=0.7");
-        request.Headers.Referrer = _origin;
-        request.Headers.TryAddWithoutValidation("Origin", _origin.GetLeftPart(UriPartial.Authority));
-
-        if (!string.IsNullOrEmpty(_bearerToken))
+        for (var attempt = 0; ; attempt++)
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
+            using var request = CreateRequest(method, path, payload);
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if (CloudflareChallengeDetector.TryDetect(response, body, out var challengeKind))
+            {
+                if (attempt == 0 &&
+                    _cloudflareChallengeSolver is not null &&
+                    !HasClearanceCookie &&
+                    await TrySolveChallengeAsync(cancellationToken))
+                {
+                    continue;
+                }
+
+                throw CreateCloudflareChallengeException(challengeKind);
+            }
+
+            return ParseResponse<T>(response, body, isAuthenticationEndpoint);
         }
+    }
 
-        request.Headers.TryAddWithoutValidation(
-            "User-Agent",
-            string.IsNullOrEmpty(_userAgent) ? "AIHubRouter/1.0 (Windows)" : _userAgent);
-
-        if (payload is not null)
-        {
-            request.Content = JsonContent.Create(payload, options: JsonOptions);
-        }
-
-        using var response = await _httpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-
+    private static T ParseResponse<T>(
+        HttpResponseMessage response,
+        string body,
+        bool isAuthenticationEndpoint)
+    {
         JsonDocument? document = null;
         try
         {
@@ -312,13 +324,135 @@ public sealed class AIHubClient : IAIHubApiClient
         }
     }
 
+    private HttpRequestMessage CreateRequest(HttpMethod method, string path, object? payload)
+    {
+        var request = new HttpRequestMessage(method, new Uri(_origin, path));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9,en;q=0.7");
+        request.Headers.Referrer = _origin;
+        request.Headers.TryAddWithoutValidation("Origin", _origin.GetLeftPart(UriPartial.Authority));
+
+        if (!string.IsNullOrEmpty(_bearerToken))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _bearerToken);
+        }
+
+        var effectiveUserAgent = _solvedUserAgent ?? _userAgent;
+        request.Headers.TryAddWithoutValidation(
+            "User-Agent",
+            string.IsNullOrEmpty(effectiveUserAgent) ? "AIHubRouter/1.0 (Windows)" : effectiveUserAgent);
+
+        if (payload is not null)
+        {
+            request.Content = JsonContent.Create(payload, options: JsonOptions);
+        }
+
+        AppendSolvedCookies(request);
+        return request;
+    }
+
+    private void AppendSolvedCookies(HttpRequestMessage request)
+    {
+        IReadOnlyDictionary<string, string>? cookies;
+        lock (_solvedCookiesLock)
+        {
+            cookies = _solvedCookies;
+        }
+
+        if (cookies is null || cookies.Count == 0)
+        {
+            return;
+        }
+
+        var header = string.Join("; ", cookies.Select(pair => $"{pair.Key}={pair.Value}"));
+        request.Headers.TryAddWithoutValidation("Cookie", header);
+    }
+
+    private bool HasClearanceCookie
+    {
+        get
+        {
+            IReadOnlyDictionary<string, string>? solved;
+            lock (_solvedCookiesLock)
+            {
+                solved = _solvedCookies;
+            }
+
+            return _cookie.Contains("cf_clearance", StringComparison.OrdinalIgnoreCase) ||
+                solved?.ContainsKey("cf_clearance") == true;
+        }
+    }
+
+    private async Task<bool> TrySolveChallengeAsync(CancellationToken cancellationToken)
+    {
+        CloudflareChallengeSolution? solution;
+        try
+        {
+            solution = await _cloudflareChallengeSolver!.SolveAsync(_origin, cancellationToken);
+            _lastChallengeSolverError = null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _lastChallengeSolverError = exception.Message;
+            return false;
+        }
+
+        if (solution is null || solution.Cookies is null || solution.Cookies.Count == 0)
+        {
+            return false;
+        }
+
+        lock (_solvedCookiesLock)
+        {
+            var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (_solvedCookies is not null)
+            {
+                foreach (var pair in _solvedCookies)
+                {
+                    merged[pair.Key] = pair.Value;
+                }
+            }
+
+            foreach (var pair in solution.Cookies)
+            {
+                merged[pair.Key] = pair.Value;
+            }
+
+            _solvedCookies = merged;
+            if (!string.IsNullOrWhiteSpace(solution.UserAgent))
+            {
+                _solvedUserAgent = solution.UserAgent;
+            }
+        }
+
+        return true;
+    }
+
+    private CloudflareChallengeException CreateCloudflareChallengeException(
+        CloudflareChallengeKind challengeKind)
+    {
+        var message = challengeKind == CloudflareChallengeKind.InteractiveChallenge
+            ? "站点开启了 Cloudflare 人机验证，自动请求被拦截。"
+            : "站点开启了 Cloudflare 5 秒盾，自动请求被拦截。";
+        if (!string.IsNullOrWhiteSpace(_lastChallengeSolverError))
+        {
+            message += $" 自动过盾失败：{_lastChallengeSolverError}";
+        }
+
+        message += " 请在浏览器中打开站点完成验证后，复制浏览器 Cookie（需包含 cf_clearance）填入桌面端“Cookie”字段，或通过环境变量 AIHUB_COOKIE 传入，再重试。";
+        return new CloudflareChallengeException(_origin, challengeKind, message);
+    }
     private static AIHubApiException CreateApiException(
         HttpStatusCode statusCode,
         JsonElement? root,
         bool isAuthenticationEndpoint)
     {
         var message = isAuthenticationEndpoint
-            ? "认证请求被服务器拒绝。"
+            ? CreateAuthenticationErrorMessage(statusCode)
             : statusCode switch
             {
                 HttpStatusCode.Unauthorized => "认证失败，请检查登录 Token、Cookie 和浏览器 User-Agent。",
@@ -337,6 +471,17 @@ public sealed class AIHubClient : IAIHubApiClient
         }
 
         return new AIHubApiException(message, statusCode, apiCode);
+    }
+    private static string CreateAuthenticationErrorMessage(HttpStatusCode statusCode)
+    {
+        return statusCode switch
+        {
+            HttpStatusCode.BadRequest => "认证请求无效：请检查邮箱和密码格式后重试。",
+            HttpStatusCode.Unauthorized => "认证失败：邮箱或密码错误，或登录凭据已过期，请重新登录。",
+            HttpStatusCode.Forbidden => "当前账号被拒绝登录，可能已被禁用或限制。",
+            HttpStatusCode.TooManyRequests => "请求过于频繁，请稍后重试。",
+            _ => $"认证请求被服务器拒绝（HTTP {(int)statusCode}）。"
+        };
     }
 
     private static string ReadCode(JsonElement codeElement)

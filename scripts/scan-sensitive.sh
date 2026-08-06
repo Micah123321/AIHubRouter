@@ -62,7 +62,7 @@ for target in "$@"; do
   if [[ -d "$target" ]]; then
     while IFS= read -r -d '' file; do
       scan_file "$file"
-    done < <(find "$target" -type f -print0)
+    done < <(find "$target" -type f -not -path '*/.playwright/*' -print0)
   elif [[ -f "$target" ]]; then
     scan_file "$target"
   else
