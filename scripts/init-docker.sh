@@ -71,9 +71,9 @@ validate_environment_file() {
   done
 
   grep -q '^AIHUB_WEB_URLS=http://0.0.0.0:5080$' "$environment_file" ||
-    die '环境文件中的 AIHUB_WEB_URLS 不是 http://0.0.0.0:5080。请使用反向代理模式或手动调整部署方式。'
+    die '环境文件中的 AIHUB_WEB_URLS 不是 http://0.0.0.0:5080。请检查脚本管理的公网 HTTP 配置。'
   grep -q '^AIHUB_WEB_ALLOW_HTTP=1$' "$environment_file" ||
-    die '环境文件中的 AIHUB_WEB_ALLOW_HTTP 不是 1。请确认容器只绑定到宿主机回环地址。'
+    die '环境文件中的 AIHUB_WEB_ALLOW_HTTP 不是 1。公网 HTTP 模式需要显式允许非回环 HTTP。'
 
   chmod 600 "$environment_file"
 }
@@ -119,7 +119,7 @@ docker run --detach \
   --restart unless-stopped \
   --env-file "$environment_file" \
   --mount "type=volume,src=$volume_name,dst=/app/data" \
-  --publish 127.0.0.1:5080:5080 \
+  --publish 0.0.0.0:5080:5080 \
   "$image_name" >/dev/null
 
 printf '正在等待 Web 健康检查。\n'
@@ -131,7 +131,8 @@ for ((attempt = 1; attempt <= 30; attempt++)); do
       printf '首次 Web 登录口令：%s\n' "$generated_password"
       printf '请立即保存该口令；后续运行不会再次显示。\n'
     fi
-    printf '访问地址：http://127.0.0.1:5080\n'
+    printf '访问地址：http://服务器公网IP:5080\n'
+    printf '安全警告：当前为明文 HTTP，登录口令和会话不会加密；请限制 5080 来源 IP，并尽快迁移到 HTTPS。\n' >&2
     printf '容器用户：%s\n' "$(docker inspect --format '{{.Config.User}}' "$container_name")"
     exit 0
   fi
