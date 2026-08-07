@@ -101,6 +101,22 @@ Web 端不会向浏览器返回 AIHub 密码或 Token。外网模式必须使用
 
 仓库根目录提供 Web-only 多阶段 Docker 构建。构建阶段使用官方 .NET 10 SDK，运行阶段使用官方 ASP.NET 10 runtime；CLI、桌面端和 Playwright 浏览器不会进入 Web 镜像。
 
+#### 一键初始化（推荐）
+
+Linux 服务器在仓库目录执行下面一条命令即可完成环境文件生成、镜像构建、数据卷创建、容器启动和 `/healthz` 检查：
+
+```bash
+bash scripts/init-docker.sh
+```
+
+脚本要求以 root 执行，并检查 Docker、OpenSSL 和 curl。首次运行会生成 `/etc/aihub-router-web.env`，以 `0600` 权限保存 Web 口令和凭据加密主密钥，并在启动成功后显示一次 Web 口令。后续运行会复用已有口令和主密钥，只替换同名容器，不删除 `aihub-router-web-data` 数据卷。
+
+脚本固定使用可信内网 HTTP：容器端口只绑定到宿主机 `127.0.0.1:5080`，公网访问应由 Nginx/Caddy 提供 HTTPS。脚本不会安装 Docker、修改防火墙或配置反向代理。
+
+脚本可以从任意当前目录调用，因为它会根据自身位置定位仓库根目录。已有环境文件缺少口令或主密钥时，脚本会停止而不会生成新密钥覆盖旧数据。
+
+#### 手动 Docker 命令（可选）
+
 构建镜像：
 
 ```bash
