@@ -9,3 +9,4 @@ src/AIHubRouter.WinForms/
 tests/release-scan-*.fixture
 *.user
 *.suo
+.helloagents

@@ -97,6 +97,86 @@ sudo systemctl status aihub-router-web.service
 
 Web 端不会向浏览器返回 AIHub 密码或 Token。外网模式必须使用 HTTPS；只有可信内网临时测试时才可同时设置 `AIHUB_WEB_URLS=http://0.0.0.0:5080` 和 `AIHUB_WEB_ALLOW_HTTP=1`。
 
+### Docker Web 镜像
+
+仓库根目录提供 Web-only 多阶段 Docker 构建。构建阶段使用官方 .NET 10 SDK，运行阶段使用官方 ASP.NET 10 runtime；CLI、桌面端和 Playwright 浏览器不会进入 Web 镜像。
+
+构建镜像：
+
+```bash
+docker build --pull -t aihub-router-web:local .
+```
+
+容器将配置保存在 `/app/data/AIHubRouter`。Linux 服务器建议使用 named volume，并把容器内部 HTTP 端口只绑定到宿主机回环地址，再由 Nginx 或 Caddy 提供正式 HTTPS：
+
+```bash
+WEB_PASSWORD="$(openssl rand -base64 24 | tr -d '\n')"
+MASTER_KEY="$(openssl rand -base64 32 | tr -d '\n')"
+
+printf 'AIHUB_WEB_PASSWORD=%s\nAIHUB_ROUTER_MASTER_KEY=%s\nAIHUB_WEB_URLS=http://0.0.0.0:5080\nAIHUB_WEB_ALLOW_HTTP=1\n' \
+  "${WEB_PASSWORD}" "${MASTER_KEY}" |
+  sudo tee /etc/aihub-router-web.env >/dev/null
+sudo chmod 600 /etc/aihub-router-web.env
+unset WEB_PASSWORD MASTER_KEY
+
+docker volume create aihub-router-web-data
+
+docker run -d \
+  --name aihub-router-web \
+  --restart unless-stopped \
+  --env-file /etc/aihub-router-web.env \
+  --mount type=volume,src=aihub-router-web-data,dst=/app/data \
+  --publish 127.0.0.1:5080:5080 \
+  aihub-router-web:local
+```
+
+验证容器和健康接口：
+
+```bash
+docker ps --filter name=aihub-router-web
+curl -fsS http://127.0.0.1:5080/healthz
+printf '\n'
+docker inspect --format '{{.Config.User}}' aihub-router-web
+docker logs --tail 100 aihub-router-web
+```
+
+上面的 `AIHUB_WEB_ALLOW_HTTP=1` 只适用于容器到本机反向代理的可信内部链路；不要把 `5080` 直接用 `-p 5080:5080` 暴露到公网。公网访问必须通过带正式证书的 Nginx/Caddy，并转发到 `127.0.0.1:5080`。
+
+若不使用反向代理，也可以让容器直接监听 HTTPS，但必须把 PFX 证书以只读方式挂载，并配置以下环境变量：
+
+```text
+AIHUB_WEB_URLS=https://0.0.0.0:5443
+Kestrel__Certificates__Default__Path=/https/aihub-router-web.pfx
+Kestrel__Certificates__Default__Password=<PFX密码>
+```
+
+完整的 Docker 运行命令：
+
+```bash
+docker run -d \
+  --name aihub-router-web \
+  --restart unless-stopped \
+  --env-file /etc/aihub-router-web-https.env \
+  --mount type=volume,src=aihub-router-web-data,dst=/app/data \
+  --mount type=bind,src=/absolute/path/aihub-router-web.pfx,dst=/https/aihub-router-web.pfx,readonly \
+  --publish 5443:5443 \
+  aihub-router-web:local
+```
+
+升级镜像时只重建并替换容器，不要删除数据卷：
+
+```bash
+docker build --pull -t aihub-router-web:local .
+docker rm -f aihub-router-web
+docker run -d \
+  --name aihub-router-web \
+  --restart unless-stopped \
+  --env-file /etc/aihub-router-web.env \
+  --mount type=volume,src=aihub-router-web-data,dst=/app/data \
+  --publish 127.0.0.1:5080:5080 \
+  aihub-router-web:local
+```
+
 ## 你会得到什么
 
 - **更少的手工判断**：价格、加权首 Token 延迟、置信度、最后样本时间和权限统一比较。
