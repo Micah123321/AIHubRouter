@@ -4,7 +4,7 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 ## 我们在做什么？
 
-每分钟从 `https://aihub.top/api/v1/public/groups/usage-stats` 读取真实用户请求数据，并从 `https://aihub.top/api/v1/public/providers/series` 读取供应商探测与用户首字时间，依据你的策略偏好（省钱 vs 高速）自动切换分组。默认间隔为 60 秒，也可以按需调整。桌面端、Web 控制台和 CLI 共用同一套路由核心。
+每分钟从 `https://aihub.top/api/v1/public/groups/usage-stats` 读取真实用户请求数据，并按参考数据缓存边界读取 `https://aihub.top/api/v1/public/providers/series` 的供应商探测与用户首字时间，以及 `https://aihub.top/api/v1/public/providers` 的供应商 `cache_hit_rate`，依据你的策略偏好（省钱 vs 高速）自动切换分组。默认间隔为 60 秒，也可以按需调整。桌面端、Web 控制台和 CLI 共用同一套路由核心。
 
 ## 为什么选择这个项目？
 
@@ -12,7 +12,7 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 2. ❤️ 超敏感体质：最后样本时间和样本量共同形成 `0..1` 置信度。低置信度的低延迟会被保守修正，最后成功样本超过 15 分钟的分组不会冒充当前可用。
 
-3. 💩 狗屎风格粘性分组：rank 分相差不大时优先保持分组稳定，守护缓存命中；分差悬殊时果断切换，展示你的铁公鸡本性。
+3. 💩 狗屎风格粘性分组：rank 分相差不大时优先保持分组稳定；分差悬殊时果断切换，展示你的铁公鸡本性。
 
 4. 🐶 像村里大黄一样忠诚的全平台兼容性：路由不嫌弃你的硬件架构，Windows、Linux、macOS 的 x64 与 ARM64 全面支持；GUI 对人类友好，CLI 对智能体友好，双插头都能用。
 
@@ -32,13 +32,13 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 加权得分 = 速度权重 × 速度收益 - 价格权重 × 价格溢价
 ```
 
-供应商序列作为附加参考信号：探测成功率越高越好，成功探测延迟和用户首字时间越低越好。可比较候选会得到 `0..1` 的质量分，并相对最低倍率基准加入综合评分：
+供应商序列作为附加参考信号：探测成功率越高越好，成功探测延迟和用户首字时间越低越好。另从 `/api/v1/public/providers?timezone=Asia%2FShanghai` 读取显式的 `cache_hit_rate`，例如 `82.88%` 会解析为 `0.8288`。可比较候选会得到 `0..1` 的质量分，并相对最低倍率基准加入综合评分：
 
 ```text
 综合得分 = 加权得分 + 序列权重 × (候选质量 - 基准质量)
 ```
 
-序列权重默认 `0.20`，设为 `0` 时精确保留原价格/速度评分。序列结果默认缓存 300 秒；缓存键包含统计范围和时区，缓存 TTL 不能绕过数据最大年龄。接口失败、数据过期或基准不可比较时，程序会明确显示降级状态并沿用原评分；强制刷新失败但仍使用新鲜缓存时也会标记为 warning，不会因参考接口故障中断路由。Web 与桌面端可在高级设置中调整；CLI 使用 `--provider-series-weight`、`--provider-series-cache`、`--provider-series-range` 和 `--provider-series-timezone`。
+命中率只有在所有当前可比较候选都有有效值时才加入质量平均值；`样本不足`、空值、越界值和接口失败不会奖励任何候选。供应商参考权重默认 `0.20`，设为 `0` 时精确保留原价格/速度评分。序列结果默认缓存 300 秒；这里的 `--provider-series-cache` 只控制 `/providers/series` 响应刷新缓存，不是供应商的缓存命中率。账号参考数据刷新时会读取 `/providers`，参考数据不可用时明确显示降级状态并沿用基础评分，不会因参考接口故障中断路由。Web 与桌面端可在高级设置中调整；CLI 使用 `--provider-series-weight`、`--provider-series-cache`、`--provider-series-range` 和 `--provider-series-timezone`。
 
 默认 `Balanced` 对价格与首 Token 速度各占 50% 权重；`Economy` 以价格为主，`Speed` 以首 Token 速度为主。当前分组仍然有效时，新分组还必须超过“分组粘性”才会切换；默认值为 `0.10`，可在 Web、桌面端或 CLI 的 `--group-stickiness` 中调整。数值越大，越不容易因短时波动切换分组。每次结果都会告诉你为什么选它。
 
@@ -228,7 +228,7 @@ aihub-router config set [options]
 
 密码和 Token 不接受普通命令行参数，可通过 stdin、安全凭据文件或环境变量提供。运行 `aihub-router --help` 查看完整选项。
 
-供应商序列配置示例：
+供应商参考数据配置示例（序列响应缓存与供应商命中率是两个不同概念）：
 
 ```bash
 aihub-router config set --provider-series-weight 0.20 --provider-series-cache 300 --provider-series-range 6h --provider-series-timezone Asia/Shanghai

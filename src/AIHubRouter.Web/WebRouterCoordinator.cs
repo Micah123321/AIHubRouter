@@ -270,7 +270,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _status = $"{ReasonText(result.Decision.Reason)}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。";
                 _statusKind = result.FailedKeyCount > 0
                     ? "error"
-                    : result.ProviderSeriesStatus.IsDegraded
+                    : result.ProviderSeriesStatus.IsDegraded ||
+                        result.ProviderCacheHitRateStatus.IsDegraded
                         ? "warning"
                         : "success";
                 _showProviderSeriesStatus = true;
@@ -401,6 +402,13 @@ public sealed class WebRouterCoordinator : BackgroundService
                     result.ProviderSeriesStatus.FromCache,
                     result.ProviderSeriesStatus.IsDegraded,
                     result.ProviderSeriesStatus.Message),
+            result is null || !_showProviderSeriesStatus
+                ? null
+                : new WebProviderCacheHitRateStatus(
+                    result.ProviderCacheHitRateStatus.Available,
+                    result.ProviderCacheHitRateStatus.FromCache,
+                    result.ProviderCacheHitRateStatus.IsDegraded,
+                    result.ProviderCacheHitRateStatus.Message),
             candidateSummary,
             $"API-only / {settings.RoutingMode}",
             _lastUpdatedAt);
@@ -437,6 +445,7 @@ public sealed class WebRouterCoordinator : BackgroundService
             double.IsFinite(multiplier) ? multiplier : null,
             provider.FirstTokenLatencyMs is >= 0 and var latency && double.IsFinite(latency) ? latency : null,
             provider.LatencyConfidence,
+            provider.CacheHitRate,
             provider.UsageSampleCount,
             score,
             state,

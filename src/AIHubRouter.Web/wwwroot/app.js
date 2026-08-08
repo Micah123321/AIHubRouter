@@ -217,10 +217,11 @@ function renderProviders(providers) {
       <td>${Number.isFinite(provider.multiplier) ? `${formatNumber(provider.multiplier)}x` : "-"}</td>
       <td>${Number.isFinite(provider.latency) ? `${provider.latency.toFixed(0)} ms` : "-"}</td>
       <td>${Number.isFinite(provider.confidence) ? `${formatPercent(provider.confidence)} / ${provider.sampleCount}` : "-"}</td>
+      <td>${formatPercent(provider.cacheHitRate)}</td>
       <td>${formatScore(provider.weightedScore)}</td>
       <td><span class="state-badge ${stateClass(provider.state)}">${escapeHtml(provider.state)}</span></td>
       <td>${formatDate(provider.checkedAt)}</td>
-    </tr>`).join("") : '<tr><td class="empty-state" colspan="9">刷新后显示方案</td></tr>';
+    </tr>`).join("") : '<tr><td class="empty-state" colspan="10">刷新后显示方案</td></tr>';
   $("#manualButton").disabled = state.dashboard?.isBusy || !state.selectedGroupId;
   updateSortIndicators();
 }
@@ -259,9 +260,12 @@ function renderDashboard(dashboard, syncSettings = false) {
   renderGroups(dashboard.groups);
   renderProviders(dashboard.providers);
   renderKeys(dashboard.keys);
-  const providerSeriesMessage = dashboard.providerSeriesStatus?.message || "";
-  $("#statusText").textContent = providerSeriesMessage
-    ? `${dashboard.status} · ${providerSeriesMessage}`
+  const providerReferenceMessage = [
+    dashboard.providerSeriesStatus?.message,
+    dashboard.providerCacheHitRateStatus?.message
+  ].filter(Boolean).join(" · ");
+  $("#statusText").textContent = providerReferenceMessage
+    ? `${dashboard.status} · ${providerReferenceMessage}`
     : dashboard.status;
   $("#statusDot").className = `status-dot ${dashboard.statusKind}`;
   $("#lastUpdated").textContent = dashboard.lastUpdatedAt ? `更新于 ${formatDate(dashboard.lastUpdatedAt)}` : "";
@@ -288,7 +292,7 @@ function settingsPayload() {
     confidenceImpact: readBoundedNumber("#confidenceImpact", 0, 2, "置信度影响强度"),
     minimumConfidence: readBoundedNumber("#minimumConfidence", 0, 1, "最低置信度"),
     providerSeriesWeight: readBoundedNumber("#providerSeriesWeight", 0, 1, "供应商序列权重"),
-    providerSeriesCacheSeconds: readBoundedInteger("#providerSeriesCacheSeconds", 30, 3600, "供应商序列缓存"),
+    providerSeriesCacheSeconds: readBoundedInteger("#providerSeriesCacheSeconds", 30, 3600, "供应商序列响应缓存"),
     providerSeriesRange: readRequiredText("#providerSeriesRange", "供应商序列范围"),
     providerSeriesTimezone: readRequiredText("#providerSeriesTimezone", "供应商序列时区"),
     pollingIntervalSeconds: Number.parseInt($("#pollingInterval").value, 10),

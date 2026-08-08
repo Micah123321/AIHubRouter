@@ -90,13 +90,14 @@ weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 
 ### 4.3 供应商序列参考
 
-每个自动路由周期按配置请求：
+路由服务按配置读取以下参考接口（缓存边界见本节后文）：
 
 ```text
 GET /api/v1/public/providers/series?range=6h&timezone=Asia%2FShanghai
+GET /api/v1/public/providers?timezone=Asia%2FShanghai
 ```
 
-解析器只依赖 `group_id`、`probe` 和 `user_ttft`。`probe` 元组只读取前三项时间戳、成功标记和延迟毫秒，忽略未确认的尾部字段；`user_ttft` 按 `sample_count` 对 `avg_ttft_ms` 加权。
+解析器只依赖 `group_id`、`probe` 和 `user_ttft`，并从 `/providers` 的 `cache_hit_rate` 读取供应商缓存命中率。`probe` 元组只读取前三项时间戳、成功标记和延迟毫秒，忽略未确认的尾部字段；`user_ttft` 按 `sample_count` 对 `avg_ttft_ms` 加权；命中率百分数字符串转换为 `0..1`，`样本不足` 等无效值不进入评分。
 
 候选质量由可用分量平均得到：
 
@@ -104,7 +105,8 @@ GET /api/v1/public/providers/series?range=6h&timezone=Asia%2FShanghai
 providerQuality = average(
   probeSuccessRate,
   inverseNormalizedProbeLatency,
-  inverseNormalizedUserTtft)
+  inverseNormalizedUserTtft,
+  cacheHitRate when every comparable candidate has a valid value)
 
 finalScore = weightedScore
   + providerSeriesWeight * (candidateQuality - baselineQuality)
@@ -112,7 +114,7 @@ finalScore = weightedScore
 
 探测成功率直接使用 `0..1`，但至少需要两次有效探测和有效成功探测延迟才生成候选质量分；每个候选还必须在最大状态年龄内。延迟分量只在全部已评分候选均有有效值、且至少两个候选的值不同时进行反向最小-最大归一化，缺少关键指标或已过期的候选不参与比较，避免缺失数据比真实的较差数据更有利。候选或最低倍率基准缺少质量分时不叠加，权重为 `0` 时结果与原评分一致。默认权重为 `0.20`，允许范围为 `0..1`。
 
-成功快照按 `range + timezone` 缓存在进程内，默认 TTL 为 300 秒，可配置范围为 30 到 3600 秒。缓存可用期限取 TTL 和数据最大年龄的较早者。普通周期命中有效缓存时不发送请求；强制刷新会访问接口，失败时可继续使用仍新鲜的缓存并标记 warning；缓存过期后失败则明确报告降级并沿用原评分。原始序列响应不写入磁盘。
+`/providers/series` 成功快照按 `range + timezone` 缓存在进程内，默认 TTL 为 300 秒，可配置范围为 30 到 3600 秒。这个 TTL 只控制序列响应刷新，不代表供应商的 `cache_hit_rate`。`/providers` 的命中率数据在账号参考数据刷新时获取，并随账号缓存边界复用；不从序列 `probe` 元组尾字段猜测命中率。普通周期命中有效缓存时不发送对应请求；强制刷新会访问接口，失败时可继续使用仍新鲜的序列缓存并标记 warning。任一参考接口数据过期、网络失败或格式错误时明确报告降级并沿用可用的基础评分；原始响应不写入磁盘。
 
 ### 4.4 权重稳定机制
 
@@ -156,17 +158,18 @@ public interface IRouteSelector;
 1. 确保 session 可用。
 2. 从 `aihub.top` 获取每组最近 100 条真实用量的统计结果。
 3. 读取或刷新供应商序列成功快照。
-4. 读取带 TTL 的分组、倍率和 Key 缓存。
+4. 读取供应商缓存命中率，并读取带 TTL 的分组、倍率和 Key 缓存。
 5. 计算候选与综合评分决策。
 6. `dry-run` 时只返回决策。
 7. 仅对不在目标分组的已选 Key 发送 `PUT`。
-8. 保存路由状态并返回逐 Key 结果及供应商序列加载状态。
+8. 保存路由状态并返回逐 Key 结果及两类供应商参考数据加载状态。
 
 资源策略：
 
 - 每个进程复用一个 `SocketsHttpHandler` 和一个 `HttpClient`。
 - 分组、用户倍率和 Key 默认缓存 5 分钟。
-- 供应商序列成功快照默认缓存 5 分钟，统计范围和时区变化时不复用旧键。
+- 供应商序列成功快照默认缓存 5 分钟，统计范围和时区变化时不复用旧键；该缓存不等于供应商缓存命中率。
+- `/providers` 的 `cache_hit_rate` 随账号参考数据刷新边界读取，缺失或失败时仅跳过该质量分量。
 - 真实用量统计及其最后样本时间每个路由周期刷新。
 - `watch` 使用 `PeriodicTimer`，不忙轮询。
 - 同一 profile 使用跨平台排他文件锁，阻止 GUI 与 CLI 同时写入。
@@ -191,7 +194,7 @@ public interface IRouteSelector;
 - 无头模式：优先从环境变量或 stdin 读取；可使用外部提供的主密钥保存 AES-GCM 加密凭据。
 - 没有安全存储或主密钥时禁用持久化，不写明文。
 
-供应商序列普通设置包括 `ProviderSeriesWeight`、`ProviderSeriesCacheSeconds`、`ProviderSeriesRange` 和 `ProviderSeriesTimezone`。默认值分别为 `0.20`、`300`、`6h` 和 `Asia/Shanghai`。
+供应商参考设置包括 `ProviderSeriesWeight`、`ProviderSeriesCacheSeconds`、`ProviderSeriesRange` 和 `ProviderSeriesTimezone`。默认值分别为 `0.20`、`300`、`6h` 和 `Asia/Shanghai`。其中 `ProviderSeriesCacheSeconds` 只控制序列响应缓存；供应商 `cache_hit_rate` 来自 `/providers`，没有单独的伪缓存命中率配置。
 
 主密钥只从 `AIHUB_ROUTER_MASTER_KEY` 或 stdin 获取，不写入参数、日志或配置文件。
 
@@ -256,6 +259,7 @@ CLI 和 Desktop 分别生成自包含包。第一阶段不启用 Native AOT，�
 
 - 三种倍率/首字速度权重策略。
 - 供应商序列请求参数、稳定字段解析、样本加权和异常元组容错。
+- `/providers` 的 `cache_hit_rate` 百分比解析、重复分组聚合、`样本不足` 排除和接口失败降级。
 - 序列权重为 0 的旧评分兼容，以及正权重对综合评分的影响。
 - 序列缓存命中、过期、强制刷新和失败安全降级。
 - Balanced 对普通速度差保持低倍率、对数量级速度差选择更快分组。

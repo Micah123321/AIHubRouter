@@ -537,7 +537,9 @@ internal static class CliApplication
         if (decision.Target is null)
         {
             Console.WriteLine(
-                $"[{result.CompletedAt:O}] 无可用路由。{result.ProviderSeriesStatus.Message}" );
+                $"[{result.CompletedAt:O}] 无可用路由。" +
+                $"序列：{result.ProviderSeriesStatus.Message} " +
+                $"缓存命中率：{result.ProviderCacheHitRateStatus.Message}" );
             return;
         }
 
@@ -547,7 +549,8 @@ internal static class CliApplication
             $"rate={decision.Target.EffectiveMultiplier:0.####}x, " +
             $"first-token={FormatLatency(decision.Target.Provider.FirstTokenLatencyMs)}, " +
             $"switch={decision.ShouldSwitch}, changed={result.ChangedKeyCount}, failed={result.FailedKeyCount}, " +
-            $"provider-series={result.ProviderSeriesStatus.Message}" );
+            $"provider-series={result.ProviderSeriesStatus.Message}, " +
+            $"cache-hit-rate={result.ProviderCacheHitRateStatus.Message}" );
     }
 
     private static object BuildCyclePayload(RoutingCycleResult result)
@@ -580,6 +583,7 @@ internal static class CliApplication
                     multiplier = candidate.EffectiveMultiplier,
                     firstTokenLatencyMs = candidate.Provider.FirstTokenLatencyMs,
                     latencyConfidence = candidate.Provider.LatencyConfidence,
+                    cacheHitRate = candidate.Provider.CacheHitRate,
                     usageSampleCount = candidate.Provider.UsageSampleCount,
                     lastSampleAt = candidate.Provider.CheckedAt,
                     pricePremiumPercent = CalculatePricePremium(evaluation, candidate),
@@ -598,6 +602,7 @@ internal static class CliApplication
                 multiplier = result.Decision.Target?.EffectiveMultiplier,
                 firstTokenLatencyMs = result.Decision.Target?.Provider.FirstTokenLatencyMs,
                 latencyConfidence = result.Decision.Target?.Provider.LatencyConfidence,
+                cacheHitRate = result.Decision.Target?.Provider.CacheHitRate,
                 usageSampleCount = result.Decision.Target?.Provider.UsageSampleCount,
                 lastSampleAt = result.Decision.Target?.Provider.CheckedAt,
                 result.Decision.PricePremiumPercent,
@@ -611,6 +616,13 @@ internal static class CliApplication
                 result.ProviderSeriesStatus.FromCache,
                 result.ProviderSeriesStatus.IsDegraded,
                 result.ProviderSeriesStatus.Message
+            },
+            providerCacheHitRateStatus = new
+            {
+                result.ProviderCacheHitRateStatus.Available,
+                result.ProviderCacheHitRateStatus.FromCache,
+                result.ProviderCacheHitRateStatus.IsDegraded,
+                result.ProviderCacheHitRateStatus.Message
             },
             result.ChangedKeyCount,
             result.FailedKeyCount
@@ -884,8 +896,8 @@ internal static class CliApplication
               --max-price <non-negative-number>
               --confidence-impact <0-2>
               --min-confidence <0-1>
-              --provider-series-weight <0-1>
-              --provider-series-cache <30-3600>
+              --provider-series-weight <0-1>  (供应商参考权重)
+              --provider-series-cache <30-3600>  (序列响应缓存秒数)
               --provider-series-range <non-empty-value>
               --provider-series-timezone <non-empty-value>
               --interval <30-3600>

@@ -134,11 +134,11 @@
               <input id="minimumConfidence" type="number" min="0" max="1" step="0.01" title="范围 0-1">
             </label>
             <label class="field">
-              <span>序列权重</span>
+              <span>供应商参考权重</span>
               <input id="providerSeriesWeight" type="number" min="0" max="1" step="0.05">
             </label>
             <label class="field">
-              <span>缓存秒数</span>
+              <span>序列响应缓存秒数</span>
               <input id="providerSeriesCacheSeconds" type="number" min="30" max="3600" step="30">
             </label>
             <label class="field">
@@ -195,12 +195,13 @@
                 <th><button class="sort-button" type="button" data-sort="multiplier">倍率 <span></span></button></th>
                 <th><button class="sort-button" type="button" data-sort="latency">首字 <span></span></button></th>
                 <th><button class="sort-button" type="button" data-sort="confidence">置信度 / 样本 <span></span></button></th>
+                <th>缓存命中率</th>
                 <th><button class="sort-button" type="button" data-sort="weightedScore">加权得分 <span></span></button></th>
                 <th>状态</th>
                 <th>最后样本</th>
               </tr>
             </thead>
-            <tbody id="providerRows"><tr><td class="empty-state" colspan="9">刷新后显示方案</td></tr></tbody>
+            <tbody id="providerRows"><tr><td class="empty-state" colspan="10">刷新后显示方案</td></tr></tbody>
           </table>
         </div>
       </section>

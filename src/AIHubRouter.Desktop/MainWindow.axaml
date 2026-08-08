@@ -77,9 +77,9 @@
                 <NumericUpDown Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="2" Increment="0.05" FormatString="0.00" Value="{Binding ConfidenceImpact}" ToolTip.Tip="范围 0-2" />
                 <TextBlock Grid.Row="0" Grid.Column="3" Text="最低置信度" VerticalAlignment="Center" />
                 <NumericUpDown Grid.Row="0" Grid.Column="4" Minimum="0" Maximum="1" Increment="0.01" FormatString="0.00" Value="{Binding MinimumConfidence}" ToolTip.Tip="范围 0-1" />
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="序列权重" VerticalAlignment="Center" Margin="0,8,0,0" />
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="供应商参考权重" VerticalAlignment="Center" Margin="0,8,0,0" />
                 <NumericUpDown Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="1" Increment="0.05" FormatString="0.00" Value="{Binding ProviderSeriesWeight}" Margin="0,8,0,0" ToolTip.Tip="范围 0-1" />
-                <TextBlock Grid.Row="1" Grid.Column="3" Text="缓存秒数" VerticalAlignment="Center" Margin="0,8,0,0" />
+                <TextBlock Grid.Row="1" Grid.Column="3" Text="序列响应缓存秒数" VerticalAlignment="Center" Margin="0,8,0,0" />
                 <NumericUpDown Grid.Row="1" Grid.Column="4" Minimum="30" Maximum="3600" Increment="30" Value="{Binding ProviderSeriesCacheSeconds}" Margin="0,8,0,0" />
                 <TextBlock Grid.Row="1" Grid.Column="6" Text="序列范围" VerticalAlignment="Center" Margin="0,8,0,0" />
                 <TextBox Grid.Row="1" Grid.Column="7" Classes="field" Text="{Binding ProviderSeriesRange}" Margin="0,8,0,0" />
@@ -103,21 +103,22 @@
         <Grid Grid.Row="3" RowDefinitions="*,14,*" MinHeight="440">
           <Border Grid.Row="0" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="4">
             <Grid RowDefinitions="38,*">
-              <Grid Grid.Row="0" ColumnDefinitions="54,64,*,90,110,110,110,100,150" Background="{DynamicResource AppSurfaceAltBrush}">
+              <Grid Grid.Row="0" ColumnDefinitions="54,64,*,90,110,110,110,110,100,150" Background="{DynamicResource AppSurfaceAltBrush}">
                 <TextBlock Grid.Column="0" Text="禁用" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <Button Grid.Column="1" Classes="table-header" Content="{Binding GroupHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="GroupId" Margin="10,0,0,0" />
                 <Button Grid.Column="2" Classes="table-header" Content="{Binding PlanHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Plan" />
                 <Button Grid.Column="3" Classes="table-header" Content="{Binding MultiplierHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Multiplier" />
                 <Button Grid.Column="4" Classes="table-header" Content="{Binding LatencyHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Latency" />
                 <Button Grid.Column="5" Classes="table-header" Content="{Binding ConfidenceHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="Confidence" />
-                <Button Grid.Column="6" Classes="table-header" Content="{Binding WeightedScoreHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="WeightedScore" />
-                <TextBlock Grid.Column="7" Text="状态" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <TextBlock Grid.Column="8" Text="最后样本" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="6" Text="缓存命中率" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <Button Grid.Column="7" Classes="table-header" Content="{Binding WeightedScoreHeader}" Command="{Binding SortProvidersCommand}" CommandParameter="WeightedScore" />
+                <TextBlock Grid.Column="8" Text="状态" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="9" Text="最后样本" VerticalAlignment="Center" FontWeight="SemiBold" />
               </Grid>
               <ListBox Grid.Row="1" ItemsSource="{Binding Providers}" SelectedItem="{Binding SelectedProvider}" SelectionMode="Single" BorderThickness="0">
                 <ListBox.ItemTemplate>
                   <DataTemplate x:DataType="local:ProviderRowViewModel">
-                    <Grid ColumnDefinitions="54,64,*,90,110,110,110,100,150" MinHeight="34">
+                    <Grid ColumnDefinitions="54,64,*,90,110,110,110,110,100,150" MinHeight="34">
                       <ToggleButton Grid.Column="0"
                                     Classes="blacklist-toggle"
                                     IsChecked="{Binding Blacklisted}"
@@ -135,9 +136,10 @@
                       <TextBlock Grid.Column="3" Text="{Binding Multiplier}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="4" Text="{Binding Latency}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="5" Text="{Binding Confidence}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="6" Text="{Binding WeightedScore}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="7" Text="{Binding State}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="8" Text="{Binding CheckedAt}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="6" Text="{Binding CacheHitRate}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="7" Text="{Binding WeightedScore}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="8" Text="{Binding State}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="9" Text="{Binding CheckedAt}" VerticalAlignment="Center" />
                     </Grid>
                   </DataTemplate>
                 </ListBox.ItemTemplate>

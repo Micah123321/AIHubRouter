@@ -17,6 +17,9 @@ public interface IAIHubApiClient : IDisposable
         string range,
         string timezone,
         CancellationToken cancellationToken = default);
+    Task<ProviderCacheHitRatePage> GetProviderCacheHitRatesAsync(
+        string timezone,
+        CancellationToken cancellationToken = default);
     Task<JsonElement> ValidateLoginAsync(CancellationToken cancellationToken = default);
     Task<AuthSession> LoginAsync(LoginCredentials credentials, CancellationToken cancellationToken = default);
     Task<AuthSession> RefreshSessionAsync(string refreshToken, CancellationToken cancellationToken = default);
@@ -158,6 +161,24 @@ public sealed class AIHubClient : IAIHubApiClient
             null,
             cancellationToken);
         return ProviderSeriesParser.Parse(data);
+    }
+
+    public async Task<ProviderCacheHitRatePage> GetProviderCacheHitRatesAsync(
+        string timezone,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(timezone))
+        {
+            throw new ArgumentException("供应商缓存命中率时区不能为空。", nameof(timezone));
+        }
+
+        var query = $"timezone={Uri.EscapeDataString(timezone.Trim())}";
+        var data = await SendAsync<JsonElement>(
+            HttpMethod.Get,
+            $"/api/v1/public/providers?{query}",
+            null,
+            cancellationToken);
+        return ProviderCacheHitRateParser.Parse(data);
     }
 
     public async Task<JsonElement> ValidateLoginAsync(CancellationToken cancellationToken = default)

@@ -40,6 +40,7 @@ public sealed record WebDashboard(
     string Status,
     string StatusKind,
     WebProviderSeriesStatus? ProviderSeriesStatus,
+    WebProviderCacheHitRateStatus? ProviderCacheHitRateStatus,
     string CandidateSummary,
     string ConnectionSummary,
     DateTimeOffset? LastUpdatedAt);
@@ -73,6 +74,12 @@ public sealed record WebProviderSeriesStatus(
     bool IsDegraded,
     string Message);
 
+public sealed record WebProviderCacheHitRateStatus(
+    bool Available,
+    bool FromCache,
+    bool IsDegraded,
+    string Message);
+
 public sealed record WebProviderRow(
     string ProviderId,
     long? GroupId,
@@ -80,6 +87,7 @@ public sealed record WebProviderRow(
     double? Multiplier,
     double? Latency,
     double? Confidence,
+    double? CacheHitRate,
     int SampleCount,
     double? WeightedScore,
     string State,

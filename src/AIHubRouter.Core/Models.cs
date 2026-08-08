@@ -79,6 +79,9 @@ public sealed class ProviderStatus
     [JsonPropertyName("firstTokenLatencyMs")]
     public double? FirstTokenLatencyMs { get; init; }
 
+    [JsonPropertyName("cacheHitRate")]
+    public double? CacheHitRate { get; set; }
+
     public int UsageSampleCount { get; init; }
 
     public double? LatencyConfidence { get; init; }

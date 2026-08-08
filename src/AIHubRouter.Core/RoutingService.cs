@@ -49,6 +49,7 @@ public sealed record RoutingCycleResult(
     IReadOnlyList<KeyRouteResult> KeyResults,
     IReadOnlyDictionary<long, ProviderSeriesMetrics> ProviderSeriesMetrics,
     ProviderSeriesLoadStatus ProviderSeriesStatus,
+    ProviderCacheHitRateLoadStatus ProviderCacheHitRateStatus,
     bool DryRun,
     DateTimeOffset CompletedAt)
 {
@@ -122,7 +123,9 @@ public sealed class RoutingService : IDisposable
     private string? _authenticatedClientToken;
     private IReadOnlyList<GroupInfo> _cachedGroups = [];
     private IReadOnlyDictionary<long, double> _cachedRates = new Dictionary<long, double>();
+    private IReadOnlyDictionary<long, double> _cachedCacheHitRates = new Dictionary<long, double>();
     private IReadOnlyList<ApiKeyInfo> _cachedKeys = [];
+    private ProviderCacheHitRateLoadStatus _cacheHitRateStatus;
     private DateTimeOffset _accountCacheExpiresAt = DateTimeOffset.MinValue;
 
     public RoutingService(
@@ -142,6 +145,9 @@ public sealed class RoutingService : IDisposable
         _persistCredentials = persistCredentials;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _providerSeriesCache = new ProviderSeriesCache(settings);
+        _cacheHitRateStatus = settings.ProviderSeriesWeight > 0
+            ? ProviderCacheHitRateLoadStatus.Unavailable("供应商缓存命中率尚未加载。")
+            : ProviderCacheHitRateLoadStatus.Disabled;
 
         if (!string.IsNullOrWhiteSpace(credentials.BearerToken) ||
             !string.IsNullOrWhiteSpace(credentials.RefreshToken))
@@ -259,6 +265,14 @@ public sealed class RoutingService : IDisposable
             now,
             policy.MaximumStatusAge,
             policy.MinimumConfidence);
+        foreach (var provider in providers)
+        {
+            if (provider.GroupId is { } groupId &&
+                _cachedCacheHitRates.TryGetValue(groupId, out var cacheHitRate))
+            {
+                provider.CacheHitRate = cacheHitRate;
+            }
+        }
         var selectedKeys = ResolveSelectedKeys(_cachedKeys, selectedKeyIds);
         if (selectedKeys.Count == 0)
         {
@@ -348,6 +362,7 @@ public sealed class RoutingService : IDisposable
             keyResults,
             providerSeries.Page?.Groups ?? new Dictionary<long, ProviderSeriesMetrics>(),
             providerSeriesStatus,
+            _cacheHitRateStatus,
             dryRun,
             _utcNow());
     }
@@ -490,17 +505,68 @@ public sealed class RoutingService : IDisposable
     {
         if (!forceRefresh && now < _accountCacheExpiresAt && _cachedKeys.Count > 0)
         {
+            if (_cacheHitRateStatus.Available)
+            {
+                _cacheHitRateStatus = _cacheHitRateStatus with { FromCache = true };
+            }
             return;
         }
 
         var groupsTask = client.GetAvailableGroupsAsync(cancellationToken);
         var ratesTask = client.GetUserGroupRatesAsync(cancellationToken);
         var keysTask = client.GetAllKeysAsync(cancellationToken);
-        await Task.WhenAll(groupsTask, ratesTask, keysTask);
+        var cacheHitRatesTask = _settings.ProviderSeriesWeight > 0
+            ? LoadProviderCacheHitRatesAsync(
+                client,
+                _settings.ProviderSeriesTimezone,
+                cancellationToken)
+            : Task.FromResult<(IReadOnlyDictionary<long, double> Rates, ProviderCacheHitRateLoadStatus Status)>(
+                (new Dictionary<long, double>(), ProviderCacheHitRateLoadStatus.Disabled));
+        await Task.WhenAll(groupsTask, ratesTask, keysTask, cacheHitRatesTask);
         _cachedGroups = await groupsTask;
         _cachedRates = await ratesTask;
         _cachedKeys = await keysTask;
+        var cacheHitRates = await cacheHitRatesTask;
+        _cachedCacheHitRates = cacheHitRates.Rates;
+        _cacheHitRateStatus = cacheHitRates.Status;
         _accountCacheExpiresAt = now.AddSeconds(Math.Clamp(_settings.AccountCacheSeconds, 30, 3600));
+    }
+
+    private static async Task<(
+        IReadOnlyDictionary<long, double> Rates,
+        ProviderCacheHitRateLoadStatus Status)> LoadProviderCacheHitRatesAsync(
+        IAIHubApiClient client,
+        string timezone,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var page = await client.GetProviderCacheHitRatesAsync(timezone, cancellationToken);
+            return page.Groups.Count == 0
+                ? (new Dictionary<long, double>(), ProviderCacheHitRateLoadStatus.Unavailable(
+                    "供应商缓存命中率没有有效样本，已沿用基础评分。"))
+                : (page.Groups, ProviderCacheHitRateLoadStatus.Live);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is AIHubApiException or
+                HttpRequestException or
+                TaskCanceledException or
+                InvalidDataException)
+        {
+            var message = exception switch
+            {
+                HttpRequestException => "供应商缓存命中率网络请求失败，已沿用基础评分。",
+                TaskCanceledException => "供应商缓存命中率请求超时，已沿用基础评分。",
+                AIHubApiException => "供应商缓存命中率接口返回错误，已沿用基础评分。",
+                InvalidDataException => "供应商缓存命中率数据不可用，已沿用基础评分。",
+                _ => "供应商缓存命中率加载失败，已沿用基础评分。"
+            };
+            return (new Dictionary<long, double>(), ProviderCacheHitRateLoadStatus.Unavailable(message));
+        }
     }
 
     private IReadOnlyList<ApiKeyInfo> ResolveSelectedKeys(

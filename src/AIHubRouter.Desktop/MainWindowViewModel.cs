@@ -777,7 +777,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (ProviderSeriesCacheSeconds is < 30 or > 3600 ||
             ProviderSeriesCacheSeconds != decimal.Truncate(ProviderSeriesCacheSeconds))
         {
-            throw new ArgumentException("供应商序列缓存时间必须是 30 到 3600 之间的整数秒。");
+            throw new ArgumentException("供应商序列响应缓存时间必须是 30 到 3600 之间的整数秒。");
         }
 
         var providerSeriesRange = ProviderSeriesRange.Trim();
@@ -888,14 +888,24 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         RoutingCycleResult result,
         bool success)
     {
-        var warning = success && result.ProviderSeriesStatus.IsDegraded;
-        SetStatus(WithProviderSeriesStatus(message, result), success, warning);
+        var warning = success &&
+            (result.ProviderSeriesStatus.IsDegraded || result.ProviderCacheHitRateStatus.IsDegraded);
+        SetStatus(WithProviderReferenceStatus(message, result), success, warning);
     }
 
-    private static string WithProviderSeriesStatus(string message, RoutingCycleResult result) =>
-        string.IsNullOrWhiteSpace(result.ProviderSeriesStatus.Message)
+    private static string WithProviderReferenceStatus(string message, RoutingCycleResult result)
+    {
+        var details = new[]
+        {
+            result.ProviderSeriesStatus.Message,
+            result.ProviderCacheHitRateStatus.Message
+        }
+        .Where(detail => !string.IsNullOrWhiteSpace(detail));
+        var suffix = string.Join("；", details);
+        return string.IsNullOrWhiteSpace(suffix)
             ? message
-            : $"{message} 序列：{result.ProviderSeriesStatus.Message}";
+            : $"{message} 参考：{suffix}";
+    }
 
     private static string GetSafeMessage(Exception exception)
     {
@@ -967,6 +977,10 @@ public sealed class ProviderRowViewModel : ObservableObject
         Confidence = provider.LatencyConfidence is { } confidence
             ? $"{confidence:P0} / {provider.UsageSampleCount}"
             : "-";
+        CacheHitRateValue = provider.CacheHitRate;
+        CacheHitRate = provider.CacheHitRate is { } cacheHitRate
+            ? $"{cacheHitRate:P1}"
+            : "-";
         ApplyEvaluation(evaluation);
         _baseState = !provider.Enabled ? "停用"
             : !provider.Available ? "异常"
@@ -1003,6 +1017,8 @@ public sealed class ProviderRowViewModel : ObservableObject
     public string Latency { get; }
     public double? ConfidenceValue { get; }
     public string Confidence { get; }
+    public double? CacheHitRateValue { get; }
+    public string CacheHitRate { get; }
     public double? WeightedScoreValue => _weightedScoreValue;
     public string WeightedScore => _weightedScore;
     public bool Blacklisted

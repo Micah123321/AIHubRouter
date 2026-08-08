@@ -33,15 +33,26 @@ internal static class ProviderSeriesQuality
             comparableMetrics.Values.Select(value =>
                 value.UserTtftSampleCount > 0 ? value.AverageUserTtftMs : null),
             comparableMetrics.Count);
+        var candidatesByGroup = candidates
+            .Where(candidate => comparableMetrics.ContainsKey(candidate.Group.Id))
+            .GroupBy(candidate => candidate.Group.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        var hasCompleteCacheHitRates = comparableMetrics.Keys.All(groupId =>
+            candidatesByGroup.TryGetValue(groupId, out var candidate) &&
+            IsValidCacheHitRate(candidate.Provider.CacheHitRate));
         var result = new Dictionary<long, double>();
 
         foreach (var (groupId, value) in comparableMetrics)
         {
-            var components = new List<double>(3);
+            var components = new List<double>(4);
             components.Add(value.ProbeSuccessRate!.Value);
 
             AddInverseLatency(components, value.AverageProbeLatencyMs, probeLatencyRange);
             AddInverseLatency(components, value.AverageUserTtftMs, userTtftRange);
+            if (hasCompleteCacheHitRates)
+            {
+                components.Add(candidatesByGroup[groupId].Provider.CacheHitRate!.Value);
+            }
             if (components.Count > 0)
             {
                 result[groupId] = components.Average();
@@ -65,6 +76,9 @@ internal static class ProviderSeriesQuality
     private static bool HasProbeLatency(ProviderSeriesMetrics metrics) =>
         metrics.AverageProbeLatencyMs is > 0 and var latency &&
         double.IsFinite(latency);
+
+    private static bool IsValidCacheHitRate(double? value) =>
+        value is >= 0 and <= 1 && double.IsFinite(value.Value);
 
     private static bool IsFresh(
         DateTimeOffset latestSampleAt,

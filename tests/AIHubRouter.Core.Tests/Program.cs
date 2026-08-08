@@ -12,7 +12,11 @@ var tests = new (string Name, Action Body)[]
     ("Usage stats map real TTFT and last use", TestUsageStatsMapRealTtftAndLastUse),
     ("Provider series request parses stable fields", TestProviderSeriesRequestParsesStableFields),
     ("Provider series rejects invalid payload", TestProviderSeriesRejectsInvalidPayload),
+    ("Provider cache hit rate request parses percentages", TestProviderCacheHitRateRequestParsesPercentages),
     ("Provider series weight augments base score", TestProviderSeriesWeightAugmentsBaseScore),
+    ("Provider cache hit rate augments quality score", TestProviderCacheHitRateAugmentsQualityScore),
+    ("Missing provider cache hit rate is not rewarded", TestMissingProviderCacheHitRateIsNotRewarded),
+    ("Provider cache hit rate failure falls back", TestProviderCacheHitRateFailureFallsBack),
     ("Provider series zero weight preserves score", TestProviderSeriesZeroWeightPreservesScore),
     ("Fresh generation does not hide stale provider samples", TestFreshGenerationDoesNotHideStaleProviderSamples),
     ("Sparse provider series is not rewarded", TestSparseProviderSeriesIsNotRewarded),
@@ -291,13 +295,57 @@ static void TestProviderSeriesRejectsInvalidPayload()
     Assert(rejected, "Provider series accepted a payload without items.");
 }
 
+static void TestProviderCacheHitRateRequestParsesPercentages()
+{
+    Uri? requestUri = null;
+    var handler = new StubHttpMessageHandler(request =>
+    {
+        requestUri = request.RequestUri;
+        return JsonResponse("""
+            {
+              "code": 0,
+              "message": "success",
+              "data": {
+                "generated_at": "2026-08-08T10:00:00Z",
+                "items": [
+                  {"group_id": 7, "cache_hit_rate": "82.88%"},
+                  {"group_id": 7, "cache_hit_rate": "77.12%"},
+                  {"group_id": 8, "cache_hit_rate": "样本不足"},
+                  {"group_id": 9, "cache_hit_rate": "101%"},
+                  {"group_id": "10", "cache_hit_rate": 0.75}
+                ]
+              }
+            }
+            """);
+    });
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    var page = client.GetProviderCacheHitRatesAsync("Asia/Shanghai")
+        .GetAwaiter()
+        .GetResult();
+    var query = requestUri?.Query ?? string.Empty;
+
+    Assert(requestUri?.AbsolutePath == "/api/v1/public/providers",
+        "Provider cache hit rate used the wrong endpoint.");
+    Assert(query.Contains("timezone=Asia%2FShanghai", StringComparison.OrdinalIgnoreCase),
+        "Provider cache hit rate did not URI-encode its timezone.");
+    Assert(page.Groups.TryGetValue(7, out var average) &&
+           Math.Abs(average - 0.80) < 0.0001,
+        "Duplicate provider cache hit rates were not averaged after percentage parsing.");
+    Assert(page.Groups.TryGetValue(10, out var ratio) &&
+           Math.Abs(ratio - 0.75) < 0.0001,
+        "Ratio-form cache hit rate was not parsed.");
+    Assert(!page.Groups.ContainsKey(8) && !page.Groups.ContainsKey(9),
+        "Invalid or insufficient cache hit rate samples entered the result.");
+}
+
 static void TestProviderSeriesWeightAugmentsBaseScore()
 {
     var now = DateTimeOffset.UtcNow;
     var providers = new[]
     {
-        Provider(1, 0.02, true, 1, now, latency: 1_000),
-        Provider(2, 0.021, true, 1, now, latency: 900)
+        Provider(1, 0.02, true, 1, now, latency: 1_000, cacheHitRate: 0.01),
+        Provider(2, 0.021, true, 1, now, latency: 900, cacheHitRate: 0.99)
     };
     var groups = new[] { Group(1), Group(2) };
     var metrics = new Dictionary<long, ProviderSeriesMetrics>
@@ -332,13 +380,85 @@ static void TestProviderSeriesWeightAugmentsBaseScore()
         "Provider quality did not augment the existing tradeoff score.");
 }
 
+static void TestProviderCacheHitRateAugmentsQualityScore()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 1, now, latency: 1_000, cacheHitRate: 0.10),
+            Provider(2, 0.021, true, 1, now, latency: 1_000, cacheHitRate: 0.90)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0.50 },
+        now,
+        new Dictionary<long, ProviderSeriesMetrics>
+        {
+            [1] = new(1, 1, 1_000, 1_000, 20, 20, now),
+            [2] = new(2, 1, 1_000, 1_000, 20, 20, now)
+        });
+
+    Assert(evaluation.ProviderSeriesScores[2] > evaluation.ProviderSeriesScores[1] + 0.15,
+        "A higher provider cache hit rate did not improve the quality score.");
+}
+
+static void TestMissingProviderCacheHitRateIsNotRewarded()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 1, now, latency: 1_000),
+            Provider(2, 0.021, true, 1, now, latency: 1_000, cacheHitRate: 0.90)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0.50 },
+        now,
+        new Dictionary<long, ProviderSeriesMetrics>
+        {
+            [1] = new(1, 1, 1_000, 1_000, 20, 20, now),
+            [2] = new(2, 1, 1_000, 1_000, 20, 20, now)
+        });
+
+    Assert(Math.Abs(evaluation.ProviderSeriesScores[1] - evaluation.ProviderSeriesScores[2]) < 1e-12,
+        "A partial provider cache hit rate set rewarded the candidate with data.");
+}
+
+static void TestProviderCacheHitRateFailureFallsBack()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        providerCacheHitRates: _ => throw new HttpRequestException("upstream detail"));
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
+
+    Assert(result.ProviderCacheHitRateStatus.IsDegraded &&
+           !result.ProviderCacheHitRateStatus.Available &&
+           result.Decision.Target is not null,
+        "A cache hit rate API failure did not preserve base routing.");
+    Assert(!result.ProviderCacheHitRateStatus.Message.Contains("upstream detail", StringComparison.Ordinal),
+        "Cache hit rate failure exposed the upstream error detail.");
+}
+
 static void TestProviderSeriesZeroWeightPreservesScore()
 {
     var now = DateTimeOffset.UtcNow;
     var providers = new[]
     {
-        Provider(1, 0.02, true, 1, now, latency: 1_000),
-        Provider(2, 0.021, true, 1, now, latency: 900)
+        Provider(1, 0.02, true, 1, now, latency: 1_000, cacheHitRate: 0.01),
+        Provider(2, 0.021, true, 1, now, latency: 900, cacheHitRate: 0.99)
     };
     var policy = Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0 };
     var withoutSeries = RoutingEngine.Evaluate(
@@ -398,6 +518,9 @@ static void TestFreshGenerationDoesNotHideStaleProviderSamples()
 
     Assert(!result.ProviderSeriesStatus.Available,
         "A fresh generated_at value hid stale provider samples.");
+    Assert(result.Providers.Single(provider => provider.GroupId == 2).CacheHitRate is { } rate &&
+           Math.Abs(rate - 0.80) < 0.0001,
+        "The provider cache hit rate was not attached to the routed provider.");
 }
 
 static void TestSparseProviderSeriesIsNotRewarded()
@@ -2552,7 +2675,8 @@ static ProviderStatus Provider(
     DateTimeOffset checkedAt,
     double? latency = 1000,
     bool warning = false,
-    double confidence = 1)
+    double confidence = 1,
+    double? cacheHitRate = null)
 {
     return new ProviderStatus
     {
@@ -2565,6 +2689,7 @@ static ProviderStatus Provider(
         Enabled = true,
         CheckedAt = checkedAt,
         FirstTokenLatencyMs = latency,
+        CacheHitRate = cacheHitRate,
         LatencyConfidence = confidence,
         SuccessRates = new Dictionary<string, double?> { ["6h"] = success },
         WarningReasons = warning
@@ -2647,10 +2772,12 @@ sealed class StubAIHubApiClient(
     IReadOnlyList<ApiKeyInfo>? keys = null,
     Func<int, long, long, Exception?>? updateFailure = null,
     bool supportsRefresh = false,
-    Func<int, ProviderSeriesPage>? providerSeries = null) : IAIHubApiClient
+    Func<int, ProviderSeriesPage>? providerSeries = null,
+    Func<int, ProviderCacheHitRatePage>? providerCacheHitRates = null) : IAIHubApiClient
 {
     public int UpdateCalls { get; private set; }
     public int ProviderSeriesCalls { get; private set; }
+    public int ProviderCacheHitRateCalls { get; private set; }
 
     public Task<GroupUsageStatsPage> GetGroupUsageStatsAsync(
         string platform,
@@ -2689,6 +2816,18 @@ sealed class StubAIHubApiClient(
                 {
                     [2] = new(2, 1, 500, 500, 20, 20, now)
                 });
+        return Task.FromResult(page);
+    }
+
+    public Task<ProviderCacheHitRatePage> GetProviderCacheHitRatesAsync(
+        string timezone,
+        CancellationToken cancellationToken = default)
+    {
+        ProviderCacheHitRateCalls++;
+        var page = providerCacheHitRates?.Invoke(ProviderCacheHitRateCalls) ??
+            new ProviderCacheHitRatePage(
+                now,
+                new Dictionary<long, double> { [2] = 0.80 });
         return Task.FromResult(page);
     }
 
