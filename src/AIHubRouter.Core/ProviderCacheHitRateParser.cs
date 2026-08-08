@@ -15,23 +15,79 @@ internal static class ProviderCacheHitRateParser
         }
 
         var groups = new Dictionary<long, (double Total, int Count)>();
+        var modelHealthByGroup = new Dictionary<long, Dictionary<string, string>>();
         foreach (var item in items.EnumerateArray())
         {
             if (item.ValueKind != JsonValueKind.Object ||
                 !TryReadInt64(item, "group_id", out var groupId) ||
-                groupId <= 0 ||
-                !TryReadCacheHitRate(item, out var cacheHitRate))
+                groupId <= 0)
             {
                 continue;
             }
 
-            groups.TryGetValue(groupId, out var aggregate);
-            groups[groupId] = (aggregate.Total + cacheHitRate, aggregate.Count + 1);
+            if (TryReadModelHealth(item, out var modelHealth))
+            {
+                if (!modelHealthByGroup.TryGetValue(groupId, out var existingHealth))
+                {
+                    existingHealth = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    modelHealthByGroup[groupId] = existingHealth;
+                }
+
+                foreach (var (model, status) in modelHealth)
+                {
+                    if (!existingHealth.TryGetValue(model, out var existingStatus) ||
+                        status.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
+                        !existingStatus.Equals("failed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        existingHealth[model] = status;
+                    }
+                }
+            }
+
+            if (TryReadCacheHitRate(item, out var cacheHitRate))
+            {
+                groups.TryGetValue(groupId, out var aggregate);
+                groups[groupId] = (aggregate.Total + cacheHitRate, aggregate.Count + 1);
+            }
         }
 
         return new ProviderCacheHitRatePage(
             ReadDateTimeOffset(data, "generated_at"),
-            groups.ToDictionary(pair => pair.Key, pair => pair.Value.Total / pair.Value.Count));
+            groups.ToDictionary(pair => pair.Key, pair => pair.Value.Total / pair.Value.Count))
+        {
+            ModelHealthByGroup = modelHealthByGroup.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyDictionary<string, string>)pair.Value)
+        };
+    }
+
+    private static bool TryReadModelHealth(
+        JsonElement item,
+        out IReadOnlyDictionary<string, string> health)
+    {
+        var parsed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        health = parsed;
+        if (!item.TryGetProperty("model_health", out var raw) ||
+            raw.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        foreach (var property in raw.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var status = property.Value.GetString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                parsed[property.Name] = status;
+            }
+        }
+
+        return parsed.Count > 0;
     }
 
     private static bool TryReadCacheHitRate(JsonElement item, out double value)

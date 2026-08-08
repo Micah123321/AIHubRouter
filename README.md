@@ -40,6 +40,8 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 命中率只有在所有当前可比较候选都有有效值时才加入质量平均值；`样本不足`、空值、越界值和接口失败不会奖励任何候选。供应商参考权重默认 `0.20`，设为 `0` 时精确保留原价格/速度评分。序列结果默认缓存 300 秒；这里的 `--provider-series-cache` 只控制 `/providers/series` 响应刷新缓存，不是供应商的缓存命中率。账号参考数据刷新时会读取 `/providers`，参考数据不可用时明确显示降级状态并沿用基础评分，不会因参考接口故障中断路由。Web 与桌面端可在高级设置中调整；CLI 使用 `--provider-series-weight`、`--provider-series-cache`、`--provider-series-range` 和 `--provider-series-timezone`。
 
+主路由和 Luna 路由可以使用不同的 API Key。主路由仍使用 `SelectedKeyIds`，Luna 使用 `LunaSelectedKeyIds`（CLI 配置参数为 `--luna-selected-keys`）；同一个 Key 不能同时加入两侧。Luna 会独立读取 `/api/v1/public/providers` 返回的 `model_health`，仅排除明确标记 `luna: "failed"` 的分组后重新计算候选和排序。健康数据不可用或没有 active Luna Key 时，Luna 会显示降级状态并跳过写入，主路由不受阻断；两侧有目标时更新请求并行执行。
+
 默认 `Balanced` 对价格与首 Token 速度各占 50% 权重；`Economy` 以价格为主，`Speed` 以首 Token 速度为主。当前分组仍然有效时，新分组还必须超过“分组粘性”才会切换；默认值为 `0.10`，可在 Web、桌面端或 CLI 的 `--group-stickiness` 中调整。数值越大，越不容易因短时波动切换分组。每次结果都会告诉你为什么选它。
 
 价格范围是硬约束，默认仅允许 `0.00x` 到 `0.15x`（含边界）的生效倍率参与路由。范围外的分组不会进入候选池，也不能通过手动分组切换；可在 Web、桌面端或 CLI 的 `--min-price`、`--max-price` 调整。

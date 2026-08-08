@@ -399,6 +399,7 @@ internal static class CliApplication
         var providerSeriesTimezone = GetOption(args, "--provider-series-timezone");
         var interval = GetIntOption(args, "--interval");
         var selectedKeys = GetOption(args, "--selected-keys");
+        var lunaSelectedKeys = GetOption(args, "--luna-selected-keys");
         var blacklistedGroups = GetOption(args, "--blacklisted-groups");
         var allowLoopback = HasFlag(args, "--allow-insecure-loopback")
             ? true
@@ -464,6 +465,19 @@ internal static class CliApplication
                 .ToArray();
         }
 
+        long[]? parsedLunaKeys = null;
+        if (lunaSelectedKeys is not null)
+        {
+            parsedLunaKeys = lunaSelectedKeys
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(value => long.TryParse(value, out var id) && id > 0
+                    ? id
+                    : throw new ArgumentException("--luna-selected-keys 必须是逗号分隔的正整数。"))
+                .Distinct()
+                .Order()
+                .ToArray();
+        }
+
         long[]? parsedBlacklistedGroups = null;
         if (blacklistedGroups is not null)
         {
@@ -474,6 +488,24 @@ internal static class CliApplication
                     : throw new ArgumentException("--blacklisted-groups 必须是逗号分隔的正整数。"))
                 .Distinct()
                 .ToArray();
+        }
+
+        var resolvedSelectedKeys = parsedKeys ?? settings.SelectedKeyIds;
+        var resolvedLunaKeys = parsedLunaKeys ?? settings.LunaSelectedKeyIds;
+        var overlappingKeyIds = resolvedSelectedKeys
+            .Intersect(resolvedLunaKeys)
+            .Distinct()
+            .Order()
+            .ToArray();
+        if (overlappingKeyIds.Length > 0)
+        {
+            throw new ArgumentException(
+                $"主路由与 Luna 路由不能选择同一 Key：{string.Join(", ", overlappingKeyIds)}。" );
+        }
+        if (resolvedLunaKeys.Length > 0 && resolvedSelectedKeys.Length == 0)
+        {
+            throw new ArgumentException(
+                "Luna 路由不能脱离主路由单独运行，请先选择主路由 Key。" );
         }
 
         return settings with
@@ -496,10 +528,11 @@ internal static class CliApplication
                 ? settings.PollingIntervalSeconds
                 : Math.Clamp(interval.Value, 30, 3600),
             AllowInsecureLoopback = allowLoopback,
-            KeySelectionInitialized = parsedKeys is null
-                ? settings.KeySelectionInitialized
-                : true,
+            KeySelectionInitialized = parsedKeys is not null ||
+                parsedLunaKeys is not null ||
+                settings.KeySelectionInitialized,
             SelectedKeyIds = parsedKeys ?? settings.SelectedKeyIds,
+            LunaSelectedKeyIds = parsedLunaKeys ?? settings.LunaSelectedKeyIds,
             BlacklistedGroupIds = parsedBlacklistedGroups ?? settings.BlacklistedGroupIds
         };
     }
@@ -539,7 +572,8 @@ internal static class CliApplication
             Console.WriteLine(
                 $"[{result.CompletedAt:O}] 无可用路由。" +
                 $"序列：{result.ProviderSeriesStatus.Message} " +
-                $"缓存命中率：{result.ProviderCacheHitRateStatus.Message}" );
+                $"缓存命中率：{result.ProviderCacheHitRateStatus.Message}" +
+                FormatLunaCycleSummary(result.LunaRoute));
             return;
         }
 
@@ -550,7 +584,24 @@ internal static class CliApplication
             $"first-token={FormatLatency(decision.Target.Provider.FirstTokenLatencyMs)}, " +
             $"switch={decision.ShouldSwitch}, changed={result.ChangedKeyCount}, failed={result.FailedKeyCount}, " +
             $"provider-series={result.ProviderSeriesStatus.Message}, " +
-            $"cache-hit-rate={result.ProviderCacheHitRateStatus.Message}" );
+            $"cache-hit-rate={result.ProviderCacheHitRateStatus.Message}" +
+            FormatLunaCycleSummary(result.LunaRoute));
+    }
+
+    private static string FormatLunaCycleSummary(LunaRouteResult? lunaRoute)
+    {
+        if (lunaRoute is null)
+        {
+            return string.Empty;
+        }
+
+        var target = lunaRoute.Decision?.Target;
+        var targetText = target is null
+            ? "无可用候选"
+            : $"{target.Group.Id} ({target.Group.Name})";
+        var health = lunaRoute.HealthAvailable ? "可用" : "不可用";
+        return $", luna-target={targetText}, luna-filtered={lunaRoute.FilteredGroupCount}, " +
+            $"luna-health={health} ({lunaRoute.HealthMessage})";
     }
 
     private static object BuildCyclePayload(RoutingCycleResult result)
@@ -625,7 +676,35 @@ internal static class CliApplication
                 result.ProviderCacheHitRateStatus.Message
             },
             result.ChangedKeyCount,
-            result.FailedKeyCount
+            result.FailedKeyCount,
+            lunaRoute = result.LunaRoute is { } lunaRoute
+                ? new
+                {
+                    selectedKeyIds = lunaRoute.SelectedKeyIds,
+                    decision = lunaRoute.Decision is { } decision
+                        ? new
+                        {
+                            reason = decision.Reason.ToString(),
+                            decision.ShouldSwitch,
+                            currentGroupId = decision.Current?.Group.Id,
+                            targetGroupId = decision.Target?.Group.Id,
+                            targetGroupName = decision.Target?.Group.Name,
+                            multiplier = decision.Target?.EffectiveMultiplier,
+                            firstTokenLatencyMs = decision.Target?.Provider.FirstTokenLatencyMs,
+                            latencyConfidence = decision.Target?.Provider.LatencyConfidence,
+                            cacheHitRate = decision.Target?.Provider.CacheHitRate,
+                            usageSampleCount = decision.Target?.Provider.UsageSampleCount,
+                            lastSampleAt = decision.Target?.Provider.CheckedAt,
+                            decision.PricePremiumPercent,
+                            decision.LatencyImprovementPercent
+                        }
+                        : null,
+                    filteredGroupCount = lunaRoute.FilteredGroupCount,
+                    healthAvailable = lunaRoute.HealthAvailable,
+                    healthMessage = lunaRoute.HealthMessage,
+                    lunaRoute.KeyResults
+                }
+                : null
         };
     }
 
@@ -675,7 +754,8 @@ internal static class CliApplication
             confidenceImpact = settings.ConfidenceImpact,
             minimumConfidence = settings.MinimumConfidence,
             blacklistedGroupCount = settings.BlacklistedGroupIds.Length,
-            selectedKeyCount = settings.SelectedKeyIds.Length
+            selectedKeyCount = settings.SelectedKeyIds.Length,
+            lunaSelectedKeyCount = settings.LunaSelectedKeyIds.Length
         };
         WriteAudit(auditLog, payload);
         if (json)
@@ -902,6 +982,7 @@ internal static class CliApplication
               --provider-series-timezone <non-empty-value>
               --interval <30-3600>
               --selected-keys <id,id,...>
+              --luna-selected-keys <id,id,...>
               --blacklisted-groups <id,id,...>
 
             Audit options for route/watch:

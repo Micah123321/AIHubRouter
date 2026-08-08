@@ -13,6 +13,7 @@ var tests = new (string Name, Action Body)[]
     ("Provider series request parses stable fields", TestProviderSeriesRequestParsesStableFields),
     ("Provider series rejects invalid payload", TestProviderSeriesRejectsInvalidPayload),
     ("Provider cache hit rate request parses percentages", TestProviderCacheHitRateRequestParsesPercentages),
+    ("Provider model health survives invalid cache rate", TestProviderModelHealthSurvivesInvalidCacheRate),
     ("Provider series weight augments base score", TestProviderSeriesWeightAugmentsBaseScore),
     ("Provider cache hit rate augments quality score", TestProviderCacheHitRateAugmentsQualityScore),
     ("Missing provider cache hit rate is not rewarded", TestMissingProviderCacheHitRateIsNotRewarded),
@@ -44,6 +45,10 @@ var tests = new (string Name, Action Body)[]
     ("Balanced mode escapes extreme latency at double price", TestBalancedModeEscapesExtremeLatency),
     ("Balanced mode rejects weak latency value", TestBalancedModeRejectsWeakLatencyValue),
     ("Economy mode protects price", TestEconomyModeProtectsPrice),
+    ("Economy latency utility is continuous", TestEconomyLatencyUtilityIsContinuous),
+    ("Economy mode compresses sub-threshold speed gain", TestEconomyModeCompressesSubThresholdSpeedGain),
+    ("Economy latency utility penalizes severe latency", TestEconomyLatencyUtilityPenalizesSevereLatency),
+    ("Non-economy latency utility remains raw", TestNonEconomyLatencyUtilityRemainsRaw),
     ("Speed mode accepts larger price premium", TestSpeedModeAcceptsLargerPremium),
     ("Missing latency ranks last", TestMissingLatencyRanksLast),
     ("Zero multiplier window stays free", TestZeroMultiplierWindow),
@@ -66,6 +71,10 @@ var tests = new (string Name, Action Body)[]
     ("Provider series cache rejects age-expired page", TestProviderSeriesCacheRejectsAgeExpiredPage),
     ("Provider series caller cancellation propagates", TestProviderSeriesCallerCancellationPropagates),
     ("Automatic route honors explicit multi-key selection", TestAutomaticRouteHonorsExplicitMultiKeySelection),
+    ("Luna route filters failed model health groups", TestLunaRouteFiltersFailedModelHealthGroups),
+    ("Luna health failure does not block primary route", TestLunaHealthFailureDoesNotBlockPrimaryRoute),
+    ("Luna health loads after a primary-only cycle", TestLunaHealthLoadsAfterPrimaryOnlyCycle),
+    ("Overlapping main and Luna keys are rejected", TestOverlappingMainAndLunaKeysAreRejected),
     ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
     ("Manual route honors explicit multi-key selection", TestManualRouteHonorsExplicitMultiKeySelection),
     ("Manual route rejects blacklisted group", TestManualRouteRejectsBlacklistedGroup),
@@ -339,6 +348,38 @@ static void TestProviderCacheHitRateRequestParsesPercentages()
         "Invalid or insufficient cache hit rate samples entered the result.");
 }
 
+static void TestProviderModelHealthSurvivesInvalidCacheRate()
+{
+    var handler = new StubHttpMessageHandler(_ => JsonResponse("""
+        {
+          "code": 0,
+          "message": "success",
+          "data": {
+            "items": [
+              {"group_id": 21, "cache_hit_rate": "样本不足", "model_health": {"luna": "failed", "sol": "healthy"}},
+              {"group_id": 21, "cache_hit_rate": "90%", "model_health": {"luna": "healthy"}},
+              {"group_id": 22, "model_health": {"luna": "healthy"}}
+            ]
+          }
+        }
+        """));
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    var page = client.GetProviderCacheHitRatesAsync("Asia/Shanghai")
+        .GetAwaiter()
+        .GetResult();
+
+    Assert(!page.Groups.ContainsKey(22), "A missing cache rate should not create a cache score.");
+    Assert(page.Groups.TryGetValue(21, out var rate) && Math.Abs(rate - 0.90) < 0.0001,
+        "Valid cache samples should still be averaged after health parsing.");
+    Assert(page.ModelHealthByGroup.TryGetValue(21, out var groupHealth) &&
+           groupHealth.TryGetValue("luna", out var status) &&
+           status.Equals("failed", StringComparison.OrdinalIgnoreCase),
+        "Duplicate model health entries must retain failed precedence.");
+    Assert(page.ModelHealthByGroup.ContainsKey(22),
+        "Model health must be retained even when cache_hit_rate is missing.");
+}
+
 static void TestProviderSeriesWeightAugmentsBaseScore()
 {
     var now = DateTimeOffset.UtcNow;
@@ -398,8 +439,8 @@ static void TestProviderCacheHitRateAugmentsQualityScore()
             [2] = new(2, 1, 1_000, 1_000, 20, 20, now)
         });
 
-    Assert(evaluation.ProviderSeriesScores[2] > evaluation.ProviderSeriesScores[1] + 0.15,
-        "A higher provider cache hit rate did not improve the quality score.");
+    Assert(evaluation.ProviderSeriesScores[2] > evaluation.ProviderSeriesScores[1] + 0.45,
+        "A higher provider cache hit rate did not receive the increased quality weight.");
 }
 
 static void TestMissingProviderCacheHitRateIsNotRewarded()
@@ -993,6 +1034,73 @@ static void TestEconomyModeProtectsPrice()
     Assert(evaluation.Recommended?.Group.Id == 1, "Economy mode paid too much for the latency improvement.");
 }
 
+static void TestEconomyLatencyUtilityIsContinuous()
+{
+    var threshold = BalancedRoutingPolicy.EconomyLatencyDiminishingThresholdMs;
+    var justBelow = RoutingEngine.ApplyLatencyDiminishingReturns(
+        threshold - 1,
+        RoutingMode.Economy);
+    var atThreshold = RoutingEngine.ApplyLatencyDiminishingReturns(
+        threshold,
+        RoutingMode.Economy);
+    var justAbove = RoutingEngine.ApplyLatencyDiminishingReturns(
+        threshold + 1,
+        RoutingMode.Economy);
+
+    Assert(Math.Abs(atThreshold - threshold) < 1e-12,
+        "Economy latency utility moved the threshold itself.");
+    Assert(justBelow < atThreshold && atThreshold < justAbove,
+        "Economy latency utility is not monotonic around the threshold.");
+    Assert(Math.Abs(atThreshold - justBelow - BalancedRoutingPolicy.EconomyLatencyDiminishingFactor) < 1e-12,
+        "Economy latency utility did not use the configured sub-threshold slope.");
+}
+
+static void TestEconomyModeCompressesSubThresholdSpeedGain()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 0.99, now, latency: 3_000),
+            Provider(2, 0.021, true, 0.99, now, latency: 1_000)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Economy),
+        now);
+
+    Assert(evaluation.Recommended?.Group.Id == 1,
+        "Economy mode still paid a premium for a sub-threshold speed gain after diminishing returns.");
+}
+
+static void TestNonEconomyLatencyUtilityRemainsRaw()
+{
+    var latency = 1_000d;
+    Assert(RoutingEngine.ApplyLatencyDiminishingReturns(latency, RoutingMode.Balanced) == latency &&
+           RoutingEngine.ApplyLatencyDiminishingReturns(latency, RoutingMode.Speed) == latency,
+        "Balanced or Speed mode changed the raw latency utility.");
+}
+
+static void TestEconomyLatencyUtilityPenalizesSevereLatency()
+{
+    var threshold = BalancedRoutingPolicy.EconomySevereLatencyThresholdMs;
+    var atThreshold = RoutingEngine.ApplyLatencyDiminishingReturns(
+        threshold,
+        RoutingMode.Economy);
+    var justAbove = RoutingEngine.ApplyLatencyDiminishingReturns(
+        threshold + 1,
+        RoutingMode.Economy);
+    var verySlow = RoutingEngine.ApplyLatencyDiminishingReturns(
+        20_000,
+        RoutingMode.Economy);
+
+    Assert(atThreshold == threshold,
+        "Economy severe latency threshold changed the effective latency at the boundary.");
+    Assert(Math.Abs(justAbove - atThreshold - BalancedRoutingPolicy.EconomySevereLatencyFactor) < 1e-12,
+        "Economy severe latency did not use the increased post-threshold slope.");
+    Assert(verySlow > 20_000,
+        "Economy severe latency did not reduce the effective score of a very slow candidate.");
+}
+
 static void TestBalancedModeRejectsCatastrophicCheapLatency()
 {
     var now = DateTimeOffset.UtcNow;
@@ -1563,6 +1671,161 @@ static void TestAutomaticRouteHonorsExplicitMultiKeySelection()
         "Automatic route did not return the updated group for every explicitly selected Key.");
 }
 
+static void TestLunaRouteFiltersFailedModelHealthGroups()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        keys:
+        [
+            new ApiKeyInfo { Id = 10, Name = "主 Key", Status = "active", GroupId = 1 },
+            new ApiKeyInfo { Id = 11, Name = "Luna Key", Status = "active", GroupId = 1 }
+        ],
+        providerCacheHitRates: _ => new ProviderCacheHitRatePage(
+            now,
+            new Dictionary<long, double> { [2] = 0.80 })
+        {
+            ModelHealthByGroup = new Dictionary<long, IReadOnlyDictionary<string, string>>
+            {
+                [2] = new Dictionary<string, string> { ["luna"] = "failed" }
+            }
+        });
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        LunaSelectedKeyIds = [11],
+        ProviderSeriesWeight = 0
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RunOnceAsync(forceAccountRefresh: true).GetAwaiter().GetResult();
+
+    Assert(result.LunaRoute is { HealthAvailable: true, FilteredGroupCount: 1 },
+        "Luna route did not expose the filtered failed group.");
+    Assert(result.LunaRoute?.Decision?.Target is null,
+        "Luna route selected a group explicitly marked failed for Luna.");
+    Assert(api.ProviderCacheHitRateCalls == 1,
+        "Luna health was not loaded when provider series scoring was disabled.");
+    Assert(api.UpdateCalls == 1 && result.KeyResults.Count == 1,
+        "Luna filtering should leave the main route update independent and avoid a Luna PUT.");
+}
+
+static void TestLunaHealthFailureDoesNotBlockPrimaryRoute()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        keys:
+        [
+            new ApiKeyInfo { Id = 10, Name = "主 Key", Status = "active", GroupId = 1 },
+            new ApiKeyInfo { Id = 11, Name = "Luna Key", Status = "active", GroupId = 1 }
+        ],
+        providerCacheHitRates: _ => throw new HttpRequestException("upstream detail"));
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        LunaSelectedKeyIds = [11]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RunOnceAsync(forceAccountRefresh: true).GetAwaiter().GetResult();
+
+    Assert(result.KeyResults.Count == 1 && api.UpdateCalls == 1,
+        "Primary routing should continue after Luna health loading fails.");
+    Assert(result.LunaRoute is { HealthAvailable: false } &&
+           result.LunaRoute.KeyResults.Count == 0,
+           "Luna health failure should stop Luna writes and expose a degraded result.");
+}
+
+static void TestLunaHealthLoadsAfterPrimaryOnlyCycle()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        keys:
+        [
+            new ApiKeyInfo { Id = 10, Name = "主 Key", Status = "active", GroupId = 2 },
+            new ApiKeyInfo { Id = 11, Name = "Luna Key", Status = "active", GroupId = 1 }
+        ],
+        providerCacheHitRates: _ => new ProviderCacheHitRatePage(
+            now,
+            new Dictionary<long, double>())
+        {
+            ModelHealthByGroup = new Dictionary<long, IReadOnlyDictionary<string, string>>
+            {
+                [2] = new Dictionary<string, string> { ["luna"] = "healthy" }
+            }
+        });
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        ProviderSeriesWeight = 0
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    service.RunOnceAsync().GetAwaiter().GetResult();
+    Assert(api.ProviderCacheHitRateCalls == 0,
+        "A primary-only cycle with zero provider weight should not fetch health data.");
+
+    var result = service.RunOnceAsync(selectedLunaKeyIds: new long[] { 11 })
+        .GetAwaiter()
+        .GetResult();
+
+    Assert(api.ProviderCacheHitRateCalls == 1,
+        "Enabling Luna on an existing service should refresh the missing health snapshot.");
+    Assert(result.LunaRoute is { HealthAvailable: true } && api.UpdateCalls == 1,
+        "Luna did not route after its health data was loaded on demand.");
+}
+
+static void TestOverlappingMainAndLunaKeysAreRejected()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(now);
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        LunaSelectedKeyIds = [10]
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var rejected = false;
+    try
+    {
+        service.RunOnceAsync(forceAccountRefresh: true).GetAwaiter().GetResult();
+    }
+    catch (InvalidOperationException exception)
+    {
+        rejected = exception.Message.Contains("不能选择同一 Key", StringComparison.Ordinal);
+    }
+
+    Assert(rejected, "Overlapping main and Luna Key selections were not rejected.");
+    Assert(api.UpdateCalls == 0, "Overlapping Key validation happened after a PUT.");
+}
+
 static void TestManualRouteUpdatesSelectedKeysAndState()
 {
     var now = DateTimeOffset.UtcNow;
@@ -2010,7 +2273,8 @@ static void TestEncryptedSettingsRoundtrip()
             PollingIntervalSeconds = 120,
             SmoothRendering = true,
             KeySelectionInitialized = true,
-            SelectedKeyIds = [42, 84]
+            SelectedKeyIds = [42, 84],
+            LunaSelectedKeyIds = [126]
         };
         var expiresAt = new DateTimeOffset(2026, 7, 20, 12, 0, 0, TimeSpan.Zero);
         var credentials = new PersistentCredentials
@@ -2044,6 +2308,7 @@ static void TestEncryptedSettingsRoundtrip()
         Assert(loaded.Settings.PollingIntervalSeconds == 120, "Polling interval was not restored.");
         Assert(loaded.Settings.KeySelectionInitialized, "Key selection initialized state was not restored.");
         Assert(loaded.Settings.SelectedKeyIds.SequenceEqual(new long[] { 42, 84 }), "Selected Key IDs were not restored.");
+        Assert(loaded.Settings.LunaSelectedKeyIds.SequenceEqual(new long[] { 126 }), "Luna Selected Key IDs were not restored.");
         Assert(loaded.Credentials?.Email == credentials.Email, "Encrypted email did not roundtrip.");
         Assert(loaded.Credentials?.Password == credentials.Password, "Encrypted password did not roundtrip.");
         Assert(loaded.Credentials?.BearerToken == secretToken, "Encrypted token did not roundtrip.");

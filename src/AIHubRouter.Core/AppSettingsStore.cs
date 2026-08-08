@@ -35,6 +35,7 @@ public sealed record PersistentAppSettings
     public bool AutoRoutingEnabled { get; init; }
     public bool KeySelectionInitialized { get; init; }
     public long[] SelectedKeyIds { get; init; } = [];
+    public long[] LunaSelectedKeyIds { get; init; } = [];
     public long[] BlacklistedGroupIds { get; init; } = [];
 
     public BalancedRoutingPolicy CreatePolicy()

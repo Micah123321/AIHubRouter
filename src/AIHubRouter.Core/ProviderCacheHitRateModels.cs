@@ -2,7 +2,11 @@ namespace AIHubRouter.Core;
 
 public sealed record ProviderCacheHitRatePage(
     DateTimeOffset? GeneratedAt,
-    IReadOnlyDictionary<long, double> Groups);
+    IReadOnlyDictionary<long, double> Groups)
+{
+    public IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> ModelHealthByGroup { get; init; } =
+        new Dictionary<long, IReadOnlyDictionary<string, string>>();
+}
 
 public sealed record ProviderCacheHitRateLoadStatus(
     bool Available,

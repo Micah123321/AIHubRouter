@@ -199,6 +199,10 @@ public sealed record BalancedRoutingPolicy
     public const double DefaultConfidenceImpact = 1;
     public const double DefaultMinimumConfidence = 0.90;
     public const double DefaultProviderSeriesWeight = 0.20;
+    public const double EconomyLatencyDiminishingThresholdMs = 4_000;
+    public const double EconomyLatencyDiminishingFactor = 0.25;
+    public const double EconomySevereLatencyThresholdMs = 10_000;
+    public const double EconomySevereLatencyFactor = 1.5;
 
     public string Platform { get; init; } = "openai";
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
@@ -289,7 +293,8 @@ public sealed record RouteEvaluation(
     double ConfidenceImpact,
     double MinimumConfidence,
     IReadOnlyDictionary<long, double> ProviderSeriesScores,
-    double ProviderSeriesWeight);
+    double ProviderSeriesWeight,
+    RoutingMode Mode = RoutingMode.Balanced);
 
 public enum RouteDecisionReason
 {
@@ -314,4 +319,5 @@ public sealed record RouteDecision(
 public sealed record RouteState
 {
     public long? CurrentGroupId { get; init; }
+    public long? LunaCurrentGroupId { get; init; }
 }

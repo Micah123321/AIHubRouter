@@ -66,6 +66,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _statusIsWarning;
     [ObservableProperty] private bool _statusIsError;
     [ObservableProperty] private string _candidateSummary = "目标分组：-";
+    [ObservableProperty] private string _lunaSummary = "Luna：未配置";
     [ObservableProperty] private string _connectionSummary = "API-only / Balanced";
     [ObservableProperty] private RoutingMode _routingMode = RoutingMode.Balanced;
     [ObservableProperty] private ThemeChoice? _selectedThemeChoice = ThemeChoices[0];
@@ -418,7 +419,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 dryRun,
                 forceRefresh,
                 cancellationToken,
-                CaptureSelectedKeyIds());
+                CaptureSelectedKeyIds(),
+                CaptureSelectedLunaKeyIds());
             if (settingsVersion == _routingSettingsVersion)
             {
                 ApplyResult(result);
@@ -531,9 +533,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
         Keys.Clear();
         var selected = result.SelectedKeyIds.ToHashSet();
+        var persistedLunaIds = _store.Load().Settings.LunaSelectedKeyIds.ToHashSet();
+        var selectedForLuna = result.LunaRoute?.SelectedKeyIds.ToHashSet() ?? new HashSet<long>();
         foreach (var key in result.Keys)
         {
-            Keys.Add(CreateKeyRow(key, selected.Contains(key.Id)));
+            Keys.Add(CreateKeyRow(
+                key,
+                selected.Contains(key.Id),
+                selectedForLuna.Contains(key.Id) || persistedLunaIds.Contains(key.Id)));
         }
 
         if (_manualRouteGroupId is { } manualGroupId)
@@ -611,11 +618,18 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void ApplyManualResult(ManualRoutingResult result, ProviderRowViewModel selected)
     {
+        var selectedForLuna = Keys
+            .Where(key => key.SelectedForLuna)
+            .Select(key => key.Id)
+            .ToHashSet();
         Keys.Clear();
         var selectedKeyIds = result.SelectedKeyIds.ToHashSet();
         foreach (var key in result.Keys)
         {
-            Keys.Add(CreateKeyRow(key, selectedKeyIds.Contains(key.Id)));
+            Keys.Add(CreateKeyRow(
+                key,
+                selectedKeyIds.Contains(key.Id),
+                selectedForLuna.Contains(key.Id) && !selectedKeyIds.Contains(key.Id)));
         }
 
         var actualGroupIds = result.Keys
@@ -654,6 +668,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         CandidateSummary = provider is null
             ? $"目标分组：{groupId}（手动） / 方案：{_manualRoutePlan ?? "-"}"
             : $"目标分组：{provider.GroupId}（手动） / 方案：{provider.Plan} / {provider.Multiplier} / {provider.Latency}";
+        UpdateLunaSummary(_lastCycleResult?.LunaRoute);
     }
 
     private void UpdateAutomaticCandidateSummary(RoutingCycleResult result)
@@ -661,6 +676,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         if (result.Decision.Target is not { } target)
         {
             CandidateSummary = "目标分组：无可用候选";
+            UpdateLunaSummary(result.LunaRoute);
             return;
         }
 
@@ -668,6 +684,22 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ? target.Group.Name
             : target.Provider.PlanType;
         CandidateSummary = $"目标分组：{target.Group.Id} / 方案：{planName} / {target.EffectiveMultiplier:0.####}x / {FormatLatency(target.Provider.FirstTokenLatencyMs)}";
+        UpdateLunaSummary(result.LunaRoute);
+    }
+
+    private void UpdateLunaSummary(LunaRouteResult? lunaRoute)
+    {
+        if (lunaRoute is null)
+        {
+            LunaSummary = "Luna：未配置";
+            return;
+        }
+
+        var target = lunaRoute.Decision?.Target is { } candidate
+            ? $"{candidate.Group.Id} / 方案：{(string.IsNullOrWhiteSpace(candidate.Provider.PlanType) ? candidate.Group.Name : candidate.Provider.PlanType)} / {candidate.EffectiveMultiplier:0.####}x"
+            : "无可用候选";
+        var health = lunaRoute.HealthAvailable ? "可用" : "不可用";
+        LunaSummary = $"Luna：目标 {target} / 过滤 {lunaRoute.FilteredGroupCount} 个分组 / 健康：{health}（{lunaRoute.HealthMessage}）";
     }
 
     private void SortProviderRows()
@@ -719,12 +751,42 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ? null
             : Keys.Where(key => key.Selected).Select(key => key.Id).ToArray();
 
-    private KeyRowViewModel CreateKeyRow(ApiKeyInfo key, bool selected)
+    private long[]? CaptureSelectedLunaKeyIds() =>
+        Keys.Count == 0
+            ? null
+            : Keys.Where(key => key.SelectedForLuna).Select(key => key.Id).ToArray();
+
+    private KeyRowViewModel CreateKeyRow(ApiKeyInfo key, bool selected, bool selectedForLuna = false)
     {
-        var row = new KeyRowViewModel(key, selected);
+        var row = new KeyRowViewModel(key, selected, selectedForLuna);
         row.PropertyChanged += (_, args) =>
         {
-            if (args.PropertyName == nameof(KeyRowViewModel.Selected))
+            if (args.PropertyName == nameof(KeyRowViewModel.Selected) && row.Selected)
+            {
+                if (row.SelectedForLuna)
+                {
+                    row.SelectedForLuna = false;
+                }
+
+                foreach (var other in Keys.Where(other => other != row && other.SelectedForLuna).ToArray())
+                {
+                    other.SelectedForLuna = false;
+                }
+            }
+            else if (args.PropertyName == nameof(KeyRowViewModel.SelectedForLuna) && row.SelectedForLuna)
+            {
+                if (row.Selected)
+                {
+                    row.Selected = false;
+                }
+
+                foreach (var other in Keys.Where(other => other != row && other.Selected).ToArray())
+                {
+                    other.Selected = false;
+                }
+            }
+
+            if (args.PropertyName is nameof(KeyRowViewModel.Selected) or nameof(KeyRowViewModel.SelectedForLuna))
             {
                 _routingSettingsStale = true;
                 _routingSettingsVersion++;
@@ -759,6 +821,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Password = _loadedCredentials.Password;
             BearerToken = _loadedCredentials.BearerToken;
             Cookie = _loadedCredentials.Cookie;
+            LunaSummary = settings.LunaSelectedKeyIds.Length == 0
+                ? "Luna：未配置"
+                : $"Luna：已配置 {settings.LunaSelectedKeyIds.Length} 个 Key，尚未运行";
         }
         catch (Exception exception)
         {
@@ -788,7 +853,21 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         var selectedIds = Keys.Where(key => key.Selected).Select(key => key.Id).ToArray();
+        var selectedForLunaIds = Keys.Where(key => key.SelectedForLuna).Select(key => key.Id).ToArray();
         var existing = _store.Load().Settings;
+        var effectiveSelectedIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds;
+        var effectiveLunaIds = Keys.Count > 0 ? selectedForLunaIds : existing.LunaSelectedKeyIds;
+        var overlappingKeyIds = effectiveSelectedIds.Intersect(effectiveLunaIds).Order().ToArray();
+        if (overlappingKeyIds.Length > 0)
+        {
+            throw new ArgumentException(
+                $"主路由与 Luna 路由不能选择同一 Key：{string.Join(", ", overlappingKeyIds)}。" );
+        }
+        if (effectiveLunaIds.Length > 0 && effectiveSelectedIds.Length == 0)
+        {
+            throw new ArgumentException(
+                "Luna 路由不能脱离主路由单独运行，请先选择主路由 Key。" );
+        }
         var loadedGroupIds = Groups.Select(group => group.Id).ToHashSet();
         var blacklistedGroupIds = Groups
             .Where(group => group.Blacklisted)
@@ -815,6 +894,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
             KeySelectionInitialized = Keys.Count > 0 || existing.KeySelectionInitialized,
             SelectedKeyIds = Keys.Count > 0 ? selectedIds : existing.SelectedKeyIds,
+            LunaSelectedKeyIds = Keys.Count > 0 ? selectedForLunaIds : existing.LunaSelectedKeyIds,
             BlacklistedGroupIds = Groups.Count > 0 ? blacklistedGroupIds : existing.BlacklistedGroupIds
         };
         settings.CreatePolicy().Validate();
@@ -1086,8 +1166,9 @@ public sealed partial class GroupRowViewModel : ObservableObject
 public sealed partial class KeyRowViewModel : ObservableObject
 {
     [ObservableProperty] private bool _selected;
+    [ObservableProperty] private bool _selectedForLuna;
 
-    public KeyRowViewModel(ApiKeyInfo key, bool selected)
+    public KeyRowViewModel(ApiKeyInfo key, bool selected, bool selectedForLuna)
     {
         Id = key.Id;
         Name = key.Name;
@@ -1095,6 +1176,7 @@ public sealed partial class KeyRowViewModel : ObservableObject
         GroupId = key.GroupId?.ToString() ?? "-";
         GroupName = key.Group?.Name ?? "未绑定";
         _selected = selected;
+        _selectedForLuna = selectedForLuna;
     }
 
     public long Id { get; }

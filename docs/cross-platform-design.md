@@ -116,6 +116,10 @@ finalScore = weightedScore
 
 `/providers/series` 成功快照按 `range + timezone` 缓存在进程内，默认 TTL 为 300 秒，可配置范围为 30 到 3600 秒。这个 TTL 只控制序列响应刷新，不代表供应商的 `cache_hit_rate`。`/providers` 的命中率数据在账号参考数据刷新时获取，并随账号缓存边界复用；不从序列 `probe` 元组尾字段猜测命中率。普通周期命中有效缓存时不发送对应请求；强制刷新会访问接口，失败时可继续使用仍新鲜的序列缓存并标记 warning。任一参考接口数据过期、网络失败或格式错误时明确报告降级并沿用可用的基础评分；原始响应不写入磁盘。
 
+同一 `/providers` 响应中的 `model_health` 是独立于 `cache_hit_rate` 的健康信号。有效分组即使命中率字段无效也会保留健康状态；重复分组的相同模型按 `failed` 优先合并。主路由沿用全部可用候选，Luna 路由在独立 Key 集合上先排除 `model_health.luna == "failed"` 的分组，再调用完整评分管线重新生成基准、候选和排序。健康信号缺失或请求失败时只跳过 Luna 写入，主路由继续执行。
+
+持久化设置新增 `LunaSelectedKeyIds`，路由状态新增 `LunaCurrentGroupId`。主路由和 Luna 路由不能共享 Key；两条 lane 分别完成决策和 PUT 后，协调器统一合并更新后的 Key 缓存并保存双状态，周期结果通过 `LunaRoute` 暴露 Luna 目标、过滤数量、健康状态和逐 Key 结果。
+
 ### 4.4 权重稳定机制
 
 首 Token 延迟会随网络和服务负载波动。算法通过置信度修正、保守延迟和最小得分优势抑制频繁切换：

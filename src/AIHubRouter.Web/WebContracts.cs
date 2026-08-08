@@ -25,7 +25,8 @@ public sealed record SettingsUpdateRequest(
     bool PersistCredentials,
     AppThemeMode ThemeMode,
     long[] SelectedKeyIds,
-    long[] BlacklistedGroupIds);
+    long[] BlacklistedGroupIds,
+    long[]? LunaSelectedKeyIds = null);
 
 public sealed record ManualRouteRequest(long GroupId);
 public sealed record AutoRoutingRequest(bool Enabled);
@@ -66,6 +67,7 @@ public sealed record WebSettings(
     string CredentialProtection,
     AppThemeMode ThemeMode,
     long[] SelectedKeyIds,
+    long[] LunaSelectedKeyIds,
     long[] BlacklistedGroupIds);
 
 public sealed record WebProviderSeriesStatus(
@@ -108,4 +110,5 @@ public sealed record WebKeyRow(
     string Status,
     long? GroupId,
     string GroupName,
-    bool Selected);
+    bool Selected,
+    bool LunaSelected);

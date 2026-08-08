@@ -6,6 +6,7 @@ const state = {
   clearPassword: false,
   clearToken: false,
   draftKeyIds: new Set(),
+  draftLunaKeyIds: new Set(),
   draftBlacklistIds: new Set(),
   settingsHydrated: false,
   requestInFlight: false
@@ -151,7 +152,9 @@ function hydrateSettings(settings, force = false) {
   if (modeInput) modeInput.checked = true;
   state.clearPassword = false;
   state.clearToken = false;
-  state.draftKeyIds = new Set(settings.selectedKeyIds);
+  state.draftKeyIds = new Set(settings.selectedKeyIds || []);
+  state.draftLunaKeyIds = new Set(settings.lunaSelectedKeyIds || []);
+  for (const id of state.draftKeyIds) state.draftLunaKeyIds.delete(id);
   state.draftBlacklistIds = new Set(settings.blacklistedGroupIds);
   state.settingsHydrated = true;
   applyTheme($("#themeSelect").value);
@@ -230,13 +233,14 @@ function renderKeys(keys) {
   $("#keyCount").textContent = `${keys.length} 个 Key`;
   $("#keyRows").innerHTML = keys.length ? keys.map(key => `
     <tr>
-      <td><input type="checkbox" class="key-check" data-id="${key.id}" aria-label="路由 ${escapeHtml(key.name)}" ${state.draftKeyIds.has(key.id) ? "checked" : ""}></td>
+      <td><input type="checkbox" class="key-check" data-id="${key.id}" aria-label="主路由 ${escapeHtml(key.name)}" ${state.draftKeyIds.has(key.id) ? "checked" : ""}></td>
+      <td><input type="checkbox" class="luna-key-check" data-id="${key.id}" aria-label="Luna 路由 ${escapeHtml(key.name)}" ${state.draftLunaKeyIds.has(key.id) ? "checked" : ""}></td>
       <td>${key.id}</td>
       <td>${escapeHtml(key.name)}</td>
       <td><span class="state-badge ${key.status === "active" ? "available" : "error"}">${escapeHtml(key.status)}</span></td>
       <td>${key.groupId ?? "-"}</td>
       <td>${escapeHtml(key.groupName)}</td>
-    </tr>`).join("") : '<tr><td class="empty-state" colspan="6">刷新后显示 Key</td></tr>';
+    </tr>`).join("") : '<tr><td class="empty-state" colspan="7">刷新后显示 Key</td></tr>';
 }
 
 function updateSortIndicators() {
@@ -299,7 +303,8 @@ function settingsPayload() {
     persistCredentials: $("#persistCredentials").checked,
     themeMode: $("#themeSelect").value,
     selectedKeyIds: [...state.draftKeyIds],
-    blacklistedGroupIds: [...state.draftBlacklistIds]
+    blacklistedGroupIds: [...state.draftBlacklistIds],
+    lunaSelectedKeyIds: [...state.draftLunaKeyIds]
   };
 }
 
@@ -428,9 +433,20 @@ $("#groupRows").addEventListener("change", event => {
 });
 
 $("#keyRows").addEventListener("change", event => {
-  if (!event.target.classList.contains("key-check")) return;
+  if (!event.target.classList.contains("key-check") &&
+      !event.target.classList.contains("luna-key-check")) return;
   const id = Number(event.target.dataset.id);
-  event.target.checked ? state.draftKeyIds.add(id) : state.draftKeyIds.delete(id);
+  const isLuna = event.target.classList.contains("luna-key-check");
+  const selected = isLuna ? state.draftLunaKeyIds : state.draftKeyIds;
+  const other = isLuna ? state.draftKeyIds : state.draftLunaKeyIds;
+  event.target.checked ? selected.add(id) : selected.delete(id);
+  if (event.target.checked) {
+    other.delete(id);
+    const otherInput = $("#keyRows input." +
+      (isLuna ? "key-check" : "luna-key-check") +
+      '[data-id="' + id + '"]');
+    if (otherInput) otherInput.checked = false;
+  }
 });
 
 $("#providerRows").addEventListener("change", event => {

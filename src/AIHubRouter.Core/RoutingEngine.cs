@@ -55,7 +55,8 @@ public static class RoutingEngine
         IReadOnlyDictionary<long, double> userGroupRates,
         BalancedRoutingPolicy policy,
         DateTimeOffset now,
-        IReadOnlyDictionary<long, ProviderSeriesMetrics>? providerSeriesMetrics = null)
+        IReadOnlyDictionary<long, ProviderSeriesMetrics>? providerSeriesMetrics = null,
+        IReadOnlySet<long>? excludedGroupIds = null)
     {
         ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(availableGroups);
@@ -64,11 +65,13 @@ public static class RoutingEngine
         policy.Validate();
 
         var blacklistedGroupIds = policy.BlacklistedGroupIds.ToHashSet();
+        var excluded = excludedGroupIds ?? new HashSet<long>();
 
         var groups = availableGroups
             .Where(group => group.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
             .Where(group => group.Platform.Equals(policy.Platform, StringComparison.OrdinalIgnoreCase))
             .Where(group => !blacklistedGroupIds.Contains(group.Id))
+            .Where(group => !excluded.Contains(group.Id))
             .GroupBy(group => group.Id)
             .ToDictionary(group => group.Key, group => group.First());
 
@@ -113,7 +116,8 @@ public static class RoutingEngine
                 policy.ConfidenceImpact,
                 policy.MinimumConfidence,
                 providerSeriesScores,
-                policy.ProviderSeriesWeight);
+                policy.ProviderSeriesWeight,
+                policy.Mode);
         }
 
         var measured = eligible
@@ -140,7 +144,8 @@ public static class RoutingEngine
                 policy.ConfidenceImpact,
                 policy.MinimumConfidence,
                 providerSeriesScores,
-                policy.ProviderSeriesWeight);
+                policy.ProviderSeriesWeight,
+                policy.Mode);
         }
 
         var baseline = cheapest[0];
@@ -158,7 +163,8 @@ public static class RoutingEngine
                 policy.ConfidenceImpact,
                 policy.MinimumConfidence,
                 providerSeriesScores,
-                policy.ProviderSeriesWeight);
+                policy.ProviderSeriesWeight,
+                policy.Mode);
         }
 
         var tradeoff = decisionPool
@@ -173,7 +179,8 @@ public static class RoutingEngine
                     policy.LatencyWeight,
                     policy.ConfidenceImpact,
                     providerSeriesScores,
-                    policy.ProviderSeriesWeight)
+                    policy.ProviderSeriesWeight,
+                    policy.Mode)
             })
             .Where(candidate =>
                 candidate.Candidate.Group.Id == baseline.Group.Id ||
@@ -196,7 +203,8 @@ public static class RoutingEngine
             policy.ConfidenceImpact,
             policy.MinimumConfidence,
             providerSeriesScores,
-            policy.ProviderSeriesWeight);
+            policy.ProviderSeriesWeight,
+            policy.Mode);
     }
 
     internal static double NormalizeLatency(double? latency)
@@ -204,6 +212,33 @@ public static class RoutingEngine
         return latency is > 0 && double.IsFinite(latency.Value)
             ? latency.Value
             : double.MaxValue;
+    }
+
+    internal static double ApplyLatencyDiminishingReturns(double latency, RoutingMode mode)
+    {
+        if (mode != RoutingMode.Economy ||
+            latency <= 0 ||
+            !double.IsFinite(latency))
+        {
+            return latency;
+        }
+
+        var diminishingThreshold = BalancedRoutingPolicy.EconomyLatencyDiminishingThresholdMs;
+        if (latency < diminishingThreshold)
+        {
+            return diminishingThreshold -
+                (diminishingThreshold - latency) *
+                BalancedRoutingPolicy.EconomyLatencyDiminishingFactor;
+        }
+
+        var severeThreshold = BalancedRoutingPolicy.EconomySevereLatencyThresholdMs;
+        if (latency <= severeThreshold)
+        {
+            return latency;
+        }
+
+        return severeThreshold +
+            (latency - severeThreshold) * BalancedRoutingPolicy.EconomySevereLatencyFactor;
     }
 
     private static bool HasSufficientConfidence(ProviderStatus provider, double minimumConfidence) =>
@@ -235,7 +270,8 @@ public static class RoutingEngine
             evaluation.LatencyWeight,
             evaluation.ConfidenceImpact,
             evaluation.ProviderSeriesScores,
-            evaluation.ProviderSeriesWeight);
+            evaluation.ProviderSeriesWeight,
+            evaluation.Mode);
     }
 
     private static bool IsKnownLatency(double? latency) =>
@@ -256,7 +292,8 @@ public static class RoutingEngine
         double latencyWeight,
         double confidenceImpact,
         IReadOnlyDictionary<long, double> providerSeriesScores,
-        double providerSeriesWeight)
+        double providerSeriesWeight,
+        RoutingMode mode)
     {
         var pricePremiumRatio =
             (candidate.EffectiveMultiplier - minimumMultiplier) / minimumMultiplier;
@@ -268,7 +305,13 @@ public static class RoutingEngine
             candidate,
             candidate.Provider.FirstTokenLatencyMs!.Value,
             confidenceImpact);
-        var speedupRatio = conservativeBaselineLatency / conservativeCandidateLatency - 1;
+        var effectiveBaselineLatency = ApplyLatencyDiminishingReturns(
+            conservativeBaselineLatency,
+            mode);
+        var effectiveCandidateLatency = ApplyLatencyDiminishingReturns(
+            conservativeCandidateLatency,
+            mode);
+        var speedupRatio = effectiveBaselineLatency / effectiveCandidateLatency - 1;
         var score = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio;
         if (providerSeriesWeight <= 0 ||
             !providerSeriesScores.TryGetValue(baseline.Group.Id, out var baselineQuality) ||

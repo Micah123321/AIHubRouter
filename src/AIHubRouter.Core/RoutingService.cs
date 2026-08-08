@@ -38,6 +38,15 @@ public sealed record KeyRouteResult(
     bool Success,
     string? Error);
 
+public sealed record LunaRouteResult(
+    RouteDecision? Decision,
+    RouteEvaluation? Evaluation,
+    IReadOnlyList<long> SelectedKeyIds,
+    IReadOnlyList<KeyRouteResult> KeyResults,
+    int FilteredGroupCount,
+    bool HealthAvailable,
+    string HealthMessage);
+
 public sealed record RoutingCycleResult(
     RouteDecision Decision,
     RouteEvaluation Evaluation,
@@ -53,8 +62,15 @@ public sealed record RoutingCycleResult(
     bool DryRun,
     DateTimeOffset CompletedAt)
 {
-    public int ChangedKeyCount => KeyResults.Count(result => result.Changed && result.Success);
-    public int FailedKeyCount => KeyResults.Count(result => !result.Success);
+    public LunaRouteResult? LunaRoute { get; init; }
+
+    public int ChangedKeyCount =>
+        KeyResults.Count(result => result.Changed && result.Success) +
+        (LunaRoute?.KeyResults.Count(result => result.Changed && result.Success) ?? 0);
+
+    public int FailedKeyCount =>
+        KeyResults.Count(result => !result.Success) +
+        (LunaRoute?.KeyResults.Count(result => !result.Success) ?? 0);
 }
 
 public sealed record ManualRoutingResult(
@@ -107,6 +123,11 @@ internal sealed class ManualRoutingProgress
     }
 }
 
+internal sealed record RouteLaneExecution(
+    RouteDecisionResult DecisionResult,
+    IReadOnlyList<KeyRouteResult> KeyResults,
+    IReadOnlyList<ApiKeyInfo> UpdatedKeys);
+
 public sealed class RoutingService : IDisposable
 {
     private readonly PersistentAppSettings _settings;
@@ -124,6 +145,9 @@ public sealed class RoutingService : IDisposable
     private IReadOnlyList<GroupInfo> _cachedGroups = [];
     private IReadOnlyDictionary<long, double> _cachedRates = new Dictionary<long, double>();
     private IReadOnlyDictionary<long, double> _cachedCacheHitRates = new Dictionary<long, double>();
+    private IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> _cachedModelHealthByGroup =
+        new Dictionary<long, IReadOnlyDictionary<string, string>>();
+    private bool _modelHealthLoaded;
     private IReadOnlyList<ApiKeyInfo> _cachedKeys = [];
     private ProviderCacheHitRateLoadStatus _cacheHitRateStatus;
     private DateTimeOffset _accountCacheExpiresAt = DateTimeOffset.MinValue;
@@ -163,7 +187,8 @@ public sealed class RoutingService : IDisposable
         bool dryRun = false,
         bool forceAccountRefresh = false,
         CancellationToken cancellationToken = default,
-        IReadOnlyCollection<long>? selectedKeyIds = null)
+        IReadOnlyCollection<long>? selectedKeyIds = null,
+        IReadOnlyCollection<long>? selectedLunaKeyIds = null)
     {
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -177,7 +202,8 @@ public sealed class RoutingService : IDisposable
                     dryRun,
                     forceAccountRefresh,
                     cancellationToken,
-                    selectedKeyIds);
+                    selectedKeyIds,
+                    selectedLunaKeyIds);
             }
             catch (AIHubApiException exception)
                 when (attempt == 0 && exception.IsAuthenticationFailure && CanRenewAutomatically())
@@ -242,10 +268,12 @@ public sealed class RoutingService : IDisposable
         bool dryRun,
         bool forceAccountRefresh,
         CancellationToken cancellationToken,
-        IReadOnlyCollection<long>? selectedKeyIds)
+        IReadOnlyCollection<long>? selectedKeyIds,
+        IReadOnlyCollection<long>? selectedLunaKeyIds)
     {
         var now = _utcNow();
         var policy = _settings.CreatePolicy();
+        var requestedLunaKeyIds = selectedLunaKeyIds ?? _settings.LunaSelectedKeyIds;
         var usageStatsTask = client.GetGroupUsageStatsAsync(
             policy.Platform,
             GroupUsageEstimator.DefaultSampleLimit,
@@ -256,7 +284,12 @@ public sealed class RoutingService : IDisposable
             now,
             forceAccountRefresh,
             cancellationToken);
-        await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
+        await RefreshAccountDataAsync(
+            client,
+            now,
+            forceAccountRefresh,
+            cancellationToken,
+            requestedLunaKeyIds.Count > 0);
 
         var usageStats = new[] { await usageStatsTask };
         var providerSeries = await providerSeriesTask;
@@ -280,7 +313,19 @@ public sealed class RoutingService : IDisposable
                 "没有选中的 active API Key。请先配置 SelectedKeyIds，或在首次运行时保留一个 active Key。" );
         }
 
-        var observedGroupId = ResolveObservedGroup(selectedKeys);
+        var selectedLunaKeys = ResolveSelectedKeys(_cachedKeys, requestedLunaKeyIds);
+        var lunaConfigured = requestedLunaKeyIds.Count > 0;
+        var overlappingKeyIds = selectedKeys
+            .Select(key => key.Id)
+            .Intersect(selectedLunaKeys.Select(key => key.Id))
+            .Order()
+            .ToArray();
+        if (overlappingKeyIds.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"主路由与 Luna 路由不能选择同一 Key：{string.Join(", ", overlappingKeyIds)}。" );
+        }
+
         var state = _stateStore.Load();
         var evaluation = RoutingEngine.Evaluate(
             providers,
@@ -297,58 +342,110 @@ public sealed class RoutingService : IDisposable
             state,
             policy,
             now,
-            observedGroupId);
-        var keyResults = new List<KeyRouteResult>();
+            ResolveObservedGroup(selectedKeys));
 
-        if (decisionResult.Decision.ShouldSwitch && decisionResult.Decision.Target is { } target)
+        var primaryExecutionTask = ExecuteRouteLaneAsync(
+            client,
+            selectedKeys,
+            decisionResult,
+            dryRun,
+            cancellationToken);
+        Task<RouteLaneExecution>? lunaExecutionTask = null;
+        LunaRouteResult? lunaRoute = null;
+        var lunaHealth = ResolveLunaHealth();
+        if (lunaConfigured)
         {
-            foreach (var key in selectedKeys)
+            if (selectedLunaKeys.Count == 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (key.GroupId == target.Group.Id)
-                {
-                    keyResults.Add(new KeyRouteResult(key.Id, key.Name, false, true, null));
-                    continue;
-                }
-
-                if (dryRun)
-                {
-                    keyResults.Add(new KeyRouteResult(key.Id, key.Name, true, true, null));
-                    continue;
-                }
-
-                try
-                {
-                    var updated = await client.UpdateKeyGroupAsync(
-                        key.Id,
-                        target.Group.Id,
-                        cancellationToken);
-                    ReplaceCachedKey(updated);
-                    keyResults.Add(new KeyRouteResult(key.Id, key.Name, true, true, null));
-                }
-                catch (Exception exception) when (exception is not OperationCanceledException)
-                {
-                    if (exception is AIHubApiException { IsAuthenticationFailure: true })
-                    {
-                        throw;
-                    }
-
-                    keyResults.Add(new KeyRouteResult(
-                        key.Id,
-                        key.Name,
-                        true,
-                        false,
-                        GetSafeErrorMessage(exception)));
-                }
+                lunaRoute = new LunaRouteResult(
+                    null,
+                    null,
+                    [],
+                    [],
+                    0,
+                    false,
+                    "没有选中的 active Luna API Key，已跳过 Luna 自动路由。" );
+            }
+            else if (!lunaHealth.Available)
+            {
+                lunaRoute = new LunaRouteResult(
+                    null,
+                    null,
+                    selectedLunaKeys.Select(key => key.Id).ToArray(),
+                    [],
+                    0,
+                    false,
+                    lunaHealth.Message);
+            }
+            else
+            {
+                var lunaEvaluation = RoutingEngine.Evaluate(
+                    providers,
+                    _cachedGroups,
+                    _cachedRates,
+                    policy,
+                    now,
+                    providerSeries.Page?.Groups,
+                    lunaHealth.FailedGroupIds);
+                var lunaState = new RouteState { CurrentGroupId = state.LunaCurrentGroupId };
+                var lunaDecisionResult = RouteDecisionEngine.Decide(
+                    lunaEvaluation,
+                    lunaState,
+                    policy,
+                    now,
+                    ResolveObservedGroup(selectedLunaKeys));
+                lunaRoute = new LunaRouteResult(
+                    lunaDecisionResult.Decision,
+                    lunaEvaluation,
+                    selectedLunaKeys.Select(key => key.Id).ToArray(),
+                    [],
+                    lunaHealth.FailedGroupIds.Count,
+                    true,
+                    lunaHealth.Message);
+                lunaExecutionTask = ExecuteRouteLaneAsync(
+                    client,
+                    selectedLunaKeys,
+                    lunaDecisionResult,
+                    dryRun,
+                    cancellationToken);
             }
         }
 
+        if (lunaExecutionTask is null)
+        {
+            await primaryExecutionTask;
+        }
+        else
+        {
+            await Task.WhenAll(primaryExecutionTask, lunaExecutionTask);
+        }
+
+        var primaryExecution = await primaryExecutionTask;
+        var lunaExecution = lunaExecutionTask is null
+            ? null
+            : await lunaExecutionTask;
+        ReplaceCachedKeys(primaryExecution.UpdatedKeys.Concat(
+            lunaExecution?.UpdatedKeys ?? Array.Empty<ApiKeyInfo>()));
+
         if (!dryRun)
         {
-            var nextState = keyResults.Any(result => !result.Success)
-                ? decisionResult.NextState with { CurrentGroupId = null }
-                : decisionResult.NextState;
+            var nextState = primaryExecution.KeyResults.Any(result => !result.Success)
+                ? primaryExecution.DecisionResult.NextState with { CurrentGroupId = null }
+                : primaryExecution.DecisionResult.NextState;
+            if (lunaExecution is not null)
+            {
+                var lunaNextState = lunaExecution.KeyResults.Any(result => !result.Success)
+                    ? lunaExecution.DecisionResult.NextState with { CurrentGroupId = null }
+                    : lunaExecution.DecisionResult.NextState;
+                nextState = nextState with { LunaCurrentGroupId = lunaNextState.CurrentGroupId };
+            }
+
             _stateStore.Save(nextState);
+        }
+
+        if (lunaExecution is not null && lunaRoute is not null)
+        {
+            lunaRoute = lunaRoute with { KeyResults = lunaExecution.KeyResults };
         }
 
         return new RoutingCycleResult(
@@ -359,12 +456,111 @@ public sealed class RoutingService : IDisposable
             _cachedRates,
             _cachedKeys,
             selectedKeys.Select(key => key.Id).ToArray(),
-            keyResults,
+            primaryExecution.KeyResults,
             providerSeries.Page?.Groups ?? new Dictionary<long, ProviderSeriesMetrics>(),
             providerSeriesStatus,
             _cacheHitRateStatus,
             dryRun,
-            _utcNow());
+            _utcNow())
+        {
+            LunaRoute = lunaRoute
+        };
+    }
+
+    private async Task<RouteLaneExecution> ExecuteRouteLaneAsync(
+        IAIHubApiClient client,
+        IReadOnlyList<ApiKeyInfo> selectedKeys,
+        RouteDecisionResult decisionResult,
+        bool dryRun,
+        CancellationToken cancellationToken)
+    {
+        var keyResults = new List<KeyRouteResult>();
+        var updatedKeys = new List<ApiKeyInfo>();
+        if (!decisionResult.Decision.ShouldSwitch || decisionResult.Decision.Target is not { } target)
+        {
+            return new RouteLaneExecution(decisionResult, keyResults, updatedKeys);
+        }
+
+        foreach (var key in selectedKeys)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (key.GroupId == target.Group.Id)
+            {
+                keyResults.Add(new KeyRouteResult(key.Id, key.Name, false, true, null));
+                continue;
+            }
+
+            if (dryRun)
+            {
+                keyResults.Add(new KeyRouteResult(key.Id, key.Name, true, true, null));
+                continue;
+            }
+
+            try
+            {
+                var updated = await client.UpdateKeyGroupAsync(
+                    key.Id,
+                    target.Group.Id,
+                    cancellationToken);
+                updatedKeys.Add(updated);
+                keyResults.Add(new KeyRouteResult(key.Id, key.Name, true, true, null));
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                if (exception is AIHubApiException { IsAuthenticationFailure: true })
+                {
+                    throw;
+                }
+
+                keyResults.Add(new KeyRouteResult(
+                    key.Id,
+                    key.Name,
+                    true,
+                    false,
+                    GetSafeErrorMessage(exception)));
+            }
+        }
+
+        return new RouteLaneExecution(decisionResult, keyResults, updatedKeys);
+    }
+
+    private (bool Available, IReadOnlySet<long> FailedGroupIds, string Message) ResolveLunaHealth()
+    {
+        var statuses = _cachedModelHealthByGroup
+            .SelectMany(pair => pair.Value
+                .Where(model => model.Key.Equals("luna", StringComparison.OrdinalIgnoreCase))
+                .Select(model => (pair.Key, model.Value)))
+            .ToArray();
+        if (statuses.Length == 0)
+        {
+            return (false, new HashSet<long>(), "供应商没有可用的 Luna 健康数据，已跳过 Luna 自动路由。" );
+        }
+
+        var failedGroupIds = statuses
+            .Where(status => status.Value.Equals("failed", StringComparison.OrdinalIgnoreCase))
+            .Select(status => status.Key)
+            .ToHashSet();
+        return (
+            true,
+            failedGroupIds,
+            failedGroupIds.Count == 0
+                ? "Luna 健康数据可用，未发现失败供应商。"
+                : $"Luna 健康数据可用，已排除 {failedGroupIds.Count} 个失败供应商分组。" );
+    }
+
+    private void ReplaceCachedKeys(IEnumerable<ApiKeyInfo> updatedKeys)
+    {
+        var updates = updatedKeys
+            .GroupBy(key => key.Id)
+            .ToDictionary(group => group.Key, group => group.Last());
+        if (updates.Count == 0)
+        {
+            return;
+        }
+
+        _cachedKeys = _cachedKeys
+            .Select(key => updates.TryGetValue(key.Id, out var updated) ? updated : key)
+            .ToArray();
     }
 
     private static ProviderSeriesLoadStatus ResolveProviderSeriesStatus(
@@ -474,12 +670,13 @@ public sealed class RoutingService : IDisposable
         }
 
         var keyResults = progress.ResultsFor(selectedKeys);
-        _stateStore.Save(new RouteState
+        var nextState = _stateStore.Load() with
         {
             CurrentGroupId = keyResults.Any(result => !result.Success)
                 ? null
                 : targetGroup.Id
-        });
+        };
+        _stateStore.Save(nextState);
 
         return new ManualRoutingResult(
             targetGroup,
@@ -493,7 +690,7 @@ public sealed class RoutingService : IDisposable
     {
         if (progress.HasUpdateAttempt)
         {
-            _stateStore.Save(new RouteState { CurrentGroupId = null });
+            _stateStore.Save(_stateStore.Load() with { CurrentGroupId = null });
         }
     }
 
@@ -501,9 +698,11 @@ public sealed class RoutingService : IDisposable
         IAIHubApiClient client,
         DateTimeOffset now,
         bool forceRefresh,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireLunaHealth = false)
     {
-        if (!forceRefresh && now < _accountCacheExpiresAt && _cachedKeys.Count > 0)
+        if (!forceRefresh && now < _accountCacheExpiresAt && _cachedKeys.Count > 0 &&
+            (!requireLunaHealth || _modelHealthLoaded))
         {
             if (_cacheHitRateStatus.Available)
             {
@@ -515,25 +714,46 @@ public sealed class RoutingService : IDisposable
         var groupsTask = client.GetAvailableGroupsAsync(cancellationToken);
         var ratesTask = client.GetUserGroupRatesAsync(cancellationToken);
         var keysTask = client.GetAllKeysAsync(cancellationToken);
-        var cacheHitRatesTask = _settings.ProviderSeriesWeight > 0
+        var shouldLoadProviderReferences = _settings.ProviderSeriesWeight > 0 || requireLunaHealth;
+        var cacheHitRatesTask = shouldLoadProviderReferences
             ? LoadProviderCacheHitRatesAsync(
                 client,
                 _settings.ProviderSeriesTimezone,
                 cancellationToken)
-            : Task.FromResult<(IReadOnlyDictionary<long, double> Rates, ProviderCacheHitRateLoadStatus Status)>(
-                (new Dictionary<long, double>(), ProviderCacheHitRateLoadStatus.Disabled));
+            : Task.FromResult<(
+                IReadOnlyDictionary<long, double> Rates,
+                IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> ModelHealthByGroup,
+                ProviderCacheHitRateLoadStatus Status)>(
+                (new Dictionary<long, double>(),
+                    new Dictionary<long, IReadOnlyDictionary<string, string>>(),
+                    ProviderCacheHitRateLoadStatus.Disabled));
         await Task.WhenAll(groupsTask, ratesTask, keysTask, cacheHitRatesTask);
         _cachedGroups = await groupsTask;
         _cachedRates = await ratesTask;
         _cachedKeys = await keysTask;
         var cacheHitRates = await cacheHitRatesTask;
-        _cachedCacheHitRates = cacheHitRates.Rates;
-        _cacheHitRateStatus = cacheHitRates.Status;
+        _cachedCacheHitRates = _settings.ProviderSeriesWeight > 0
+            ? cacheHitRates.Rates
+            : new Dictionary<long, double>();
+        if (shouldLoadProviderReferences)
+        {
+            _cachedModelHealthByGroup = cacheHitRates.ModelHealthByGroup;
+            _modelHealthLoaded = true;
+        }
+        else
+        {
+            _cachedModelHealthByGroup = new Dictionary<long, IReadOnlyDictionary<string, string>>();
+            _modelHealthLoaded = false;
+        }
+        _cacheHitRateStatus = _settings.ProviderSeriesWeight > 0
+            ? cacheHitRates.Status
+            : ProviderCacheHitRateLoadStatus.Disabled;
         _accountCacheExpiresAt = now.AddSeconds(Math.Clamp(_settings.AccountCacheSeconds, 30, 3600));
     }
 
     private static async Task<(
         IReadOnlyDictionary<long, double> Rates,
+        IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> ModelHealthByGroup,
         ProviderCacheHitRateLoadStatus Status)> LoadProviderCacheHitRatesAsync(
         IAIHubApiClient client,
         string timezone,
@@ -542,12 +762,19 @@ public sealed class RoutingService : IDisposable
         try
         {
             var page = await client.GetProviderCacheHitRatesAsync(timezone, cancellationToken);
-            return page.Groups.Count == 0
-                ? (new Dictionary<long, double>(), ProviderCacheHitRateLoadStatus.Unavailable(
-                    "供应商缓存命中率没有有效样本，已沿用基础评分。"))
-                : (page.Groups, ProviderCacheHitRateLoadStatus.Live);
+            return (
+                page.Groups,
+                page.ModelHealthByGroup,
+                page.Groups.Count == 0
+                    ? ProviderCacheHitRateLoadStatus.Unavailable(
+                        "供应商缓存命中率没有有效样本，已沿用基础评分。")
+                    : ProviderCacheHitRateLoadStatus.Live);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (AIHubApiException exception) when (exception.IsAuthenticationFailure)
         {
             throw;
         }
@@ -565,7 +792,10 @@ public sealed class RoutingService : IDisposable
                 InvalidDataException => "供应商缓存命中率数据不可用，已沿用基础评分。",
                 _ => "供应商缓存命中率加载失败，已沿用基础评分。"
             };
-            return (new Dictionary<long, double>(), ProviderCacheHitRateLoadStatus.Unavailable(message));
+            return (
+                new Dictionary<long, double>(),
+                new Dictionary<long, IReadOnlyDictionary<string, string>>(),
+                ProviderCacheHitRateLoadStatus.Unavailable(message));
         }
     }
 

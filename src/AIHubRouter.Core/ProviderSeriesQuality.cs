@@ -4,6 +4,7 @@ internal static class ProviderSeriesQuality
 {
     // ha-min: 至少两次探测排除单次偶然值；样本量差异扩大时升级为连续置信度。
     private const int MinimumProbeSamples = 2;
+    private const double CacheHitRateQualityWeight = 1.5;
 
     public static IReadOnlyDictionary<long, double> Calculate(
         IReadOnlyCollection<RouteCandidate> candidates,
@@ -53,9 +54,22 @@ internal static class ProviderSeriesQuality
             {
                 components.Add(candidatesByGroup[groupId].Provider.CacheHitRate!.Value);
             }
-            if (components.Count > 0)
+            var componentWeight = (double)components.Count;
+            if (hasCompleteCacheHitRates)
             {
-                result[groupId] = components.Average();
+                componentWeight += CacheHitRateQualityWeight - 1;
+            }
+            if (componentWeight > 0)
+            {
+                var total = components.Sum();
+                if (hasCompleteCacheHitRates)
+                {
+                    total +=
+                        candidatesByGroup[groupId].Provider.CacheHitRate!.Value *
+                        (CacheHitRateQualityWeight - 1);
+                }
+
+                result[groupId] = total / componentWeight;
             }
         }
 

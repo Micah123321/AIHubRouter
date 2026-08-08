@@ -43,6 +43,22 @@ public sealed class WebRouterCoordinator : BackgroundService
         try
         {
             ValidateSettings(request);
+            var selectedKeyIds = NormalizeIds(request.SelectedKeyIds);
+            var lunaSelectedKeyIds = request.LunaSelectedKeyIds is null
+                ? NormalizeIds(_settings.LunaSelectedKeyIds)
+                : NormalizeIds(request.LunaSelectedKeyIds);
+            var overlappingKeyIds = selectedKeyIds.Intersect(lunaSelectedKeyIds).ToArray();
+            if (overlappingKeyIds.Length > 0)
+            {
+                throw new InvalidOperationException(
+                    $"主路由与 Luna 路由不能选择同一 Key：{string.Join(", ", overlappingKeyIds)}。请取消其中一侧的选择后重试。");
+            }
+            if (lunaSelectedKeyIds.Length > 0 && selectedKeyIds.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    "Luna 路由不能脱离主路由单独运行，请先选择主路由 Key。" );
+            }
+
             var oldSettings = _settings;
             var credentials = _credentials with
             {
@@ -76,9 +92,11 @@ public sealed class WebRouterCoordinator : BackgroundService
                 ThemeMode = request.ThemeMode,
                 KeySelectionInitialized = _lastResult?.Keys.Count > 0
                     ? true
-                    : request.SelectedKeyIds.Length > 0 ||
+                    : selectedKeyIds.Length > 0 ||
+                        lunaSelectedKeyIds.Length > 0 ||
                         (_settings.KeySelectionInitialized && _settings.SelectedKeyIds.Length > 0),
-                SelectedKeyIds = request.SelectedKeyIds.Where(id => id > 0).Distinct().Order().ToArray(),
+                SelectedKeyIds = selectedKeyIds,
+                LunaSelectedKeyIds = lunaSelectedKeyIds,
                 BlacklistedGroupIds = request.BlacklistedGroupIds.Where(id => id > 0).Distinct().Order().ToArray()
             };
 
@@ -109,6 +127,13 @@ public sealed class WebRouterCoordinator : BackgroundService
                     !oldSettings.BlacklistedGroupIds.SequenceEqual(settings.BlacklistedGroupIds))
                 {
                     _lastResult = null;
+                }
+                else if (!oldSettings.LunaSelectedKeyIds.SequenceEqual(settings.LunaSelectedKeyIds) &&
+                         _lastResult is { } staleResult)
+                {
+                    _lastResult = staleResult with { LunaRoute = null };
+                    _status = "配置已保存；Luna 选择已更新，请重新路由。";
+                    _statusKind = "warning";
                 }
             }
 
@@ -267,10 +292,13 @@ public sealed class WebRouterCoordinator : BackgroundService
             {
                 _lastResult = result;
                 _lastUpdatedAt = result.CompletedAt;
-                _status = $"{ReasonText(result.Decision.Reason)}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。";
+                var lunaStatus = BuildLunaStatus(result.LunaRoute);
+                _status = $"{ReasonText(result.Decision.Reason)}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。" +
+                    (lunaStatus is null ? string.Empty : $" {lunaStatus}");
                 _statusKind = result.FailedKeyCount > 0
                     ? "error"
-                    : result.ProviderSeriesStatus.IsDegraded ||
+                    : result.LunaRoute is { HealthAvailable: false } ||
+                        result.ProviderSeriesStatus.IsDegraded ||
                         result.ProviderCacheHitRateStatus.IsDegraded
                         ? "warning"
                         : "success";
@@ -297,7 +325,8 @@ public sealed class WebRouterCoordinator : BackgroundService
         {
             resetSelection = _lastResult is null &&
                 _settings.KeySelectionInitialized &&
-                _settings.SelectedKeyIds.Length == 0;
+                _settings.SelectedKeyIds.Length == 0 &&
+                _settings.LunaSelectedKeyIds.Length == 0;
             if (resetSelection)
             {
                 _settings = _settings with { KeySelectionInitialized = false };
@@ -318,7 +347,9 @@ public sealed class WebRouterCoordinator : BackgroundService
         var effectiveSelectedIds = settings.KeySelectionInitialized
             ? settings.SelectedKeyIds
             : result?.SelectedKeyIds.ToArray() ?? settings.SelectedKeyIds;
+        var effectiveLunaSelectedIds = NormalizeIds(settings.LunaSelectedKeyIds);
         var selectedIds = effectiveSelectedIds.ToHashSet();
+        var lunaSelectedIds = effectiveLunaSelectedIds.ToHashSet();
         var blacklistedIds = settings.BlacklistedGroupIds.ToHashSet();
         var groupsById = result?.Groups.GroupBy(group => group.Id)
             .ToDictionary(group => group.Key, group => group.First()) ?? [];
@@ -356,7 +387,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 key.Status,
                 key.GroupId,
                 key.Group?.Name ?? "未绑定",
-                selectedIds.Contains(key.Id)))
+                selectedIds.Contains(key.Id),
+                lunaSelectedIds.Contains(key.Id)))
             .ToArray();
 
         var target = result?.Decision.Target;
@@ -364,6 +396,11 @@ public sealed class WebRouterCoordinator : BackgroundService
             ? result is null ? "目标分组：-" : "目标分组：无可用候选"
             : $"目标分组：{target.Group.Id} / 方案：{DisplayPlan(target.Provider, target.Group)} / " +
                 $"{target.EffectiveMultiplier:0.####}x / {FormatLatency(target.Provider.FirstTokenLatencyMs)}";
+        var lunaSummary = BuildLunaSummary(result?.LunaRoute, effectiveLunaSelectedIds.Length);
+        if (lunaSummary is not null)
+        {
+            candidateSummary += $" · {lunaSummary}";
+        }
 
         return new WebDashboard(
             new WebSettings(
@@ -387,6 +424,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _store.CredentialProtection,
                 settings.ThemeMode,
                 effectiveSelectedIds,
+                effectiveLunaSelectedIds,
                 settings.BlacklistedGroupIds),
             providers,
             groups,
@@ -575,6 +613,26 @@ public sealed class WebRouterCoordinator : BackgroundService
         };
         policy.Validate();
     }
+
+    private static long[] NormalizeIds(IEnumerable<long>? ids) =>
+        (ids ?? []).Where(id => id > 0).Distinct().Order().ToArray();
+
+    private static string? BuildLunaSummary(LunaRouteResult? lunaRoute, int configuredKeyCount)
+    {
+        if (lunaRoute is null)
+        {
+            return configuredKeyCount > 0 ? $"Luna 目标：- / 已选 {configuredKeyCount} 个 Key" : null;
+        }
+
+        var target = lunaRoute.Decision?.Target;
+        var targetText = target is null
+            ? "无可用候选"
+            : $"{target.Group.Id} / 方案：{DisplayPlan(target.Provider, target.Group)}";
+        return $"Luna 目标：{targetText} / 过滤 {lunaRoute.FilteredGroupCount} 个分组";
+    }
+
+    private static string? BuildLunaStatus(LunaRouteResult? lunaRoute) =>
+        lunaRoute is null ? null : $"Luna：{lunaRoute.HealthMessage}";
 
     private static PersistentAppSettings ApplyEnvironmentSettings(PersistentAppSettings settings)
     {
