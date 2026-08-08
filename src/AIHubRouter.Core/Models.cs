@@ -195,6 +195,7 @@ public sealed record BalancedRoutingPolicy
     public const double DefaultMaximumPriceMultiplier = 0.15;
     public const double DefaultConfidenceImpact = 1;
     public const double DefaultMinimumConfidence = 0.90;
+    public const double DefaultProviderSeriesWeight = 0.20;
 
     public string Platform { get; init; } = "openai";
     public RoutingMode Mode { get; init; } = RoutingMode.Balanced;
@@ -205,6 +206,7 @@ public sealed record BalancedRoutingPolicy
     public double MaximumPriceMultiplier { get; init; } = DefaultMaximumPriceMultiplier;
     public double ConfidenceImpact { get; init; } = DefaultConfidenceImpact;
     public double MinimumConfidence { get; init; } = DefaultMinimumConfidence;
+    public double ProviderSeriesWeight { get; init; } = DefaultProviderSeriesWeight;
     public IReadOnlyCollection<long> BlacklistedGroupIds { get; init; } = [];
 
     public double PriceWeight => PriceWeightOverride ?? Mode switch
@@ -263,6 +265,13 @@ public sealed record BalancedRoutingPolicy
                 nameof(MinimumConfidence),
                 "最低置信度必须在 0 到 1 之间。");
         }
+
+        if (ProviderSeriesWeight is < 0 or > 1 || !double.IsFinite(ProviderSeriesWeight))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ProviderSeriesWeight),
+                "供应商序列权重必须在 0 到 1 之间。");
+        }
     }
 }
 
@@ -275,7 +284,9 @@ public sealed record RouteEvaluation(
     double PriceWeight,
     double LatencyWeight,
     double ConfidenceImpact,
-    double MinimumConfidence);
+    double MinimumConfidence,
+    IReadOnlyDictionary<long, double> ProviderSeriesScores,
+    double ProviderSeriesWeight);
 
 public enum RouteDecisionReason
 {

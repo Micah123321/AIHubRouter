@@ -10,6 +10,14 @@ var tests = new (string Name, Action Body)[]
     ("Token extraction from cookie", TestCookieTokenExtraction),
     ("Null provider availability is unavailable", TestNullProviderAvailabilityIsUnavailable),
     ("Usage stats map real TTFT and last use", TestUsageStatsMapRealTtftAndLastUse),
+    ("Provider series request parses stable fields", TestProviderSeriesRequestParsesStableFields),
+    ("Provider series rejects invalid payload", TestProviderSeriesRejectsInvalidPayload),
+    ("Provider series weight augments base score", TestProviderSeriesWeightAugmentsBaseScore),
+    ("Provider series zero weight preserves score", TestProviderSeriesZeroWeightPreservesScore),
+    ("Fresh generation does not hide stale provider samples", TestFreshGenerationDoesNotHideStaleProviderSamples),
+    ("Sparse provider series is not rewarded", TestSparseProviderSeriesIsNotRewarded),
+    ("Missing provider latency is not rewarded", TestMissingProviderLatencyIsNotRewarded),
+    ("Stale provider group is excluded from quality", TestStaleProviderGroupIsExcludedFromQuality),
     ("Continuous freshness changes confidence", TestContinuousFreshnessChangesConfidence),
     ("Confidence penalizes latency score", TestConfidencePenalizesLatencyScore),
     ("Confidence impact controls latency penalty", TestConfidenceImpactControlsLatencyPenalty),
@@ -46,9 +54,13 @@ var tests = new (string Name, Action Body)[]
     ("Profile settings changes signal hot reload", TestProfileSettingsChangeSignal),
     ("Unavailable credential storage fails before settings write", TestUnavailableCredentialStorageIsAtomic),
     ("Legacy hard-gate settings are ignored", TestLegacyHardGateSettingsAreIgnored),
+    ("Provider series settings roundtrip", TestProviderSeriesSettingsRoundtrip),
     ("Group stickiness persists as policy override", TestGroupStickinessPersistsAsPolicyOverride),
     ("Audit log writes valid JSON and rotates safely", TestAuditLogWritesValidJsonAndRotates),
     ("Dry run never updates a key", TestDryRunNeverUpdatesKey),
+    ("Provider series cache and failure fallback", TestProviderSeriesCacheAndFailureFallback),
+    ("Provider series cache rejects age-expired page", TestProviderSeriesCacheRejectsAgeExpiredPage),
+    ("Provider series caller cancellation propagates", TestProviderSeriesCallerCancellationPropagates),
     ("Automatic route honors explicit multi-key selection", TestAutomaticRouteHonorsExplicitMultiKeySelection),
     ("Manual route updates selected keys and state", TestManualRouteUpdatesSelectedKeysAndState),
     ("Manual route honors explicit multi-key selection", TestManualRouteHonorsExplicitMultiKeySelection),
@@ -198,6 +210,263 @@ static void TestUsageStatsMapRealTtftAndLastUse()
         "Last use or sample count was not mapped to candidate freshness.");
     Assert(provider.LatencyConfidence is > 0.99 and <= 1,
         "Fresh aggregate confidence did not reflect sample volume.");
+}
+
+static void TestProviderSeriesRequestParsesStableFields()
+{
+    Uri? requestUri = null;
+    var handler = new StubHttpMessageHandler(request =>
+    {
+        requestUri = request.RequestUri;
+        return JsonResponse("""
+            {
+              "code": 0,
+              "message": "success",
+              "data": {
+                "generated_at": "2026-08-08T10:00:00Z",
+                "range": "6h",
+                "items": [{
+                  "group_id": 7,
+                  "probe": [
+                    [1786183200000, 1, 100, 90.2, 19],
+                    [1786183260000, 0, 0, "provider_probe", "http_status"],
+                    [1786183320000, 1, 300, null, null]
+                  ],
+                  "user_ttft": [
+                    {"at":"2026-08-08T09:58:00Z","avg_ttft_ms":1000,"sample_count":2,"has_data":true},
+                    {"at":"2026-08-08T09:59:00Z","avg_ttft_ms":500,"sample_count":1,"has_data":true},
+                    {"at":"2026-08-08T10:00:00Z","avg_ttft_ms":1,"sample_count":99,"has_data":false}
+                  ]
+                },{
+                  "group_id": 9007199254740993,
+                  "probe": [[1786183200000, 1, 100]],
+                  "user_ttft": {"at":"2026-08-08T10:00:00Z","avg_ttft_ms":100,"sample_count":2,"has_data":true}
+                }]
+              }
+            }
+            """);
+    });
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    var page = client.GetProviderSeriesAsync("6h", "Asia/Shanghai")
+        .GetAwaiter()
+        .GetResult();
+    var metrics = page.Groups[7];
+
+    var query = requestUri?.Query ?? string.Empty;
+    Assert(requestUri?.AbsolutePath == "/api/v1/public/providers/series",
+        "Provider series used the wrong endpoint.");
+    Assert(query.Contains("range=6h", StringComparison.Ordinal) &&
+           query.Contains("timezone=Asia%2FShanghai", StringComparison.OrdinalIgnoreCase),
+        "Provider series did not URI-encode its query parameters.");
+    Assert(metrics.ProbeSampleCount == 3 &&
+           Math.Abs(metrics.ProbeSuccessRate!.Value - 2d / 3d) < 0.0001,
+        "Probe success rate was not aggregated.");
+    Assert(Math.Abs(metrics.AverageProbeLatencyMs!.Value - 200) < 0.0001,
+        "Failed probes affected successful probe latency.");
+    Assert(metrics.UserTtftSampleCount == 3 &&
+           Math.Abs(metrics.AverageUserTtftMs!.Value - 2500d / 3d) < 0.0001,
+        "User TTFT buckets were not weighted by sample_count.");
+    Assert(page.Groups.ContainsKey(9_007_199_254_740_993),
+        "A large Int64 group_id lost precision during parsing.");
+}
+
+static void TestProviderSeriesRejectsInvalidPayload()
+{
+    var handler = new StubHttpMessageHandler(_ => JsonResponse("""
+        {"code":0,"message":"success","data":{"range":"6h"}}
+        """));
+    using var client = new AIHubClient("https://example.test", messageHandler: handler);
+
+    var rejected = false;
+    try
+    {
+        client.GetProviderSeriesAsync("6h", "Asia/Shanghai").GetAwaiter().GetResult();
+    }
+    catch (AIHubApiException)
+    {
+        rejected = true;
+    }
+
+    Assert(rejected, "Provider series accepted a payload without items.");
+}
+
+static void TestProviderSeriesWeightAugmentsBaseScore()
+{
+    var now = DateTimeOffset.UtcNow;
+    var providers = new[]
+    {
+        Provider(1, 0.02, true, 1, now, latency: 1_000),
+        Provider(2, 0.021, true, 1, now, latency: 900)
+    };
+    var groups = new[] { Group(1), Group(2) };
+    var metrics = new Dictionary<long, ProviderSeriesMetrics>
+    {
+        [1] = new(1, 0.50, 1_000, 1_000, 20, 20, now),
+        [2] = new(2, 1.00, 500, 500, 20, 20, now)
+    };
+    var baseEvaluation = RoutingEngine.Evaluate(
+        providers,
+        groups,
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0 },
+        now,
+        metrics);
+    var weightedEvaluation = RoutingEngine.Evaluate(
+        providers,
+        groups,
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0.50 },
+        now,
+        metrics);
+    var baseScore = RoutingEngine.CalculateWeightedScore(
+        baseEvaluation,
+        baseEvaluation.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+    var weightedScore = RoutingEngine.CalculateWeightedScore(
+        weightedEvaluation,
+        weightedEvaluation.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+
+    Assert(baseScore is { } original &&
+           weightedScore is { } augmented &&
+           augmented > original + 0.40,
+        "Provider quality did not augment the existing tradeoff score.");
+}
+
+static void TestProviderSeriesZeroWeightPreservesScore()
+{
+    var now = DateTimeOffset.UtcNow;
+    var providers = new[]
+    {
+        Provider(1, 0.02, true, 1, now, latency: 1_000),
+        Provider(2, 0.021, true, 1, now, latency: 900)
+    };
+    var policy = Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0 };
+    var withoutSeries = RoutingEngine.Evaluate(
+        providers,
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        policy,
+        now);
+    var withSeries = RoutingEngine.Evaluate(
+        providers,
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        policy,
+        now,
+        new Dictionary<long, ProviderSeriesMetrics>
+        {
+            [1] = new(1, 0, 10_000, 10_000, 20, 20, now),
+            [2] = new(2, 1, 1, 1, 20, 20, now)
+        });
+    var withoutScore = RoutingEngine.CalculateWeightedScore(
+        withoutSeries,
+        withoutSeries.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+    var withScore = RoutingEngine.CalculateWeightedScore(
+        withSeries,
+        withSeries.EligibleCandidates.Single(candidate => candidate.Group.Id == 2));
+
+    Assert(withoutScore is { } original &&
+           withScore is { } compatible &&
+           Math.Abs(original - compatible) < 1e-12,
+        "Zero provider series weight changed the legacy score.");
+}
+
+static void TestFreshGenerationDoesNotHideStaleProviderSamples()
+{
+    var now = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        now,
+        providerSeries: _ => new ProviderSeriesPage(
+            now,
+            "6h",
+            new Dictionary<long, ProviderSeriesMetrics>
+            {
+                [2] = new(2, 1, 500, 500, 20, 20, now.AddHours(-1))
+            }));
+    using var service = new RoutingService(
+        new PersistentAppSettings
+        {
+            KeySelectionInitialized = true,
+            SelectedKeyIds = [10]
+        },
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => now);
+
+    var result = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
+
+    Assert(!result.ProviderSeriesStatus.Available,
+        "A fresh generated_at value hid stale provider samples.");
+}
+
+static void TestSparseProviderSeriesIsNotRewarded()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 1, now, latency: 1_000),
+            Provider(2, 0.021, true, 1, now, latency: 900)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0.50 },
+        now,
+        new Dictionary<long, ProviderSeriesMetrics>
+        {
+            [1] = new(1, 0.90, 1_000, 1_000, 20, 20, now),
+            [2] = new(2, 1.00, null, null, 1, 0, now)
+        });
+
+    Assert(evaluation.ProviderSeriesScores.ContainsKey(1) &&
+           !evaluation.ProviderSeriesScores.ContainsKey(2),
+        "A sparse one-probe provider received a full quality score.");
+}
+
+static void TestMissingProviderLatencyIsNotRewarded()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 1, now, latency: 1_000),
+            Provider(2, 0.021, true, 1, now, latency: 900)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0.50 },
+        now,
+        new Dictionary<long, ProviderSeriesMetrics>
+        {
+            [1] = new(1, 1.00, null, 1_000, 20, 20, now),
+            [2] = new(2, 0.50, 500, 500, 20, 20, now)
+        });
+
+    Assert(!evaluation.ProviderSeriesScores.ContainsKey(1) &&
+           evaluation.ProviderSeriesScores.ContainsKey(2),
+        "A provider without probe latency received a quality score.");
+}
+
+static void TestStaleProviderGroupIsExcludedFromQuality()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.02, true, 1, now, latency: 1_000),
+            Provider(2, 0.021, true, 1, now, latency: 900)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Balanced) with { ProviderSeriesWeight = 0.50 },
+        now,
+        new Dictionary<long, ProviderSeriesMetrics>
+        {
+            [1] = new(1, 1.00, 1_000, 1_000, 20, 20, now.AddHours(-1)),
+            [2] = new(2, 0.50, 500, 500, 20, 20, now)
+        });
+
+    Assert(!evaluation.ProviderSeriesScores.ContainsKey(1) &&
+           evaluation.ProviderSeriesScores.ContainsKey(2),
+        "A stale provider group remained in quality comparison.");
 }
 
 static void TestStaleLastUseIsExcluded()
@@ -1005,6 +1274,140 @@ static void TestDryRunNeverUpdatesKey()
     Assert(api.UpdateCalls == 0, "Dry run called UpdateKeyGroupAsync.");
 }
 
+static void TestProviderSeriesCacheAndFailureFallback()
+{
+    var clock = DateTimeOffset.UtcNow;
+    var api = new StubAIHubApiClient(
+        clock,
+        providerSeries: call =>
+        {
+            if (call == 2)
+            {
+                throw new TaskCanceledException("request timeout");
+            }
+
+            if (call >= 3)
+            {
+                throw new HttpRequestException("sensitive upstream detail");
+            }
+
+            return new ProviderSeriesPage(
+                clock,
+                "6h",
+                new Dictionary<long, ProviderSeriesMetrics>
+                {
+                    [2] = new(2, 1, 500, 500, 20, 20, clock)
+                });
+        });
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        ProviderSeriesCacheSeconds = 60
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => clock);
+
+    var live = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
+    var callsAfterLive = api.ProviderSeriesCalls;
+    var cached = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
+    var callsAfterCache = api.ProviderSeriesCalls;
+    var forcedFallback = service.RunOnceAsync(
+        dryRun: true,
+        forceAccountRefresh: true).GetAwaiter().GetResult();
+    clock = clock.AddSeconds(61);
+    var expiredFallback = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
+
+    Assert(live.ProviderSeriesStatus.Available && !live.ProviderSeriesStatus.FromCache,
+        "Initial provider series request was not reported as live.");
+    Assert(cached.ProviderSeriesStatus.FromCache &&
+           callsAfterLive == 1 &&
+           callsAfterCache == callsAfterLive &&
+           api.ProviderSeriesCalls == 3,
+        "A normal routing cycle did not use the provider series cache.");
+    Assert(forcedFallback.ProviderSeriesStatus.Available &&
+           forcedFallback.ProviderSeriesStatus.FromCache &&
+           forcedFallback.ProviderSeriesStatus.IsDegraded,
+        "A failed forced refresh did not preserve the fresh cache.");
+    Assert(!expiredFallback.ProviderSeriesStatus.Available &&
+           !expiredFallback.ProviderSeriesStatus.Message.Contains(
+               "sensitive upstream detail",
+               StringComparison.Ordinal),
+        "An expired cache failure did not safely fall back to the base score.");
+}
+
+static void TestProviderSeriesCacheRejectsAgeExpiredPage()
+{
+    var clock = DateTimeOffset.UtcNow;
+    var pageTime = clock.AddMinutes(-14);
+    var api = new StubAIHubApiClient(
+        clock,
+        providerSeries: call => call == 1
+            ? new ProviderSeriesPage(
+                pageTime,
+                "6h",
+                new Dictionary<long, ProviderSeriesMetrics>
+                {
+                    [2] = new(2, 1, 500, 500, 20, 20, pageTime)
+                })
+            : throw new TaskCanceledException("request timeout"));
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        ProviderSeriesCacheSeconds = 3600
+    };
+    using var service = new RoutingService(
+        settings,
+        new PersistentCredentials { BearerToken = "test-token" },
+        new MemoryRouteStateStore(),
+        new StubAIHubClientFactory(api),
+        utcNow: () => clock);
+
+    var live = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
+    clock = clock.AddMinutes(2);
+    var stale = service.RunOnceAsync(dryRun: true).GetAwaiter().GetResult();
+
+    Assert(live.ProviderSeriesStatus.Available &&
+           !stale.ProviderSeriesStatus.Available,
+        "A cache entry past maximum data age remained available inside its TTL.");
+}
+
+static void TestProviderSeriesCallerCancellationPropagates()
+{
+    var now = DateTimeOffset.UtcNow;
+    using var cancellation = new CancellationTokenSource();
+    cancellation.Cancel();
+    var api = new StubAIHubApiClient(
+        now,
+        providerSeries: _ => throw new OperationCanceledException(cancellation.Token));
+    var settings = new PersistentAppSettings();
+    var cache = new ProviderSeriesCache(settings);
+    var propagated = false;
+
+    try
+    {
+        cache.LoadAsync(
+                api,
+                settings.CreatePolicy(),
+                now,
+                forceRefresh: false,
+                cancellation.Token)
+            .GetAwaiter()
+            .GetResult();
+    }
+    catch (OperationCanceledException)
+    {
+        propagated = true;
+    }
+
+    Assert(propagated, "Caller cancellation was mistaken for a provider series timeout.");
+}
+
 static void TestAutomaticRouteHonorsExplicitMultiKeySelection()
 {
     var now = DateTimeOffset.UtcNow;
@@ -1320,6 +1723,50 @@ static void TestLegacyHardGateSettingsAreIgnored()
         Assert(Math.Abs(speed.PriceWeight - 0.10) < 0.0001 &&
                Math.Abs(speed.LatencyWeight - 0.90) < 0.0001,
             "Speed mode weights are not 10/90.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestProviderSeriesSettingsRoundtrip()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        var store = new AppSettingsStore(
+            directory,
+            new UnavailableCredentialProtector("unit test unavailable protector"));
+        store.Save(
+            new PersistentAppSettings
+            {
+                ProviderSeriesWeight = 0.35,
+                ProviderSeriesCacheSeconds = 600,
+                ProviderSeriesRange = "12h",
+                ProviderSeriesTimezone = "UTC"
+            },
+            null);
+
+        var loaded = store.Load().Settings;
+        var policy = loaded.CreatePolicy();
+        Assert(Math.Abs(policy.ProviderSeriesWeight - 0.35) < 0.0001,
+            "Provider series weight did not reach the routing policy.");
+        Assert(loaded.ProviderSeriesCacheSeconds == 600 &&
+               loaded.ProviderSeriesRange == "12h" &&
+               loaded.ProviderSeriesTimezone == "UTC",
+            "Provider series request and cache settings did not roundtrip.");
+
+        File.WriteAllText(
+            Path.Combine(directory, "settings.json"),
+            """{"providerSeriesRange":null,"providerSeriesTimezone":null}""");
+        var normalized = store.Load().Settings;
+        Assert(normalized.ProviderSeriesRange == "6h" &&
+               normalized.ProviderSeriesTimezone == "Asia/Shanghai",
+            "Null legacy provider series settings were not normalized.");
     }
     finally
     {
@@ -2199,9 +2646,11 @@ sealed class StubAIHubApiClient(
     DateTimeOffset now,
     IReadOnlyList<ApiKeyInfo>? keys = null,
     Func<int, long, long, Exception?>? updateFailure = null,
-    bool supportsRefresh = false) : IAIHubApiClient
+    bool supportsRefresh = false,
+    Func<int, ProviderSeriesPage>? providerSeries = null) : IAIHubApiClient
 {
     public int UpdateCalls { get; private set; }
+    public int ProviderSeriesCalls { get; private set; }
 
     public Task<GroupUsageStatsPage> GetGroupUsageStatsAsync(
         string platform,
@@ -2225,6 +2674,23 @@ sealed class StubAIHubApiClient(
                 }
             ]
         });
+
+    public Task<ProviderSeriesPage> GetProviderSeriesAsync(
+        string range,
+        string timezone,
+        CancellationToken cancellationToken = default)
+    {
+        ProviderSeriesCalls++;
+        var page = providerSeries?.Invoke(ProviderSeriesCalls) ??
+            new ProviderSeriesPage(
+                now,
+                range,
+                new Dictionary<long, ProviderSeriesMetrics>
+                {
+                    [2] = new(2, 1, 500, 500, 20, 20, now)
+                });
+        return Task.FromResult(page);
+    }
 
     public Task<System.Text.Json.JsonElement> ValidateLoginAsync(CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();

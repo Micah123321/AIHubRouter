@@ -104,6 +104,20 @@ function readBoundedNumber(selector, minimum, maximum, label) {
   return value;
 }
 
+function readBoundedInteger(selector, minimum, maximum, label) {
+  const value = Number($(selector).value);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${label}必须是 ${minimum} 到 ${maximum} 之间的整数。`);
+  }
+  return value;
+}
+
+function readRequiredText(selector, label) {
+  const value = $(selector).value.trim();
+  if (!value) throw new Error(`${label}不能为空。`);
+  return value;
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -125,6 +139,10 @@ function hydrateSettings(settings, force = false) {
   $("#maximumPriceMultiplier").value = settings.maximumPriceMultiplier;
   $("#confidenceImpact").value = settings.confidenceImpact;
   $("#minimumConfidence").value = settings.minimumConfidence;
+  $("#providerSeriesWeight").value = settings.providerSeriesWeight;
+  $("#providerSeriesCacheSeconds").value = settings.providerSeriesCacheSeconds;
+  $("#providerSeriesRange").value = settings.providerSeriesRange;
+  $("#providerSeriesTimezone").value = settings.providerSeriesTimezone;
   $("#pollingInterval").value = settings.pollingIntervalSeconds;
   $("#persistCredentials").checked = settings.persistCredentials;
   $("#themeSelect").value = enumValue(settings.themeMode);
@@ -241,7 +259,10 @@ function renderDashboard(dashboard, syncSettings = false) {
   renderGroups(dashboard.groups);
   renderProviders(dashboard.providers);
   renderKeys(dashboard.keys);
-  $("#statusText").textContent = dashboard.status;
+  const providerSeriesMessage = dashboard.providerSeriesStatus?.message || "";
+  $("#statusText").textContent = providerSeriesMessage
+    ? `${dashboard.status} · ${providerSeriesMessage}`
+    : dashboard.status;
   $("#statusDot").className = `status-dot ${dashboard.statusKind}`;
   $("#lastUpdated").textContent = dashboard.lastUpdatedAt ? `更新于 ${formatDate(dashboard.lastUpdatedAt)}` : "";
   updateCredentialState(dashboard.settings);
@@ -266,6 +287,10 @@ function settingsPayload() {
     maximumPriceMultiplier: priceRange.maximum,
     confidenceImpact: readBoundedNumber("#confidenceImpact", 0, 2, "置信度影响强度"),
     minimumConfidence: readBoundedNumber("#minimumConfidence", 0, 1, "最低置信度"),
+    providerSeriesWeight: readBoundedNumber("#providerSeriesWeight", 0, 1, "供应商序列权重"),
+    providerSeriesCacheSeconds: readBoundedInteger("#providerSeriesCacheSeconds", 30, 3600, "供应商序列缓存"),
+    providerSeriesRange: readRequiredText("#providerSeriesRange", "供应商序列范围"),
+    providerSeriesTimezone: readRequiredText("#providerSeriesTimezone", "供应商序列时区"),
     pollingIntervalSeconds: Number.parseInt($("#pollingInterval").value, 10),
     persistCredentials: $("#persistCredentials").checked,
     themeMode: $("#themeSelect").value,

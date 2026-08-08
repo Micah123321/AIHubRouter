@@ -47,6 +47,8 @@ public sealed record RoutingCycleResult(
     IReadOnlyList<ApiKeyInfo> Keys,
     IReadOnlyList<long> SelectedKeyIds,
     IReadOnlyList<KeyRouteResult> KeyResults,
+    IReadOnlyDictionary<long, ProviderSeriesMetrics> ProviderSeriesMetrics,
+    ProviderSeriesLoadStatus ProviderSeriesStatus,
     bool DryRun,
     DateTimeOffset CompletedAt)
 {
@@ -112,6 +114,7 @@ public sealed class RoutingService : IDisposable
     private readonly ICloudflareChallengeSolver? _cloudflareChallengeSolver;
     private readonly Func<PersistentCredentials, CancellationToken, Task>? _persistCredentials;
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly ProviderSeriesCache _providerSeriesCache;
     private PersistentCredentials _credentials;
     private AuthSession? _currentSession;
     private IAIHubApiClient? _sessionClient;
@@ -138,6 +141,7 @@ public sealed class RoutingService : IDisposable
         _cloudflareChallengeSolver = cloudflareChallengeSolver;
         _persistCredentials = persistCredentials;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        _providerSeriesCache = new ProviderSeriesCache(settings);
 
         if (!string.IsNullOrWhiteSpace(credentials.BearerToken) ||
             !string.IsNullOrWhiteSpace(credentials.RefreshToken))
@@ -240,9 +244,16 @@ public sealed class RoutingService : IDisposable
             policy.Platform,
             GroupUsageEstimator.DefaultSampleLimit,
             cancellationToken);
+        var providerSeriesTask = _providerSeriesCache.LoadAsync(
+            client,
+            policy,
+            now,
+            forceAccountRefresh,
+            cancellationToken);
         await RefreshAccountDataAsync(client, now, forceAccountRefresh, cancellationToken);
 
         var usageStats = new[] { await usageStatsTask };
+        var providerSeries = await providerSeriesTask;
         var providers = GroupUsageEstimator.Estimate(
             usageStats,
             now,
@@ -262,7 +273,11 @@ public sealed class RoutingService : IDisposable
             _cachedGroups,
             _cachedRates,
             policy,
-            now);
+            now,
+            providerSeries.Page?.Groups);
+        var providerSeriesStatus = ResolveProviderSeriesStatus(
+            providerSeries.Status,
+            evaluation);
         var decisionResult = RouteDecisionEngine.Decide(
             evaluation,
             state,
@@ -331,8 +346,32 @@ public sealed class RoutingService : IDisposable
             _cachedKeys,
             selectedKeys.Select(key => key.Id).ToArray(),
             keyResults,
+            providerSeries.Page?.Groups ?? new Dictionary<long, ProviderSeriesMetrics>(),
+            providerSeriesStatus,
             dryRun,
             _utcNow());
+    }
+
+    private static ProviderSeriesLoadStatus ResolveProviderSeriesStatus(
+        ProviderSeriesLoadStatus loadStatus,
+        RouteEvaluation evaluation)
+    {
+        if (!loadStatus.Available)
+        {
+            return loadStatus;
+        }
+
+        if (evaluation.Baseline is { } baseline &&
+            evaluation.ProviderSeriesScores.ContainsKey(baseline.Group.Id))
+        {
+            return loadStatus;
+        }
+
+        return new ProviderSeriesLoadStatus(
+            false,
+            loadStatus.FromCache,
+            true,
+            "供应商序列没有可比较的基准，已沿用基础评分。");
     }
 
     private async Task<ManualRoutingResult> RouteManuallyCoreAsync(

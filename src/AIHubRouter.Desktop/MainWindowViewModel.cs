@@ -49,6 +49,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         (decimal)BalancedRoutingPolicy.DefaultConfidenceImpact;
     [ObservableProperty] private decimal _minimumConfidence =
         (decimal)BalancedRoutingPolicy.DefaultMinimumConfidence;
+    [ObservableProperty] private decimal _providerSeriesWeight =
+        (decimal)BalancedRoutingPolicy.DefaultProviderSeriesWeight;
+    [ObservableProperty] private decimal _providerSeriesCacheSeconds = 300;
+    [ObservableProperty] private string _providerSeriesRange = "6h";
+    [ObservableProperty] private string _providerSeriesTimezone = "Asia/Shanghai";
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
     [ObservableProperty] private bool _persistCredentials;
     [ObservableProperty]
@@ -58,6 +63,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _autoRouting;
     [ObservableProperty] private string _status = "就绪";
     [ObservableProperty] private bool _statusIsSuccess;
+    [ObservableProperty] private bool _statusIsWarning;
     [ObservableProperty] private bool _statusIsError;
     [ObservableProperty] private string _candidateSummary = "目标分组：-";
     [ObservableProperty] private string _connectionSummary = "API-only / Balanced";
@@ -134,6 +140,14 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnMinimumConfidenceChanged(decimal value) => MarkRoutingSettingsChanged();
 
+    partial void OnProviderSeriesWeightChanged(decimal value) => MarkRoutingSettingsChanged();
+
+    partial void OnProviderSeriesCacheSecondsChanged(decimal value) => MarkRoutingSettingsChanged();
+
+    partial void OnProviderSeriesRangeChanged(string value) => MarkRoutingSettingsChanged();
+
+    partial void OnProviderSeriesTimezoneChanged(string value) => MarkRoutingSettingsChanged();
+
     private void MarkRoutingSettingsChanged()
     {
         _routingSettingsStale = true;
@@ -196,7 +210,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception)
         {
-            SetStatus(exception.Message, success: false);
+            SetStatus(GetSafeMessage(exception), success: false);
         }
     }
 
@@ -336,7 +350,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception)
         {
-            SetStatus(exception.Message, success: false);
+            SetStatus(GetSafeMessage(exception), success: false);
             AutoRouting = false;
         }
     }
@@ -538,21 +552,28 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             if (stillRoutedManually && manualGroupAvailable)
             {
                 UpdateManualCandidateSummary(manualGroupId);
-                SetStatus($"手动路由监控正常；分组 {manualGroupId} 可用。", success: true);
+                SetRoutingStatus(
+                    $"手动路由监控正常；分组 {manualGroupId} 可用。",
+                    result,
+                    success: true);
                 return;
             }
 
             ExitManualRoutingMode();
             UpdateAutomaticCandidateSummary(result);
-            SetStatus("手动分组状态异常或已不再生效，已启用自动路由。", success: true);
+            SetRoutingStatus(
+                "手动分组状态异常或已不再生效，已启用自动路由。",
+                result,
+                success: true);
             AutoRouting = true;
             return;
         }
 
         UpdateAutomaticCandidateSummary(result);
 
-        SetStatus(
+        SetRoutingStatus(
             $"{result.Decision.Reason}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。",
+            result,
             result.FailedKeyCount == 0);
     }
 
@@ -577,7 +598,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             result.Groups,
             result.UserGroupRates,
             policy,
-            result.CompletedAt);
+            result.CompletedAt,
+            result.ProviderSeriesMetrics);
 
         foreach (var provider in Providers)
         {
@@ -725,6 +747,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             MaximumPriceMultiplierText = FormatPriceMultiplier(settings.MaximumPriceMultiplier);
             ConfidenceImpact = (decimal)settings.ConfidenceImpact;
             MinimumConfidence = (decimal)settings.MinimumConfidence;
+            ProviderSeriesWeight = (decimal)settings.ProviderSeriesWeight;
+            ProviderSeriesCacheSeconds = settings.ProviderSeriesCacheSeconds;
+            ProviderSeriesRange = settings.ProviderSeriesRange;
+            ProviderSeriesTimezone = settings.ProviderSeriesTimezone;
             PollingIntervalSeconds = settings.PollingIntervalSeconds;
             PersistCredentials = settings.PersistCredentials;
             SelectedThemeChoice = ThemeChoices.FirstOrDefault(choice => choice.Mode == settings.ThemeMode)
@@ -736,13 +762,31 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception exception)
         {
-            SetStatus(exception.Message, success: false);
+            SetStatus(GetSafeMessage(exception), success: false);
         }
     }
 
     private void SaveSettings()
     {
         var (minimumPriceMultiplier, maximumPriceMultiplier) = ParsePriceRange();
+        if (ProviderSeriesWeight is < 0 or > 1)
+        {
+            throw new ArgumentException("供应商序列权重必须在 0 到 1 之间。");
+        }
+
+        if (ProviderSeriesCacheSeconds is < 30 or > 3600 ||
+            ProviderSeriesCacheSeconds != decimal.Truncate(ProviderSeriesCacheSeconds))
+        {
+            throw new ArgumentException("供应商序列缓存时间必须是 30 到 3600 之间的整数秒。");
+        }
+
+        var providerSeriesRange = ProviderSeriesRange.Trim();
+        var providerSeriesTimezone = ProviderSeriesTimezone.Trim();
+        if (providerSeriesRange.Length == 0 || providerSeriesTimezone.Length == 0)
+        {
+            throw new ArgumentException("供应商序列范围和时区不能为空。");
+        }
+
         var selectedIds = Keys.Where(key => key.Selected).Select(key => key.Id).ToArray();
         var existing = _store.Load().Settings;
         var loadedGroupIds = Groups.Select(group => group.Id).ToHashSet();
@@ -762,6 +806,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             MaximumPriceMultiplier = maximumPriceMultiplier,
             ConfidenceImpact = (double)ConfidenceImpact,
             MinimumConfidence = (double)MinimumConfidence,
+            ProviderSeriesWeight = (double)ProviderSeriesWeight,
+            ProviderSeriesCacheSeconds = (int)ProviderSeriesCacheSeconds,
+            ProviderSeriesRange = providerSeriesRange,
+            ProviderSeriesTimezone = providerSeriesTimezone,
             PollingIntervalSeconds = (int)PollingIntervalSeconds,
             PersistCredentials = PersistCredentials,
             ThemeMode = SelectedThemeChoice?.Mode ?? AppThemeMode.System,
@@ -827,12 +875,27 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         return _store.Load().Settings.Platform;
     }
 
-    private void SetStatus(string message, bool success)
+    private void SetStatus(string message, bool success, bool warning = false)
     {
         Status = message;
-        StatusIsSuccess = success;
-        StatusIsError = !success;
+        StatusIsSuccess = success && !warning;
+        StatusIsWarning = warning;
+        StatusIsError = !success && !warning;
     }
+
+    private void SetRoutingStatus(
+        string message,
+        RoutingCycleResult result,
+        bool success)
+    {
+        var warning = success && result.ProviderSeriesStatus.IsDegraded;
+        SetStatus(WithProviderSeriesStatus(message, result), success, warning);
+    }
+
+    private static string WithProviderSeriesStatus(string message, RoutingCycleResult result) =>
+        string.IsNullOrWhiteSpace(result.ProviderSeriesStatus.Message)
+            ? message
+            : $"{message} 序列：{result.ProviderSeriesStatus.Message}";
 
     private static string GetSafeMessage(Exception exception)
     {

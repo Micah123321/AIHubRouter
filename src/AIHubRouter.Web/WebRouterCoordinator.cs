@@ -12,6 +12,7 @@ public sealed class WebRouterCoordinator : BackgroundService
     private RoutingService? _service;
     private ProfileLock? _profileLock;
     private RoutingCycleResult? _lastResult;
+    private bool _showProviderSeriesStatus;
     private bool _isBusy;
     private string _status = "就绪";
     private string _statusKind = "neutral";
@@ -63,6 +64,13 @@ public sealed class WebRouterCoordinator : BackgroundService
                 MaximumPriceMultiplier = request.MaximumPriceMultiplier,
                 ConfidenceImpact = request.ConfidenceImpact,
                 MinimumConfidence = request.MinimumConfidence,
+                ProviderSeriesWeight = request.ProviderSeriesWeight ?? _settings.ProviderSeriesWeight,
+                ProviderSeriesCacheSeconds =
+                    request.ProviderSeriesCacheSeconds ?? _settings.ProviderSeriesCacheSeconds,
+                ProviderSeriesRange =
+                    request.ProviderSeriesRange?.Trim() ?? _settings.ProviderSeriesRange,
+                ProviderSeriesTimezone =
+                    request.ProviderSeriesTimezone?.Trim() ?? _settings.ProviderSeriesTimezone,
                 PollingIntervalSeconds = Math.Clamp(request.PollingIntervalSeconds, 30, 3600),
                 PersistCredentials = request.PersistCredentials,
                 ThemeMode = request.ThemeMode,
@@ -86,12 +94,17 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _credentials = credentials;
                 _status = "配置已保存。";
                 _statusKind = "success";
+                _showProviderSeriesStatus = false;
                 if (oldSettings.RoutingMode != settings.RoutingMode ||
                     oldSettings.GroupStickiness != settings.GroupStickiness ||
                     oldSettings.MinimumPriceMultiplier != settings.MinimumPriceMultiplier ||
                     oldSettings.MaximumPriceMultiplier != settings.MaximumPriceMultiplier ||
                     oldSettings.ConfidenceImpact != settings.ConfidenceImpact ||
                     oldSettings.MinimumConfidence != settings.MinimumConfidence ||
+                    oldSettings.ProviderSeriesWeight != settings.ProviderSeriesWeight ||
+                    oldSettings.ProviderSeriesCacheSeconds != settings.ProviderSeriesCacheSeconds ||
+                    !string.Equals(oldSettings.ProviderSeriesRange, settings.ProviderSeriesRange, StringComparison.Ordinal) ||
+                    !string.Equals(oldSettings.ProviderSeriesTimezone, settings.ProviderSeriesTimezone, StringComparison.Ordinal) ||
                     !string.Equals(oldSettings.BaseUrl, settings.BaseUrl, StringComparison.OrdinalIgnoreCase) ||
                     !oldSettings.BlacklistedGroupIds.SequenceEqual(settings.BlacklistedGroupIds))
                 {
@@ -154,6 +167,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 var group = result.TargetGroup;
                 _status = $"手动路由完成；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。自动路由已关闭。";
                 _statusKind = result.FailedKeyCount == 0 ? "success" : "error";
+                _showProviderSeriesStatus = false;
                 _lastUpdatedAt = result.CompletedAt;
                 if (_lastResult is { } previous)
                 {
@@ -197,6 +211,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _settings = settings;
                 _status = enabled ? "自动路由已启动。" : "自动路由已停止。";
                 _statusKind = "success";
+                _showProviderSeriesStatus = false;
             }
 
             _nextAutoRun = enabled ? DateTimeOffset.MinValue : DateTimeOffset.MaxValue;
@@ -253,7 +268,12 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _lastResult = result;
                 _lastUpdatedAt = result.CompletedAt;
                 _status = $"{ReasonText(result.Decision.Reason)}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。";
-                _statusKind = result.FailedKeyCount == 0 ? "success" : "error";
+                _statusKind = result.FailedKeyCount > 0
+                    ? "error"
+                    : result.ProviderSeriesStatus.IsDegraded
+                        ? "warning"
+                        : "success";
+                _showProviderSeriesStatus = true;
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -356,6 +376,10 @@ public sealed class WebRouterCoordinator : BackgroundService
                 settings.MaximumPriceMultiplier,
                 settings.ConfidenceImpact,
                 settings.MinimumConfidence,
+                settings.ProviderSeriesWeight,
+                settings.ProviderSeriesCacheSeconds,
+                settings.ProviderSeriesRange,
+                settings.ProviderSeriesTimezone,
                 settings.PollingIntervalSeconds,
                 settings.PersistCredentials,
                 _store.CanPersistCredentials,
@@ -370,6 +394,13 @@ public sealed class WebRouterCoordinator : BackgroundService
             settings.AutoRoutingEnabled,
             _status,
             _statusKind,
+            result is null || !_showProviderSeriesStatus
+                ? null
+                : new WebProviderSeriesStatus(
+                    result.ProviderSeriesStatus.Available,
+                    result.ProviderSeriesStatus.FromCache,
+                    result.ProviderSeriesStatus.IsDegraded,
+                    result.ProviderSeriesStatus.Message),
             candidateSummary,
             $"API-only / {settings.RoutingMode}",
             _lastUpdatedAt);
@@ -469,6 +500,7 @@ public sealed class WebRouterCoordinator : BackgroundService
         {
             _status = SafeMessage(exception);
             _statusKind = "error";
+            _showProviderSeriesStatus = false;
         }
     }
 
@@ -483,6 +515,33 @@ public sealed class WebRouterCoordinator : BackgroundService
         if (request.PollingIntervalSeconds is < 30 or > 3600)
         {
             throw new ArgumentOutOfRangeException(nameof(request.PollingIntervalSeconds), "轮询间隔必须在 30 到 3600 秒之间。");
+        }
+
+        if (request.ProviderSeriesWeight is { } providerSeriesWeight &&
+            (providerSeriesWeight is < 0 or > 1 || !double.IsFinite(providerSeriesWeight)))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request.ProviderSeriesWeight),
+                "供应商序列权重必须是 0 到 1 之间的有限数值。");
+        }
+
+        if (request.ProviderSeriesCacheSeconds is < 30 or > 3600)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request.ProviderSeriesCacheSeconds),
+                "供应商序列缓存必须在 30 到 3600 秒之间。");
+        }
+
+        if (request.ProviderSeriesRange is not null &&
+            string.IsNullOrWhiteSpace(request.ProviderSeriesRange))
+        {
+            throw new ArgumentException("供应商序列范围不能为空。", nameof(request.ProviderSeriesRange));
+        }
+
+        if (request.ProviderSeriesTimezone is not null &&
+            string.IsNullOrWhiteSpace(request.ProviderSeriesTimezone))
+        {
+            throw new ArgumentException("供应商序列时区不能为空。", nameof(request.ProviderSeriesTimezone));
         }
 
         if (request.GroupStickiness < 0 || !double.IsFinite(request.GroupStickiness))

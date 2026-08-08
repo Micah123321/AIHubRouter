@@ -13,6 +13,10 @@ public interface IAIHubApiClient : IDisposable
         int samples = 100,
         CancellationToken cancellationToken = default,
         double? maxRate = null);
+    Task<ProviderSeriesPage> GetProviderSeriesAsync(
+        string range,
+        string timezone,
+        CancellationToken cancellationToken = default);
     Task<JsonElement> ValidateLoginAsync(CancellationToken cancellationToken = default);
     Task<AuthSession> LoginAsync(LoginCredentials credentials, CancellationToken cancellationToken = default);
     Task<AuthSession> RefreshSessionAsync(string refreshToken, CancellationToken cancellationToken = default);
@@ -128,6 +132,32 @@ public sealed class AIHubClient : IAIHubApiClient
             null,
             cancellationToken);
         return GroupUsageStatsParser.Parse(data, samples);
+    }
+
+    public async Task<ProviderSeriesPage> GetProviderSeriesAsync(
+        string range,
+        string timezone,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(range))
+        {
+            throw new ArgumentException("供应商序列范围不能为空。", nameof(range));
+        }
+
+        if (string.IsNullOrWhiteSpace(timezone))
+        {
+            throw new ArgumentException("供应商序列时区不能为空。", nameof(timezone));
+        }
+
+        var query =
+            $"range={Uri.EscapeDataString(range.Trim())}" +
+            $"&timezone={Uri.EscapeDataString(timezone.Trim())}";
+        var data = await SendAsync<JsonElement>(
+            HttpMethod.Get,
+            $"/api/v1/public/providers/series?{query}",
+            null,
+            cancellationToken);
+        return ProviderSeriesParser.Parse(data);
     }
 
     public async Task<JsonElement> ValidateLoginAsync(CancellationToken cancellationToken = default)

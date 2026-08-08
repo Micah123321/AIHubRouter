@@ -54,7 +54,8 @@ public static class RoutingEngine
         IEnumerable<GroupInfo> availableGroups,
         IReadOnlyDictionary<long, double> userGroupRates,
         BalancedRoutingPolicy policy,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        IReadOnlyDictionary<long, ProviderSeriesMetrics>? providerSeriesMetrics = null)
     {
         ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(availableGroups);
@@ -93,6 +94,11 @@ public static class RoutingEngine
                 .ThenBy(candidate => candidate.EffectiveMultiplier)
                 .First())
             .ToArray();
+        var providerSeriesScores = ProviderSeriesQuality.Calculate(
+            eligible,
+            providerSeriesMetrics,
+            now,
+            policy.MaximumStatusAge);
 
         if (eligible.Length == 0)
         {
@@ -105,7 +111,9 @@ public static class RoutingEngine
                 policy.PriceWeight,
                 policy.LatencyWeight,
                 policy.ConfidenceImpact,
-                policy.MinimumConfidence);
+                policy.MinimumConfidence,
+                providerSeriesScores,
+                policy.ProviderSeriesWeight);
         }
 
         var measured = eligible
@@ -130,7 +138,9 @@ public static class RoutingEngine
                 policy.PriceWeight,
                 policy.LatencyWeight,
                 policy.ConfidenceImpact,
-                policy.MinimumConfidence);
+                policy.MinimumConfidence,
+                providerSeriesScores,
+                policy.ProviderSeriesWeight);
         }
 
         var baseline = cheapest[0];
@@ -146,7 +156,9 @@ public static class RoutingEngine
                 policy.PriceWeight,
                 policy.LatencyWeight,
                 policy.ConfidenceImpact,
-                policy.MinimumConfidence);
+                policy.MinimumConfidence,
+                providerSeriesScores,
+                policy.ProviderSeriesWeight);
         }
 
         var tradeoff = decisionPool
@@ -159,7 +171,9 @@ public static class RoutingEngine
                     candidate,
                     policy.PriceWeight,
                     policy.LatencyWeight,
-                    policy.ConfidenceImpact)
+                    policy.ConfidenceImpact,
+                    providerSeriesScores,
+                    policy.ProviderSeriesWeight)
             })
             .Where(candidate =>
                 candidate.Candidate.Group.Id == baseline.Group.Id ||
@@ -180,7 +194,9 @@ public static class RoutingEngine
             policy.PriceWeight,
             policy.LatencyWeight,
             policy.ConfidenceImpact,
-            policy.MinimumConfidence);
+            policy.MinimumConfidence,
+            providerSeriesScores,
+            policy.ProviderSeriesWeight);
     }
 
     internal static double NormalizeLatency(double? latency)
@@ -217,7 +233,9 @@ public static class RoutingEngine
             candidate,
             evaluation.PriceWeight,
             evaluation.LatencyWeight,
-            evaluation.ConfidenceImpact);
+            evaluation.ConfidenceImpact,
+            evaluation.ProviderSeriesScores,
+            evaluation.ProviderSeriesWeight);
     }
 
     private static bool IsKnownLatency(double? latency) =>
@@ -236,7 +254,9 @@ public static class RoutingEngine
         RouteCandidate candidate,
         double priceWeight,
         double latencyWeight,
-        double confidenceImpact)
+        double confidenceImpact,
+        IReadOnlyDictionary<long, double> providerSeriesScores,
+        double providerSeriesWeight)
     {
         var pricePremiumRatio =
             (candidate.EffectiveMultiplier - minimumMultiplier) / minimumMultiplier;
@@ -249,7 +269,15 @@ public static class RoutingEngine
             candidate.Provider.FirstTokenLatencyMs!.Value,
             confidenceImpact);
         var speedupRatio = conservativeBaselineLatency / conservativeCandidateLatency - 1;
-        return latencyWeight * speedupRatio - priceWeight * pricePremiumRatio;
+        var score = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio;
+        if (providerSeriesWeight <= 0 ||
+            !providerSeriesScores.TryGetValue(baseline.Group.Id, out var baselineQuality) ||
+            !providerSeriesScores.TryGetValue(candidate.Group.Id, out var candidateQuality))
+        {
+            return score;
+        }
+
+        return score + providerSeriesWeight * (candidateQuality - baselineQuality);
     }
 
     private static double GetConservativeLatency(

@@ -393,6 +393,10 @@ internal static class CliApplication
         var maximumPrice = GetDoubleOption(args, "--max-price");
         var confidenceImpact = GetDoubleOption(args, "--confidence-impact");
         var minimumConfidence = GetDoubleOption(args, "--min-confidence");
+        var providerSeriesWeight = GetDoubleOption(args, "--provider-series-weight");
+        var providerSeriesCache = GetIntOption(args, "--provider-series-cache");
+        var providerSeriesRange = GetOption(args, "--provider-series-range");
+        var providerSeriesTimezone = GetOption(args, "--provider-series-timezone");
         var interval = GetIntOption(args, "--interval");
         var selectedKeys = GetOption(args, "--selected-keys");
         var blacklistedGroups = GetOption(args, "--blacklisted-groups");
@@ -426,6 +430,27 @@ internal static class CliApplication
             MinimumConfidence = minimumConfidence ?? settings.MinimumConfidence
         };
         confidencePolicy.Validate();
+
+        if (providerSeriesWeight is { } seriesWeight &&
+            (seriesWeight is < 0 or > 1 || !double.IsFinite(seriesWeight)))
+        {
+            throw new ArgumentException("--provider-series-weight 必须是 0 到 1 之间的有限数值。");
+        }
+
+        if (providerSeriesCache is < 30 or > 3600)
+        {
+            throw new ArgumentException("--provider-series-cache 必须是 30 到 3600 之间的整数。");
+        }
+
+        if (providerSeriesRange is not null && string.IsNullOrWhiteSpace(providerSeriesRange))
+        {
+            throw new ArgumentException("--provider-series-range 不能为空。");
+        }
+
+        if (providerSeriesTimezone is not null && string.IsNullOrWhiteSpace(providerSeriesTimezone))
+        {
+            throw new ArgumentException("--provider-series-timezone 不能为空。");
+        }
 
         long[]? parsedKeys = null;
         if (selectedKeys is not null)
@@ -463,6 +488,10 @@ internal static class CliApplication
             MaximumPriceMultiplier = resolvedMaximumPrice,
             ConfidenceImpact = confidencePolicy.ConfidenceImpact,
             MinimumConfidence = confidencePolicy.MinimumConfidence,
+            ProviderSeriesWeight = providerSeriesWeight ?? settings.ProviderSeriesWeight,
+            ProviderSeriesCacheSeconds = providerSeriesCache ?? settings.ProviderSeriesCacheSeconds,
+            ProviderSeriesRange = providerSeriesRange?.Trim() ?? settings.ProviderSeriesRange,
+            ProviderSeriesTimezone = providerSeriesTimezone?.Trim() ?? settings.ProviderSeriesTimezone,
             PollingIntervalSeconds = interval is null
                 ? settings.PollingIntervalSeconds
                 : Math.Clamp(interval.Value, 30, 3600),
@@ -507,7 +536,8 @@ internal static class CliApplication
         var decision = result.Decision;
         if (decision.Target is null)
         {
-            Console.WriteLine($"[{result.CompletedAt:O}] 无可用路由。" );
+            Console.WriteLine(
+                $"[{result.CompletedAt:O}] 无可用路由。{result.ProviderSeriesStatus.Message}" );
             return;
         }
 
@@ -516,7 +546,8 @@ internal static class CliApplication
             $"group={decision.Target.Group.Id} ({decision.Target.Group.Name}), " +
             $"rate={decision.Target.EffectiveMultiplier:0.####}x, " +
             $"first-token={FormatLatency(decision.Target.Provider.FirstTokenLatencyMs)}, " +
-            $"switch={decision.ShouldSwitch}, changed={result.ChangedKeyCount}, failed={result.FailedKeyCount}" );
+            $"switch={decision.ShouldSwitch}, changed={result.ChangedKeyCount}, failed={result.FailedKeyCount}, " +
+            $"provider-series={result.ProviderSeriesStatus.Message}" );
     }
 
     private static object BuildCyclePayload(RoutingCycleResult result)
@@ -574,6 +605,13 @@ internal static class CliApplication
             },
             result.SelectedKeyIds,
             result.KeyResults,
+            providerSeriesStatus = new
+            {
+                result.ProviderSeriesStatus.Available,
+                result.ProviderSeriesStatus.FromCache,
+                result.ProviderSeriesStatus.IsDegraded,
+                result.ProviderSeriesStatus.Message
+            },
             result.ChangedKeyCount,
             result.FailedKeyCount
         };
@@ -846,6 +884,10 @@ internal static class CliApplication
               --max-price <non-negative-number>
               --confidence-impact <0-2>
               --min-confidence <0-1>
+              --provider-series-weight <0-1>
+              --provider-series-cache <30-3600>
+              --provider-series-range <non-empty-value>
+              --provider-series-timezone <non-empty-value>
               --interval <30-3600>
               --selected-keys <id,id,...>
               --blacklisted-groups <id,id,...>

@@ -17,6 +17,10 @@ public sealed record SettingsUpdateRequest(
     double MaximumPriceMultiplier,
     double ConfidenceImpact,
     double MinimumConfidence,
+    double? ProviderSeriesWeight,
+    int? ProviderSeriesCacheSeconds,
+    string? ProviderSeriesRange,
+    string? ProviderSeriesTimezone,
     int PollingIntervalSeconds,
     bool PersistCredentials,
     AppThemeMode ThemeMode,
@@ -35,6 +39,7 @@ public sealed record WebDashboard(
     bool AutoRouting,
     string Status,
     string StatusKind,
+    WebProviderSeriesStatus? ProviderSeriesStatus,
     string CandidateSummary,
     string ConnectionSummary,
     DateTimeOffset? LastUpdatedAt);
@@ -50,6 +55,10 @@ public sealed record WebSettings(
     double MaximumPriceMultiplier,
     double ConfidenceImpact,
     double MinimumConfidence,
+    double ProviderSeriesWeight,
+    int ProviderSeriesCacheSeconds,
+    string ProviderSeriesRange,
+    string ProviderSeriesTimezone,
     int PollingIntervalSeconds,
     bool PersistCredentials,
     bool CanPersistCredentials,
@@ -57,6 +66,12 @@ public sealed record WebSettings(
     AppThemeMode ThemeMode,
     long[] SelectedKeyIds,
     long[] BlacklistedGroupIds);
+
+public sealed record WebProviderSeriesStatus(
+    bool Available,
+    bool FromCache,
+    bool IsDegraded,
+    string Message);
 
 public sealed record WebProviderRow(
     string ProviderId,

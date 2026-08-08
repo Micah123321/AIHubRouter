@@ -342,6 +342,7 @@ input:focus-visible + .switch { box-shadow: 0 0 0 3px color-mix(in srgb, var(--f
 .statusbar-inner { width: min(100%, 1440px); min-height: 38px; margin: 0 auto; padding: 6px 22px; display: flex; align-items: center; gap: 9px; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
 .status-dot.success { background: var(--success); }
+.status-dot.warning { background: var(--warning); }
 .status-dot.error { background: var(--danger); }
 #statusText { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #lastUpdated { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }

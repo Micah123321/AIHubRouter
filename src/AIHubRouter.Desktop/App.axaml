@@ -31,6 +31,7 @@
           <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#20242A" />
           <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#66717D" />
           <SolidColorBrush x:Key="AppSuccessBrush" Color="#12633E" />
+          <SolidColorBrush x:Key="AppWarningBrush" Color="#8A5300" />
           <SolidColorBrush x:Key="AppErrorBrush" Color="#B3261E" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
@@ -41,6 +42,7 @@
           <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#F3F5F7" />
           <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#B7C0CA" />
           <SolidColorBrush x:Key="AppSuccessBrush" Color="#62D394" />
+          <SolidColorBrush x:Key="AppWarningBrush" Color="#F0B15B" />
           <SolidColorBrush x:Key="AppErrorBrush" Color="#FF8A80" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
@@ -104,6 +106,9 @@
     </Style>
     <Style Selector="TextBlock.status.success">
       <Setter Property="Foreground" Value="{DynamicResource AppSuccessBrush}" />
+    </Style>
+    <Style Selector="TextBlock.status.warning">
+      <Setter Property="Foreground" Value="{DynamicResource AppWarningBrush}" />
     </Style>
     <Style Selector="TextBlock.status.error">
       <Setter Property="Foreground" Value="{DynamicResource AppErrorBrush}" />

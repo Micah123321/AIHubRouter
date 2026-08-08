@@ -38,7 +38,7 @@ tests/
 
 1. 分组为启用状态，实时用量统计包含有效 TTFT 样本。
 2. 最后样本时间不超过 `MaximumStatusAge`（默认 15 分钟），且未来偏差不超过 1 分钟。
-3. 实时数据置信度不低于可配置的最低门槛，默认 `0.10`。
+3. 实时数据置信度不低于可配置的最低门槛，默认 `0.90`。
 4. 统计平台与策略平台一致。
 5. 账号拥有目标分组权限。
 6. 倍率为有限且非负数。
@@ -88,7 +88,33 @@ weightedScore = latencyWeight * speedupRatio - priceWeight * pricePremiumRatio
 
 最低倍率为 0 时，仅在零倍率候选中按延迟选择。全部候选都缺失延迟时回退到最低倍率，避免虚构速度收益。默认使用 `Balanced`。
 
-### 4.3 权重稳定机制
+### 4.3 供应商序列参考
+
+每个自动路由周期按配置请求：
+
+```text
+GET /api/v1/public/providers/series?range=6h&timezone=Asia%2FShanghai
+```
+
+解析器只依赖 `group_id`、`probe` 和 `user_ttft`。`probe` 元组只读取前三项时间戳、成功标记和延迟毫秒，忽略未确认的尾部字段；`user_ttft` 按 `sample_count` 对 `avg_ttft_ms` 加权。
+
+候选质量由可用分量平均得到：
+
+```text
+providerQuality = average(
+  probeSuccessRate,
+  inverseNormalizedProbeLatency,
+  inverseNormalizedUserTtft)
+
+finalScore = weightedScore
+  + providerSeriesWeight * (candidateQuality - baselineQuality)
+```
+
+探测成功率直接使用 `0..1`，但至少需要两次有效探测和有效成功探测延迟才生成候选质量分；每个候选还必须在最大状态年龄内。延迟分量只在全部已评分候选均有有效值、且至少两个候选的值不同时进行反向最小-最大归一化，缺少关键指标或已过期的候选不参与比较，避免缺失数据比真实的较差数据更有利。候选或最低倍率基准缺少质量分时不叠加，权重为 `0` 时结果与原评分一致。默认权重为 `0.20`，允许范围为 `0..1`。
+
+成功快照按 `range + timezone` 缓存在进程内，默认 TTL 为 300 秒，可配置范围为 30 到 3600 秒。缓存可用期限取 TTL 和数据最大年龄的较早者。普通周期命中有效缓存时不发送请求；强制刷新会访问接口，失败时可继续使用仍新鲜的缓存并标记 warning；缓存过期后失败则明确报告降级并沿用原评分。原始序列响应不写入磁盘。
+
+### 4.4 权重稳定机制
 
 首 Token 延迟会随网络和服务负载波动。算法通过置信度修正、保守延迟和最小得分优势抑制频繁切换：
 
@@ -109,7 +135,7 @@ Balanced 中右侧系数为 1，候选每增加 10% 倍率溢价，至少需要�
 
 这个门槛使用加权得分单位，而不是百分比。Balanced 中，价格相同的两个分组需要约 20% 的速度收益才能超过默认切换门槛；速度相同时，价格改善需要超过约 20%。算法不设置固定或软延迟边界，极端延迟仍通过同一加权公式参与决策。
 
-### 4.4 可解释结果
+### 4.5 可解释结果
 
 算法返回 `RouteDecision`，包含目标分组、倍率、延迟、相对最低价的溢价、相对当前分组的改善、是否切换以及原因码。CLI JSON 与 GUI 必须直接展示这些字段。JSONL 审计日志额外记录每个候选的价格溢价、速度收益、加权得分和是否进入推荐集合。
 
@@ -129,16 +155,18 @@ public interface IRouteSelector;
 
 1. 确保 session 可用。
 2. 从 `aihub.top` 获取每组最近 100 条真实用量的统计结果。
-3. 读取带 TTL 的分组、倍率和 Key 缓存。
-4. 计算候选与加权决策。
-5. `dry-run` 时只返回决策。
-6. 仅对不在目标分组的已选 Key 发送 `PUT`。
-7. 保存路由状态并返回逐 Key 结果。
+3. 读取或刷新供应商序列成功快照。
+4. 读取带 TTL 的分组、倍率和 Key 缓存。
+5. 计算候选与综合评分决策。
+6. `dry-run` 时只返回决策。
+7. 仅对不在目标分组的已选 Key 发送 `PUT`。
+8. 保存路由状态并返回逐 Key 结果及供应商序列加载状态。
 
 资源策略：
 
 - 每个进程复用一个 `SocketsHttpHandler` 和一个 `HttpClient`。
 - 分组、用户倍率和 Key 默认缓存 5 分钟。
+- 供应商序列成功快照默认缓存 5 分钟，统计范围和时区变化时不复用旧键。
 - 真实用量统计及其最后样本时间每个路由周期刷新。
 - `watch` 使用 `PeriodicTimer`，不忙轮询。
 - 同一 profile 使用跨平台排他文件锁，阻止 GUI 与 CLI 同时写入。
@@ -162,6 +190,8 @@ public interface IRouteSelector;
 - Linux/macOS GUI：后续平台适配器使用 Secret Service/Keychain。
 - 无头模式：优先从环境变量或 stdin 读取；可使用外部提供的主密钥保存 AES-GCM 加密凭据。
 - 没有安全存储或主密钥时禁用持久化，不写明文。
+
+供应商序列普通设置包括 `ProviderSeriesWeight`、`ProviderSeriesCacheSeconds`、`ProviderSeriesRange` 和 `ProviderSeriesTimezone`。默认值分别为 `0.20`、`300`、`6h` 和 `Asia/Shanghai`。
 
 主密钥只从 `AIHUB_ROUTER_MASTER_KEY` 或 stdin 获取，不写入参数、日志或配置文件。
 
@@ -225,6 +255,9 @@ CLI 和 Desktop 分别生成自包含包。第一阶段不启用 Native AOT，�
 必须覆盖：
 
 - 三种倍率/首字速度权重策略。
+- 供应商序列请求参数、稳定字段解析、样本加权和异常元组容错。
+- 序列权重为 0 的旧评分兼容，以及正权重对综合评分的影响。
+- 序列缓存命中、过期、强制刷新和失败安全降级。
 - Balanced 对普通速度差保持低倍率、对数量级速度差选择更快分组。
 - 缺失延迟、零倍率、同价和异常数值。
 - 加权推荐首次出现即执行、价格改善和当前路由失效。

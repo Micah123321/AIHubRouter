@@ -72,11 +72,19 @@
               <TextBox Width="105" Classes="field" Text="{Binding MaximumPriceMultiplierText}" MaxLength="20" />
             </StackPanel>
             <Expander Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="10" Header="置信度高级设置" Margin="0,10,0,0">
-              <Grid ColumnDefinitions="Auto,100,18,Auto,100" Margin="0,10,0,0">
-                <TextBlock Grid.Column="0" Text="影响强度" VerticalAlignment="Center" />
-                <NumericUpDown Grid.Column="1" Minimum="0" Maximum="2" Increment="0.05" FormatString="0.00" Value="{Binding ConfidenceImpact}" ToolTip.Tip="范围 0-2" />
-                <TextBlock Grid.Column="3" Text="最低置信度" VerticalAlignment="Center" />
-                <NumericUpDown Grid.Column="4" Minimum="0" Maximum="1" Increment="0.01" FormatString="0.00" Value="{Binding MinimumConfidence}" ToolTip.Tip="范围 0-1" />
+              <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,100,18,Auto,100,18,Auto,100,18,Auto,*" Margin="0,10,0,0">
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="影响强度" VerticalAlignment="Center" />
+                <NumericUpDown Grid.Row="0" Grid.Column="1" Minimum="0" Maximum="2" Increment="0.05" FormatString="0.00" Value="{Binding ConfidenceImpact}" ToolTip.Tip="范围 0-2" />
+                <TextBlock Grid.Row="0" Grid.Column="3" Text="最低置信度" VerticalAlignment="Center" />
+                <NumericUpDown Grid.Row="0" Grid.Column="4" Minimum="0" Maximum="1" Increment="0.01" FormatString="0.00" Value="{Binding MinimumConfidence}" ToolTip.Tip="范围 0-1" />
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="序列权重" VerticalAlignment="Center" Margin="0,8,0,0" />
+                <NumericUpDown Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="1" Increment="0.05" FormatString="0.00" Value="{Binding ProviderSeriesWeight}" Margin="0,8,0,0" ToolTip.Tip="范围 0-1" />
+                <TextBlock Grid.Row="1" Grid.Column="3" Text="缓存秒数" VerticalAlignment="Center" Margin="0,8,0,0" />
+                <NumericUpDown Grid.Row="1" Grid.Column="4" Minimum="30" Maximum="3600" Increment="30" Value="{Binding ProviderSeriesCacheSeconds}" Margin="0,8,0,0" />
+                <TextBlock Grid.Row="1" Grid.Column="6" Text="序列范围" VerticalAlignment="Center" Margin="0,8,0,0" />
+                <TextBox Grid.Row="1" Grid.Column="7" Classes="field" Text="{Binding ProviderSeriesRange}" Margin="0,8,0,0" />
+                <TextBlock Grid.Row="1" Grid.Column="9" Text="时区" VerticalAlignment="Center" Margin="0,8,0,0" />
+                <TextBox Grid.Row="1" Grid.Column="10" Classes="field" Text="{Binding ProviderSeriesTimezone}" Margin="0,8,0,0" />
               </Grid>
             </Expander>
           </Grid>
@@ -169,7 +177,7 @@
 
     <Border Grid.Row="2" Background="{DynamicResource AppSurfaceBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,5">
       <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Classes="status" Classes.success="{Binding StatusIsSuccess}" Classes.error="{Binding StatusIsError}" Text="{Binding Status}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,16,0" />
+        <TextBlock Classes="status" Classes.success="{Binding StatusIsSuccess}" Classes.warning="{Binding StatusIsWarning}" Classes.error="{Binding StatusIsError}" Text="{Binding Status}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,16,0" />
         <Button Grid.Column="1" Classes="status-command" Content="访问站点" Command="{Binding VisitSiteCommand}" />
       </Grid>
     </Border>

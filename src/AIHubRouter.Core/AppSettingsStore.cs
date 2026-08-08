@@ -24,6 +24,10 @@ public sealed record PersistentAppSettings
     public double MaximumPriceMultiplier { get; init; } = BalancedRoutingPolicy.DefaultMaximumPriceMultiplier;
     public double ConfidenceImpact { get; init; } = BalancedRoutingPolicy.DefaultConfidenceImpact;
     public double MinimumConfidence { get; init; } = BalancedRoutingPolicy.DefaultMinimumConfidence;
+    public double ProviderSeriesWeight { get; init; } = BalancedRoutingPolicy.DefaultProviderSeriesWeight;
+    public int ProviderSeriesCacheSeconds { get; init; } = 300;
+    public string ProviderSeriesRange { get; init; } = "6h";
+    public string ProviderSeriesTimezone { get; init; } = "Asia/Shanghai";
     public int PollingIntervalSeconds { get; init; } = 60;
     public int AccountCacheSeconds { get; init; } = 300;
     public bool SmoothRendering { get; init; } = true;
@@ -44,6 +48,7 @@ public sealed record PersistentAppSettings
             MaximumPriceMultiplier = MaximumPriceMultiplier,
             ConfidenceImpact = ConfidenceImpact,
             MinimumConfidence = MinimumConfidence,
+            ProviderSeriesWeight = ProviderSeriesWeight,
             MaximumStatusAge = TimeSpan.FromMinutes(15),
             BlacklistedGroupIds = BlacklistedGroupIds
                 .Where(groupId => groupId > 0)
@@ -108,6 +113,15 @@ public sealed class AppSettingsStore
             ? JsonSerializer.Deserialize<PersistentAppSettings>(File.ReadAllText(_settingsPath), JsonOptions)
                 ?? new PersistentAppSettings()
             : new PersistentAppSettings();
+        settings = settings with
+        {
+            ProviderSeriesRange = string.IsNullOrWhiteSpace(settings.ProviderSeriesRange)
+                ? "6h"
+                : settings.ProviderSeriesRange.Trim(),
+            ProviderSeriesTimezone = string.IsNullOrWhiteSpace(settings.ProviderSeriesTimezone)
+                ? "Asia/Shanghai"
+                : settings.ProviderSeriesTimezone.Trim()
+        };
         PersistentCredentials? credentials = null;
         if (settings.PersistCredentials && File.Exists(_credentialsPath))
         {
