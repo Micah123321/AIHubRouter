@@ -460,6 +460,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 settings.PollingIntervalSeconds,
                 settings.PersistCredentials,
                 _store.CanPersistCredentials,
+                _storedCredentialsUnavailable,
                 _store.CredentialProtection,
                 settings.ThemeMode,
                 effectiveSelectedIds,

@@ -63,6 +63,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _isBusy;
     [ObservableProperty] private bool _autoRouting;
     [ObservableProperty] private string _status = "就绪";
+    [ObservableProperty] private string _credentialStatus = "未配置认证";
     [ObservableProperty] private bool _statusIsSuccess;
     [ObservableProperty] private bool _statusIsWarning;
     [ObservableProperty] private bool _statusIsError;
@@ -826,6 +827,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Password = _loadedCredentials.Password;
             BearerToken = _loadedCredentials.BearerToken;
             Cookie = _loadedCredentials.Cookie;
+            UpdateCredentialStatus();
             LunaSummary = settings.LunaSelectedKeyIds.Length == 0
                 ? "Luna：未配置"
                 : $"Luna：已配置 {settings.LunaSelectedKeyIds.Length} 个 Key，尚未运行";
@@ -914,6 +916,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             _credentialsUnavailable = false;
         }
+        UpdateCredentialStatus();
     }
 
     private (double Minimum, double Maximum) ParsePriceRange()
@@ -958,6 +961,19 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         credentials.AccessTokenExpiresAt is not null ||
         !string.IsNullOrWhiteSpace(credentials.Cookie) ||
         !string.IsNullOrWhiteSpace(credentials.UserAgent);
+
+    private void UpdateCredentialStatus()
+    {
+        CredentialStatus = _credentialsUnavailable
+            ? "已有加密认证，但当前无法解密"
+            : !PersistCredentials
+                ? "本地认证未保存"
+                : HasCredentialValues(_loadedCredentials)
+                    ? "认证已加密保存"
+                    : !_store.CanPersistCredentials
+                        ? "加密保存不可用"
+                        : "未配置认证";
+    }
 
     private void ResetService()
     {

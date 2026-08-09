@@ -39,7 +39,7 @@
     <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
       <Grid Margin="18" RowDefinitions="Auto,Auto,Auto,*">
         <Border Grid.Row="0" Classes="section-rule">
-          <Grid RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="105,*,105,*">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="105,*,105,*">
             <TextBlock Grid.Row="0" Grid.ColumnSpan="4" Text="连接与认证" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,10" />
             <TextBlock Grid.Row="1" Grid.Column="0" Text="站点" VerticalAlignment="Center" />
             <TextBox Grid.Row="1" Grid.Column="1" Classes="field" Text="{Binding BaseUrl}" Margin="0,0,14,8" />
@@ -52,6 +52,7 @@
             <TextBlock Grid.Row="3" Grid.Column="0" Text="Cookie" VerticalAlignment="Center" Margin="0,8,0,0" />
             <TextBox Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3" Classes="field" Text="{Binding Cookie}" PasswordChar="*" Margin="0,8,0,0"
                      ToolTip.Tip="站点开启 Cloudflare 5 秒盾时：在浏览器打开站点完成验证，复制 Cookie（需包含 cf_clearance）粘贴到这里" />
+            <TextBlock Grid.Row="4" Grid.ColumnSpan="4" Text="{Binding CredentialStatus}" Margin="0,8,0,0" Opacity="0.75" />
           </Grid>
         </Border>
 

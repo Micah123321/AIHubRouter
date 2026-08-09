@@ -81,6 +81,7 @@ public sealed record WebSettings(
     int PollingIntervalSeconds,
     bool PersistCredentials,
     bool CanPersistCredentials,
+    bool CredentialsUnavailable,
     string CredentialProtection,
     AppThemeMode ThemeMode,
     long[] SelectedKeyIds,

@@ -201,6 +201,7 @@ public interface IRouteSelector;
 - 保存先完成序列化和加密，再使用进程内锁和同目录 `persistence.lock` 跨进程排他锁提交两个文件；临时/备份路径只接受当前 profile 生成的固定文件名模式。事务记录用于进程异常退出恢复，加密或替换失败时恢复旧文件，不留下明文或半提交状态。这不承诺所有操作系统上的断电级目录元数据原子性。
 - 没有安全存储或主密钥时，带非空凭据的保存会明确失败；普通设置和空凭据仍可保存，绝不回退到明文。
 - 如果保护器暂时不可用但目录中已有 `credentials.dat`，加载状态会标记凭据不可用；普通设置保存不会把该文件当成空凭据删除，恢复主密钥后仍可尝试解密。用户明确关闭 `PersistCredentials` 时才会清理该文件。
+- Web/桌面/CLI 会分别展示或输出“已有认证待解密”状态；CLI `config show` 保持 `hasStoredCredentials=true` 并额外输出 `credentialsUnavailable=true`，避免把不可读密文误报为没有认证。
 - Web/CLI 的环境变量只覆盖本次运行时值，不回写 `settings.json` 或 `credentials.dat`；环境变量提供的 Token 刷新结果也只保留在进程内。
 
 供应商参考设置包括 `ProviderSeriesWeight`、`ProviderSeriesCacheSeconds`、`ProviderSeriesRange` 和 `ProviderSeriesTimezone`。默认值分别为 `0.20`、`300`、`6h` 和 `Asia/Shanghai`。其中 `ProviderSeriesCacheSeconds` 只控制序列响应缓存；供应商 `cache_hit_rate` 来自 `/providers`，没有单独的伪缓存命中率配置。

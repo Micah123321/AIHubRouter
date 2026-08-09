@@ -374,7 +374,8 @@ internal static class CliApplication
                 storageDirectory = store.StorageDirectory,
                 canPersistCredentials = store.CanPersistCredentials,
                 credentialProtection = store.CredentialProtection,
-                hasStoredCredentials = snapshot.Credentials is not null
+                hasStoredCredentials = snapshot.Credentials is not null || snapshot.CredentialsUnavailable,
+                credentialsUnavailable = snapshot.CredentialsUnavailable
             }, JsonOptions));
             return 0;
         }

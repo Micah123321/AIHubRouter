@@ -238,6 +238,8 @@ aihub-router config set [options]
 
 Web 与 CLI 的 `AIHUB_BASE_URL`、`AIHUB_EMAIL`、`AIHUB_PASSWORD`、`AIHUB_TOKEN`、`AIHUB_REFRESH_TOKEN`、`AIHUB_COOKIE` 和 `AIHUB_USER_AGENT` 只覆盖当前进程的有效值，不会被普通设置保存或 Token 刷新回写到文件。移除环境变量后，程序才会重新使用文件中的值。
 
+当主密钥暂时不可用但磁盘上仍有加密认证时，Web 会显示“已有认证待解密”，桌面端显示“已有加密认证，但当前无法解密”；CLI `config show` 会同时报告 `hasStoredCredentials=true` 和 `credentialsUnavailable=true`。这些状态不包含认证内容，也不会把原密文当成空凭据删除。
+
 Docker 数据目录是 `/app/data/AIHubRouter`。替换容器时必须同时保留挂载到 `/app/data` 的数据卷和原有 `AIHUB_ROUTER_MASTER_KEY`；丢失或更换主密钥后，原 `credentials.dat` 无法解密。
 
 供应商参考数据配置示例（序列响应缓存与供应商命中率是两个不同概念）：
