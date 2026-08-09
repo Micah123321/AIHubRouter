@@ -219,6 +219,15 @@ public sealed partial class AppSettingsStore
         }
     }
 
+    private static bool HasCredentialValues(PersistentCredentials credentials) =>
+        !string.IsNullOrWhiteSpace(credentials.Email) ||
+        !string.IsNullOrWhiteSpace(credentials.Password) ||
+        !string.IsNullOrWhiteSpace(credentials.BearerToken) ||
+        !string.IsNullOrWhiteSpace(credentials.RefreshToken) ||
+        credentials.AccessTokenExpiresAt is not null ||
+        !string.IsNullOrWhiteSpace(credentials.Cookie) ||
+        !string.IsNullOrWhiteSpace(credentials.UserAgent);
+
     private void EnsureStorageDirectory()
     {
         Directory.CreateDirectory(_storageDirectory);
