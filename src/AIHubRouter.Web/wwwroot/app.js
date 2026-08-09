@@ -229,6 +229,62 @@ function renderProviders(providers) {
   updateSortIndicators();
 }
 
+function renderLunaRoute(route, configuredKeyCount) {
+  const resolved = route || {
+    configured: configuredKeyCount > 0,
+    hasRun: false,
+    healthAvailable: false,
+    hasTarget: false,
+    healthMessage: configuredKeyCount > 0
+      ? `已配置 ${configuredKeyCount} 个 Luna Key，尚未运行。`
+      : "未配置 Luna Key。",
+    filteredGroupCount: 0,
+    selectedKeyCount: configuredKeyCount,
+    groupId: null,
+    plan: null,
+    multiplier: null,
+    latency: null,
+    decisionReason: "未运行"
+  };
+  let stateLabel = "未配置";
+  let stateKey = "unconfigured";
+  let badgeClass = "";
+  if (resolved.configured && !resolved.hasRun) {
+    stateLabel = "未运行";
+    stateKey = "pending";
+    badgeClass = "warning";
+  } else if (resolved.configured && !resolved.healthAvailable) {
+    stateLabel = "不可访问";
+    stateKey = "unavailable";
+    badgeClass = "error";
+  } else if (resolved.configured && !resolved.hasTarget) {
+    stateLabel = "无可用候选";
+    stateKey = "no-target";
+    badgeClass = "warning";
+  } else if (resolved.configured) {
+    stateLabel = "可用";
+    stateKey = "available";
+    badgeClass = "available";
+  }
+
+  const panel = $("#lunaRoutePanel");
+  panel.dataset.state = stateKey;
+  const stateBadge = $("#lunaRouteState");
+  stateBadge.className = `state-badge ${badgeClass}`;
+  stateBadge.textContent = stateLabel;
+  $("#lunaHealthMessage").textContent = resolved.healthMessage || "暂无 Luna 健康信息。";
+  $("#lunaRouteGroup").textContent = resolved.groupId ?? "-";
+  $("#lunaRoutePlan").textContent = resolved.plan || "-";
+  $("#lunaRouteMultiplier").textContent = Number.isFinite(resolved.multiplier)
+    ? `${formatNumber(resolved.multiplier)}x` : "-";
+  $("#lunaRouteLatency").textContent = Number.isFinite(resolved.latency)
+    ? `${resolved.latency.toFixed(0)} ms` : "-";
+  $("#lunaRouteFiltered").textContent = resolved.hasRun
+    ? `${resolved.filteredGroupCount} 个` : "-";
+  $("#lunaRouteKeys").textContent = resolved.configured
+    ? `${resolved.selectedKeyCount} 个` : "-";
+}
+
 function renderKeys(keys) {
   $("#keyCount").textContent = `${keys.length} 个 Key`;
   $("#keyRows").innerHTML = keys.length ? keys.map(key => `
@@ -255,6 +311,7 @@ function renderDashboard(dashboard, syncSettings = false) {
   hydrateSettings(dashboard.settings, syncSettings);
   $("#connectionSummary").textContent = dashboard.connectionSummary;
   $("#candidateSummary").textContent = dashboard.candidateSummary;
+  renderLunaRoute(dashboard.lunaRoute, (dashboard.settings.lunaSelectedKeyIds || []).length);
   $("#autoRouting").checked = dashboard.autoRouting;
   $("#busyIndicator").hidden = !dashboard.isBusy && !state.requestInFlight;
   $$("#refreshButton, #dryRunButton, #routeButton, #saveButton").forEach(button => {

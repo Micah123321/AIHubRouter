@@ -44,7 +44,24 @@ public sealed record WebDashboard(
     WebProviderCacheHitRateStatus? ProviderCacheHitRateStatus,
     string CandidateSummary,
     string ConnectionSummary,
-    DateTimeOffset? LastUpdatedAt);
+    DateTimeOffset? LastUpdatedAt)
+{
+    public WebLunaRoute? LunaRoute { get; init; }
+}
+
+public sealed record WebLunaRoute(
+    bool Configured,
+    bool HasRun,
+    bool HealthAvailable,
+    bool HasTarget,
+    string HealthMessage,
+    int FilteredGroupCount,
+    int SelectedKeyCount,
+    long? GroupId,
+    string? Plan,
+    double? Multiplier,
+    double? Latency,
+    string DecisionReason);
 
 public sealed record WebSettings(
     string BaseUrl,

@@ -449,7 +449,10 @@ public sealed class WebRouterCoordinator : BackgroundService
                     result.ProviderCacheHitRateStatus.Message),
             candidateSummary,
             $"API-only / {settings.RoutingMode}",
-            _lastUpdatedAt);
+            _lastUpdatedAt)
+        {
+            LunaRoute = BuildLunaRoute(result?.LunaRoute, effectiveLunaSelectedIds.Length)
+        };
     }
 
     private static WebProviderRow BuildProviderRow(
@@ -629,6 +632,49 @@ public sealed class WebRouterCoordinator : BackgroundService
             ? "无可用候选"
             : $"{target.Group.Id} / 方案：{DisplayPlan(target.Provider, target.Group)}";
         return $"Luna 目标：{targetText} / 过滤 {lunaRoute.FilteredGroupCount} 个分组";
+    }
+
+    private static WebLunaRoute BuildLunaRoute(
+        LunaRouteResult? lunaRoute,
+        int configuredKeyCount)
+    {
+        var selectedKeyCount = lunaRoute?.SelectedKeyIds.Count ?? configuredKeyCount;
+        var configured = configuredKeyCount > 0 || selectedKeyCount > 0;
+        if (lunaRoute is null)
+        {
+            return new WebLunaRoute(
+                configured,
+                false,
+                false,
+                false,
+                configured
+                    ? $"已配置 {configuredKeyCount} 个 Luna Key，尚未运行。"
+                    : "未配置 Luna Key。",
+                0,
+                selectedKeyCount,
+                null,
+                null,
+                null,
+                null,
+                "未运行");
+        }
+
+        var target = lunaRoute.Decision?.Target;
+        return new WebLunaRoute(
+            configured,
+            true,
+            lunaRoute.HealthAvailable,
+            target is not null,
+            lunaRoute.HealthMessage,
+            lunaRoute.FilteredGroupCount,
+            selectedKeyCount,
+            target?.Group.Id,
+            target is null ? null : DisplayPlan(target.Provider, target.Group),
+            target?.EffectiveMultiplier,
+            target?.Provider.FirstTokenLatencyMs,
+            lunaRoute.Decision is { } decision
+                ? ReasonText(decision.Reason)
+                : "无可用候选");
     }
 
     private static string? BuildLunaStatus(LunaRouteResult? lunaRoute) =>

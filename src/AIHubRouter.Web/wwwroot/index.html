@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light dark">
   <title>AIHub Router</title>
   <link rel="icon" href="/app-icon.png">
-  <link rel="stylesheet" href="/app.css?v=1.0.16">
-  <script src="/app.js?v=1.0.16" type="module"></script>
+  <link rel="stylesheet" href="/app.css?v=1.0.17">
+  <script src="/app.js?v=1.0.17" type="module"></script>
 </head>
 <body>
   <section class="login-view" id="loginView" hidden>
@@ -184,6 +184,21 @@
         <div class="section-heading">
           <h2 id="providerTitle">方案状态</h2>
           <span class="section-meta" id="providerCount">0 个方案</span>
+        </div>
+        <div class="luna-route-panel" id="lunaRoutePanel" data-state="unconfigured" role="status" aria-live="polite">
+          <div class="luna-route-heading">
+            <strong>Luna 路由</strong>
+            <span class="state-badge" id="lunaRouteState">未配置</span>
+          </div>
+          <p class="luna-route-message" id="lunaHealthMessage">未配置 Luna Key。</p>
+          <div class="luna-route-grid">
+            <div class="luna-route-metric"><span>目标分组</span><strong id="lunaRouteGroup">-</strong></div>
+            <div class="luna-route-metric"><span>方案</span><strong id="lunaRoutePlan">-</strong></div>
+            <div class="luna-route-metric"><span>倍率</span><strong id="lunaRouteMultiplier">-</strong></div>
+            <div class="luna-route-metric"><span>首字</span><strong id="lunaRouteLatency">-</strong></div>
+            <div class="luna-route-metric"><span>过滤分组</span><strong id="lunaRouteFiltered">-</strong></div>
+            <div class="luna-route-metric"><span>已选 Key</span><strong id="lunaRouteKeys">-</strong></div>
+          </div>
         </div>
         <div class="table-frame provider-frame">
           <table class="data-table provider-table">
