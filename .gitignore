@@ -10,3 +10,7 @@ tests/release-scan-*.fixture
 *.user
 *.suo
 .helloagents
+gpt56_api_detector
+.playwright-cli
+**/__pycache__/
+*.pyc

@@ -30,8 +30,13 @@ ENV DOTNET_RUNNING_IN_CONTAINER=true \
     XDG_CONFIG_HOME=/app/data
 
 COPY --from=build /app/publish ./
+COPY scripts/channel_detector_worker.py ./scripts/channel_detector_worker.py
+COPY gpt56_api_detector ./gpt56_api_detector
 
 RUN mkdir -p /app/data \
+    && apt-get update \
+    && apt-get install --no-install-recommends --yes python3 \
+    && rm -rf /var/lib/apt/lists/* \
     && chown -R 10001:10001 /app
 
 USER 10001:10001

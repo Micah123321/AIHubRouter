@@ -120,6 +120,12 @@ finalScore = weightedScore
 
 持久化设置新增 `LunaSelectedKeyIds`，路由状态新增 `LunaCurrentGroupId`。主路由和 Luna 路由不能共享 Key；两条 lane 分别完成决策和 PUT 后，协调器统一合并更新后的 Key 缓存并保存双状态，周期结果通过 `LunaRoute` 暴露 Luna 目标、过滤数量、健康状态和逐 Key 结果。
 
+### 4.4 渠道可靠性检测
+
+可靠性检测按当前选中的 active Key 独立调度，默认间隔 600 秒；首次运行、Key 换组或强制刷新会提前检测。每个 `KeyId` 只使用自己的 `DetectorBinding` 和加密 `DetectorApiKeys`，检测不会借用其他 Key 的凭据。探测集合是绑定模型和该分组 `model_health` 中显式 `healthy` 模型的交集；失败、未知或没有可用模型时不发送探针，也不据此判定掺水。
+
+worker 通过 stdin 调用 `gpt56_api_detector/gpt56_vnext` 的官方 `single/low` preset，并只返回脱敏状态。`可能非GPT`、`Juice混用`、`仅概率探针混用` 才能创建硬隔离；网络、HTTP、超时、截断流、证据不足或 worker 不可用只显示状态，不隔离。硬异常按 `GroupId` 写入独立的 `channel-reliability.json`，默认本地隔离 24 小时，并在主/Luna 候选计算前与永久黑名单取并集；dry-run 不写入，重启可恢复，过期自动恢复，不调用远端禁用。
+
 ### 4.4 权重稳定机制
 
 首 Token 延迟会随网络和服务负载波动。算法通过置信度修正、保守延迟和最小得分优势抑制频繁切换：
@@ -197,14 +203,14 @@ public interface IRouteSelector;
 - Linux/macOS GUI 与无头模式：当前统一使用 `AIHUB_ROUTER_MASTER_KEY` 保存 AES-GCM 加密凭据；Secret Service/Keychain 适配器属于后续平台增强，不是当前实现。
 - 无头模式：优先从环境变量或 stdin 读取；没有外部主密钥时不保存非空凭据，也不回退到明文。
 - `PersistentAppSettings.PersistCredentials` 对新配置和缺少该字段的旧配置默认为 `true`；旧配置中明确写出的 `false` 继续保留，避免升级时改变用户的安全选择。
-- 邮箱、密码、Bearer/Refresh Token、Cookie 和 User-Agent 只写入加密的 `credentials.dat`；普通设置写入 `settings.json`，两个文件不会混存敏感字段。
+- 邮箱、密码、Bearer/Refresh Token、Cookie、User-Agent 和按 Key 的检测 API 密钥只写入加密的 `credentials.dat`；普通设置写入 `settings.json`，两个文件不会混存敏感字段。
 - 保存先完成序列化和加密，再使用进程内锁和同目录 `persistence.lock` 跨进程排他锁提交两个文件；临时/备份路径只接受当前 profile 生成的固定文件名模式。事务记录用于进程异常退出恢复，加密或替换失败时恢复旧文件，不留下明文或半提交状态。这不承诺所有操作系统上的断电级目录元数据原子性。
 - 没有安全存储或主密钥时，带非空凭据的保存会明确失败；普通设置和空凭据仍可保存，绝不回退到明文。
 - 如果保护器暂时不可用但目录中已有 `credentials.dat`，加载状态会标记凭据不可用；普通设置保存不会把该文件当成空凭据删除，恢复主密钥后仍可尝试解密。用户明确关闭 `PersistCredentials` 时才会清理该文件。
 - Web/桌面/CLI 会分别展示或输出“已有认证待解密”状态；CLI `config show` 保持 `hasStoredCredentials=true` 并额外输出 `credentialsUnavailable=true`，避免把不可读密文误报为没有认证。
 - Web/CLI 的环境变量只覆盖本次运行时值，不回写 `settings.json` 或 `credentials.dat`；环境变量提供的 Token 刷新结果也只保留在进程内。
 
-供应商参考设置包括 `ProviderSeriesWeight`、`ProviderSeriesCacheSeconds`、`ProviderSeriesRange` 和 `ProviderSeriesTimezone`。默认值分别为 `0.20`、`300`、`6h` 和 `Asia/Shanghai`。其中 `ProviderSeriesCacheSeconds` 只控制序列响应缓存；供应商 `cache_hit_rate` 来自 `/providers`，没有单独的伪缓存命中率配置。
+供应商参考设置包括 `ProviderSeriesWeight`、`ProviderSeriesCacheSeconds`、`ProviderSeriesRange` 和 `ProviderSeriesTimezone`。默认值分别为 `0.20`、`300`、`6h` 和 `Asia/Shanghai`。可靠性设置包括 `ReliabilityDetectionEnabled=true`、`ReliabilityDetectionIntervalSeconds=600`、`ReliabilityQuarantineHours=24`、`DetectorPythonCommand=python3`、`DetectorWorkerPath=scripts/channel_detector_worker.py` 和 `DetectorPreset=low`。其中 `ProviderSeriesCacheSeconds` 只控制序列响应缓存；供应商 `cache_hit_rate` 来自 `/providers`，没有单独的伪缓存命中率配置。绑定元数据通过 Web `/api/settings` 保存，检测密钥不会从 dashboard 返回。
 
 主密钥只从 `AIHUB_ROUTER_MASTER_KEY` 或 stdin 获取，不写入参数、日志或配置文件。
 
@@ -225,6 +231,8 @@ aihub-router watch [--interval <seconds>] [--json]
 aihub-router status [--json]
 aihub-router config show|set
 ```
+
+`config set` 支持 `--reliability-enabled`、`--reliability-interval`、`--reliability-quarantine-hours`、`--detector-python`、`--detector-worker` 和 `--detector-preset low`。每 Key 的 `detectorBindings` 与一次性 `detectorApiKeys` 通过 Web 设置接口配置；CLI `config show` 只输出绑定 Key ID 和是否存在检测凭据，不输出密钥值。
 
 认证命令默认按 `PersistCredentials` 安全保存登录会话或 Token；`--persist` 是强制保存的兼容别名，`--no-persist` 只对本次命令禁用保存，不清理已有文件。通过 `config set`、Web 或 Desktop 将 `PersistCredentials` 设为 `false` 时才会删除 `credentials.dat`。敏感值不得作为普通命令行参数。CLI 使用稳定退出码：
 
@@ -283,3 +291,5 @@ CLI 和 Desktop 分别生成自包含包。第一阶段不启用 Native AOT，�
 - dry-run 不发送 `PUT`。
 - watch 取消与 profile 排他锁。
 - 配置文件不包含凭据明文。
+- 可靠性 worker 缺失时显示不可用但不阻断主/Luna 路由；只有硬异常创建本地 24 小时隔离。
+- sol/terra-only 绑定不发送 Luna 探针；不同 Key 的绑定、凭据和结果不会互相借用。

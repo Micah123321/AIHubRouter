@@ -109,7 +109,15 @@ var tests = new (string Name, Action Body)[]
     ("JSON 403 business error is not a Cloudflare challenge", TestJsonBusinessErrorIsNotCloudflareChallenge),
     ("Empty key selection roundtrips", TestEmptyKeySelectionRoundtrips),
     ("First key selection chooses first active key", TestFirstKeySelectionChoosesFirstActiveKey),
-    ("Initialized empty key selection stays empty", TestInitializedEmptyKeySelectionStaysEmpty)
+    ("Initialized empty key selection stays empty", TestInitializedEmptyKeySelectionStaysEmpty),
+    ("Reliability model capability selection", ChannelReliabilityTests.TestDetectorModelNamesAndProbeSelection),
+    ("Reliability skips failed and unknown models", ChannelReliabilityTests.TestSelectProbeModelsSkipsFailedAndUnknown),
+    ("Reliability hard verdict classification", ChannelReliabilityTests.TestHardVerdictClassification),
+    ("Reliability quarantine expires after 24 hours", ChannelReliabilityTests.TestQuarantineExpiresAfterTwentyFourHours),
+    ("Reliability quarantine store roundtrip", ChannelReliabilityTests.TestJsonQuarantineStoreRoundtripAndActiveFiltering),
+    ("Reliability serialization excludes secrets", ChannelReliabilityTests.TestReliabilitySerializationExcludesSecrets),
+    ("Reliability keeps Key bindings and model capabilities independent", ChannelReliabilityTests.TestMonitorKeepsKeyBindingsIndependent),
+    ("Reliability quarantines hard detector verdicts", ChannelReliabilityTests.TestMonitorQuarantinesHardVerdict)
 };
 
 var failures = 0;

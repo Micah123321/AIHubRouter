@@ -149,6 +149,18 @@
               <span>序列时区</span>
               <input id="providerSeriesTimezone" type="text" autocomplete="off">
             </label>
+            <label class="field">
+              <span>可靠性检测</span>
+              <input id="reliabilityDetectionEnabled" type="checkbox">
+            </label>
+            <label class="field">
+              <span>检测间隔秒数</span>
+              <input id="reliabilityDetectionIntervalSeconds" type="number" min="60" max="86400" step="60">
+            </label>
+            <label class="field">
+              <span>隔离时长小时</span>
+              <input id="reliabilityQuarantineHours" type="number" min="1" max="168" step="1">
+            </label>
           </div>
         </details>
       </section>

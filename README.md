@@ -42,6 +42,14 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 主路由和 Luna 路由可以使用不同的 API Key。主路由仍使用 `SelectedKeyIds`，Luna 使用 `LunaSelectedKeyIds`（CLI 配置参数为 `--luna-selected-keys`）；同一个 Key 不能同时加入两侧。Luna 会独立读取 `/api/v1/public/providers` 返回的 `model_health`，仅排除明确标记 `luna: "failed"` 的分组后重新计算候选和排序。健康数据不可用或没有 active Luna Key 时，Luna 会显示降级状态并跳过写入，主路由不受阻断；两侧有目标时更新请求并行执行。
 
+### 渠道可靠性检测
+
+路由服务默认每 10 分钟检测当前实际使用的 active Key。每个 Key 通过 `KeyId` 绑定自己的检测地址、可用模型和加密检测 API 密钥；不会跨 Key 借用凭据。检测模型只取该分组 `model_health` 中显式为 `healthy` 且绑定声明允许的 `sol`、`terra`、`luna`，因此只有 sol/terra 的渠道不会发送 Luna 探针。
+
+检测复用仓库中的 `gpt56_api_detector/gpt56_vnext` 官方 `single/low` preset。参考结果为 `可能非GPT`、`Juice混用` 或 `仅概率探针混用` 时，Router 会把对应 `GroupId` 标记为“掺水隔离”，写入 profile 的 `channel-reliability.json` 并本地禁用 24 小时；HTTP 错误、超时、截断流、证据不足或 worker 不可用不会误隔离。隔离分组会从主路由和 Luna 路由候选中排除，过期后自动恢复，不会调用 AIHub 远端禁用接口。
+
+Web 设置接口接收 `detectorBindings` 和一次性 `detectorApiKeys`，凭据写入加密 `credentials.dat`，dashboard、CLI JSON、日志和页面只显示 Key/模型/状态/到期时间，不回显密钥。Docker 镜像已带 `python3`、worker 和参考检测器；自定义部署缺少 Python 时会明确显示“检测不可用”，但不会阻断原有路由。
+
 默认 `Balanced` 对价格与首 Token 速度各占 50% 权重；`Economy` 以价格为主，`Speed` 以首 Token 速度为主。当前分组仍然有效时，新分组还必须超过“分组粘性”才会切换；默认值为 `0.10`，可在 Web、桌面端或 CLI 的 `--group-stickiness` 中调整。数值越大，越不容易因短时波动切换分组。每次结果都会告诉你为什么选它。
 
 价格范围是硬约束，默认仅允许 `0.00x` 到 `0.15x`（含边界）的生效倍率参与路由。范围外的分组不会进入候选池，也不能通过手动分组切换；可在 Web、桌面端或 CLI 的 `--min-price`、`--max-price` 调整。
@@ -232,7 +240,7 @@ aihub-router config set [options]
 
 ### 配置与认证持久化
 
-普通路由设置始终保存到 `settings.json`。新配置以及缺少 `persistCredentials` 字段的旧配置默认启用认证持久化；旧文件中明确写出的 `persistCredentials: false` 会继续保留，避免升级时意外改变用户选择。Web 页面在用户编辑邮箱、密码或 Token 后保存时，会自动启用“安全保存认证”，避免将刚输入的认证误作关闭持久化后的清除操作；用户仍可在未编辑认证的情况下关闭该开关，以清理本地认证。通过 Desktop 或配置设置关闭 `PersistCredentials` 后，邮箱、密码、Bearer Token、Refresh Token、Cookie 和 User-Agent 的本地加密文件 `credentials.dat` 会被清理；CLI 的 `--no-persist` 只影响当前认证命令，不删除已有文件。
+普通路由设置始终保存到 `settings.json`。新配置以及缺少 `persistCredentials` 字段的旧配置默认启用认证持久化；旧文件中明确写出的 `persistCredentials: false` 会继续保留，避免升级时意外改变用户选择。Web 页面在用户编辑邮箱、密码或 Token 后保存时，会自动启用“安全保存认证”，避免将刚输入的认证误作关闭持久化后的清除操作；用户仍可在未编辑认证的情况下关闭该开关，以清理本地认证。通过 Desktop 或配置设置关闭 `PersistCredentials` 后，邮箱、密码、Bearer Token、Refresh Token、Cookie、User-Agent 和按 Key 的检测 API 密钥的本地加密文件 `credentials.dat` 会被清理；CLI 的 `--no-persist` 只影响当前认证命令，不删除已有文件。
 
 认证信息不会以明文写入配置：Windows 使用当前用户 DPAPI，Linux/macOS 无头环境和 Docker 使用 `AIHUB_ROUTER_MASTER_KEY` 提供的 AES-GCM。没有可用保护器时，带认证内容的保存会明确失败，程序不会回退到明文；仅保存普通设置或空认证仍可完成。若已有加密凭据暂时无法解密，普通设置保存会保留原 `credentials.dat`，恢复保护器后仍可读取；只有明确关闭持久化才会删除该文件。保存采用跨进程持久化锁、两个文件的替换、事务记录和失败恢复，避免设置和凭据只更新一半；进程异常退出后，下次加载会先恢复未完成的提交。
 

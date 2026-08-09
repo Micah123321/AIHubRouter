@@ -67,6 +67,30 @@ public sealed class WebRouterCoordinator : BackgroundService
                     "Luna 路由不能脱离主路由单独运行，请先选择主路由 Key。" );
             }
 
+            var detectorBindings = request.DetectorBindings is null
+                ? _storedSettings.DetectorBindings
+                : NormalizeDetectorBindings(request.DetectorBindings);
+            var detectorApiKeys = new Dictionary<long, string>(_storedCredentials.DetectorApiKeys ?? []);
+            if (request.DetectorApiKeys is not null)
+            {
+                foreach (var pair in request.DetectorApiKeys)
+                {
+                    if (pair.Key <= 0)
+                    {
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(pair.Value))
+                    {
+                        detectorApiKeys.Remove(pair.Key);
+                    }
+                    else
+                    {
+                        detectorApiKeys[pair.Key] = pair.Value;
+                    }
+                }
+            }
+
             var oldSettings = _settings;
             var storedCredentials = _storedCredentials with
             {
@@ -116,8 +140,25 @@ public sealed class WebRouterCoordinator : BackgroundService
                         (_settings.KeySelectionInitialized && _settings.SelectedKeyIds.Length > 0),
                 SelectedKeyIds = selectedKeyIds,
                 LunaSelectedKeyIds = lunaSelectedKeyIds,
-                BlacklistedGroupIds = request.BlacklistedGroupIds.Where(id => id > 0).Distinct().Order().ToArray()
+                BlacklistedGroupIds = request.BlacklistedGroupIds.Where(id => id > 0).Distinct().Order().ToArray(),
+                ReliabilityDetectionEnabled = request.ReliabilityDetectionEnabled ??
+                    _storedSettings.ReliabilityDetectionEnabled,
+                ReliabilityDetectionIntervalSeconds = request.ReliabilityDetectionIntervalSeconds ??
+                    _storedSettings.ReliabilityDetectionIntervalSeconds,
+                ReliabilityQuarantineHours = request.ReliabilityQuarantineHours ??
+                    _storedSettings.ReliabilityQuarantineHours,
+                DetectorPythonCommand = string.IsNullOrWhiteSpace(request.DetectorPythonCommand)
+                    ? _storedSettings.DetectorPythonCommand
+                    : request.DetectorPythonCommand.Trim(),
+                DetectorWorkerPath = string.IsNullOrWhiteSpace(request.DetectorWorkerPath)
+                    ? _storedSettings.DetectorWorkerPath
+                    : request.DetectorWorkerPath.Trim(),
+                DetectorPreset = string.IsNullOrWhiteSpace(request.DetectorPreset)
+                    ? _storedSettings.DetectorPreset
+                    : request.DetectorPreset.Trim(),
+                DetectorBindings = detectorBindings
             };
+            storedCredentials = storedCredentials with { DetectorApiKeys = detectorApiKeys };
             var persistedCredentials = storedSettings.PersistCredentials
                 ? storedCredentials
                 : new PersistentCredentials();
@@ -156,7 +197,14 @@ public sealed class WebRouterCoordinator : BackgroundService
                     !string.Equals(oldSettings.ProviderSeriesRange, settings.ProviderSeriesRange, StringComparison.Ordinal) ||
                     !string.Equals(oldSettings.ProviderSeriesTimezone, settings.ProviderSeriesTimezone, StringComparison.Ordinal) ||
                     !string.Equals(oldSettings.BaseUrl, settings.BaseUrl, StringComparison.OrdinalIgnoreCase) ||
-                    !oldSettings.BlacklistedGroupIds.SequenceEqual(settings.BlacklistedGroupIds))
+                    !oldSettings.BlacklistedGroupIds.SequenceEqual(settings.BlacklistedGroupIds) ||
+                    oldSettings.ReliabilityDetectionEnabled != settings.ReliabilityDetectionEnabled ||
+                    oldSettings.ReliabilityDetectionIntervalSeconds != settings.ReliabilityDetectionIntervalSeconds ||
+                    oldSettings.ReliabilityQuarantineHours != settings.ReliabilityQuarantineHours ||
+                    !string.Equals(oldSettings.DetectorPythonCommand, settings.DetectorPythonCommand, StringComparison.Ordinal) ||
+                    !string.Equals(oldSettings.DetectorWorkerPath, settings.DetectorWorkerPath, StringComparison.Ordinal) ||
+                    !string.Equals(oldSettings.DetectorPreset, settings.DetectorPreset, StringComparison.Ordinal) ||
+                    !BindingsEqual(oldSettings.DetectorBindings, settings.DetectorBindings))
                 {
                     _lastResult = null;
                 }
@@ -331,11 +379,16 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _lastResult = result;
                 _lastUpdatedAt = result.CompletedAt;
                 var lunaStatus = BuildLunaStatus(result.LunaRoute);
+                var reliabilityStatus = BuildReliabilityStatus(result.Reliability);
                 _status = $"{ReasonText(result.Decision.Reason)}；切换 {result.ChangedKeyCount} 个，失败 {result.FailedKeyCount} 个。" +
-                    (lunaStatus is null ? string.Empty : $" {lunaStatus}");
+                    (lunaStatus is null ? string.Empty : $" {lunaStatus}") +
+                    (reliabilityStatus is null ? string.Empty : $" {reliabilityStatus}");
                 _statusKind = result.FailedKeyCount > 0
                     ? "error"
                     : result.LunaRoute is { HealthAvailable: false } ||
+                        result.Reliability?.Keys.Any(key =>
+                            key.Status is ChannelReliabilityStatus.Unavailable or
+                                ChannelReliabilityStatus.EvidenceInsufficient) == true ||
                         result.ProviderSeriesStatus.IsDegraded ||
                         result.ProviderCacheHitRateStatus.IsDegraded
                         ? "warning"
@@ -396,6 +449,12 @@ public sealed class WebRouterCoordinator : BackgroundService
         var blacklistedIds = settings.BlacklistedGroupIds.ToHashSet();
         var groupsById = result?.Groups.GroupBy(group => group.Id)
             .ToDictionary(group => group.Key, group => group.First()) ?? [];
+        var reliabilityGroups = result?.Reliability?.Groups
+            .GroupBy(group => group.GroupId)
+            .ToDictionary(group => group.Key, group => group.First()) ?? [];
+        var reliabilityKeys = result?.Reliability?.Keys
+            .GroupBy(key => key.KeyId)
+            .ToDictionary(key => key.Key, key => key.First()) ?? [];
         var targetId = result?.Decision.Target?.Group.Id;
 
         var groups = (result?.Groups ?? [])
@@ -418,20 +477,30 @@ public sealed class WebRouterCoordinator : BackgroundService
                 groupsById,
                 result!.Evaluation,
                 targetId,
-                blacklistedIds))
+                blacklistedIds,
+                reliabilityGroups))
             .OrderByDescending(provider => provider.WeightedScore)
             .ThenBy(provider => provider.GroupId)
             .ToArray();
 
         var keys = (result?.Keys ?? [])
-            .Select(key => new WebKeyRow(
-                key.Id,
-                key.Name,
-                key.Status,
-                key.GroupId,
-                key.Group?.Name ?? "未绑定",
-                selectedIds.Contains(key.Id),
-                lunaSelectedIds.Contains(key.Id)))
+            .Select(key =>
+            {
+                reliabilityKeys.TryGetValue(key.Id, out var reliability);
+                return new WebKeyRow(
+                    key.Id,
+                    key.Name,
+                    key.Status,
+                    key.GroupId,
+                    key.Group?.Name ?? "未绑定",
+                    selectedIds.Contains(key.Id),
+                    lunaSelectedIds.Contains(key.Id))
+                {
+                    ReliabilityState = reliability?.Status.ToString() ?? ChannelReliabilityStatus.Unconfigured.ToString(),
+                    ReliabilityQuarantinedUntil = reliability?.QuarantinedUntil,
+                    ReliabilityModels = reliability?.Models ?? []
+                };
+            })
             .ToArray();
 
         var target = result?.Decision.Target;
@@ -469,7 +538,16 @@ public sealed class WebRouterCoordinator : BackgroundService
                 settings.ThemeMode,
                 effectiveSelectedIds,
                 effectiveLunaSelectedIds,
-                settings.BlacklistedGroupIds),
+                settings.BlacklistedGroupIds)
+            {
+                ReliabilityDetectionEnabled = settings.ReliabilityDetectionEnabled,
+                ReliabilityDetectionIntervalSeconds = settings.ReliabilityDetectionIntervalSeconds,
+                ReliabilityQuarantineHours = settings.ReliabilityQuarantineHours,
+                DetectorPythonCommand = settings.DetectorPythonCommand,
+                DetectorWorkerPath = settings.DetectorWorkerPath,
+                DetectorPreset = settings.DetectorPreset,
+                DetectorBindings = settings.DetectorBindings
+            },
             providers,
             groups,
             keys,
@@ -495,7 +573,8 @@ public sealed class WebRouterCoordinator : BackgroundService
             $"API-only / {settings.RoutingMode}",
             _lastUpdatedAt)
         {
-            LunaRoute = BuildLunaRoute(result?.LunaRoute, effectiveLunaSelectedIds.Length)
+            LunaRoute = BuildLunaRoute(result?.LunaRoute, effectiveLunaSelectedIds.Length),
+            Reliability = result?.Reliability
         };
     }
 
@@ -504,14 +583,22 @@ public sealed class WebRouterCoordinator : BackgroundService
         IReadOnlyDictionary<long, GroupInfo> groups,
         RouteEvaluation evaluation,
         long? targetGroupId,
-        IReadOnlySet<long> blacklistedGroupIds)
+        IReadOnlySet<long> blacklistedGroupIds,
+        IReadOnlyDictionary<long, ChannelReliabilityGroupSummary> reliabilityGroups)
     {
         var candidate = evaluation.EligibleCandidates.FirstOrDefault(item =>
             item.Group.Id == provider.GroupId && item.Provider.Id == provider.Id);
         var multiplier = candidate?.EffectiveMultiplier ?? provider.PriceMultiplier;
         var score = candidate is null ? null : RoutingEngine.CalculateWeightedScore(evaluation, candidate);
+        var reliability = provider.GroupId is { } reliabilityGroupId &&
+            reliabilityGroups.TryGetValue(reliabilityGroupId, out var reliabilitySummary)
+            ? reliabilitySummary
+            : null;
+        var reliabilityQuarantined = reliability?.Status == ChannelReliabilityStatus.Quarantined;
         var state = provider.GroupId is { } groupId && blacklistedGroupIds.Contains(groupId)
             ? "黑名单"
+            : reliabilityQuarantined
+                ? "掺水隔离"
             : provider.GroupId == targetGroupId
                 ? "推荐"
                 : !provider.Enabled ? "停用" : !provider.Available ? "异常" :
@@ -519,7 +606,8 @@ public sealed class WebRouterCoordinator : BackgroundService
         var canManualRoute = provider.GroupId is { } manualGroupId &&
             groups.TryGetValue(manualGroupId, out var group) &&
             group.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
-            !blacklistedGroupIds.Contains(manualGroupId);
+            !blacklistedGroupIds.Contains(manualGroupId) &&
+            !reliabilityQuarantined;
 
         return new WebProviderRow(
             provider.Id,
@@ -536,7 +624,12 @@ public sealed class WebRouterCoordinator : BackgroundService
             state,
             provider.CheckedAt,
             canManualRoute,
-            provider.GroupId == targetGroupId);
+            provider.GroupId == targetGroupId)
+        {
+            ReliabilityState = reliability?.Status.ToString() ?? ChannelReliabilityStatus.Unconfigured.ToString(),
+            ReliabilityQuarantinedUntil = reliability?.QuarantinedUntil,
+            ReliabilityModels = reliability?.Models ?? []
+        };
     }
 
     private void EnsureService()
@@ -584,7 +677,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                 }
 
                 return Task.CompletedTask;
-            });
+            },
+            channelQuarantineStore: new JsonChannelQuarantineStore(_store.StorageDirectory));
     }
 
     private void ResetService()
@@ -653,6 +747,61 @@ public sealed class WebRouterCoordinator : BackgroundService
             throw new ArgumentException("供应商序列时区不能为空。", nameof(request.ProviderSeriesTimezone));
         }
 
+        if (request.ReliabilityDetectionIntervalSeconds is < 60 or > 86_400)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request.ReliabilityDetectionIntervalSeconds),
+                "可靠性检测间隔必须在 60 到 86400 秒之间。" );
+        }
+
+        if (request.ReliabilityQuarantineHours is < 1 or > 168)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(request.ReliabilityQuarantineHours),
+                "可靠性隔离时长必须在 1 到 168 小时之间。" );
+        }
+
+        if (request.DetectorPythonCommand is not null &&
+            string.IsNullOrWhiteSpace(request.DetectorPythonCommand))
+        {
+            throw new ArgumentException("检测 Python 命令不能为空。", nameof(request.DetectorPythonCommand));
+        }
+
+        if (request.DetectorWorkerPath is not null &&
+            string.IsNullOrWhiteSpace(request.DetectorWorkerPath))
+        {
+            throw new ArgumentException("检测 worker 路径不能为空。", nameof(request.DetectorWorkerPath));
+        }
+
+        if (request.DetectorPreset is not null &&
+            !string.Equals(request.DetectorPreset.Trim(), "low", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("当前只支持官方 low 检测 preset。", nameof(request.DetectorPreset));
+        }
+
+        if (request.DetectorBindings is not null)
+        {
+            var bindingIds = new HashSet<long>();
+            foreach (var binding in request.DetectorBindings)
+            {
+                if (binding is null || binding.KeyId <= 0 || !bindingIds.Add(binding.KeyId))
+                {
+                    throw new ArgumentException("检测绑定的 Key ID 必须为正数且不能重复。", nameof(request.DetectorBindings));
+                }
+
+                if (!Uri.TryCreate(binding.BaseUrl?.Trim(), UriKind.Absolute, out var bindingUri) ||
+                    (bindingUri.Scheme != Uri.UriSchemeHttp && bindingUri.Scheme != Uri.UriSchemeHttps))
+                {
+                    throw new ArgumentException("检测绑定地址仅支持 HTTP 或 HTTPS。", nameof(request.DetectorBindings));
+                }
+
+                if ((binding.Models ?? []).Any(model => !DetectorModelNames.IsSupported(model)))
+                {
+                    throw new ArgumentException("检测绑定包含不支持的模型。", nameof(request.DetectorBindings));
+                }
+            }
+        }
+
         if (request.GroupStickiness < 0 || !double.IsFinite(request.GroupStickiness))
         {
             throw new ArgumentOutOfRangeException(nameof(request.GroupStickiness), "分组粘性必须是非负有限数值。");
@@ -678,6 +827,64 @@ public sealed class WebRouterCoordinator : BackgroundService
 
     private static long[] NormalizeIds(IEnumerable<long>? ids) =>
         (ids ?? []).Where(id => id > 0).Distinct().Order().ToArray();
+
+    private static DetectorBinding[] NormalizeDetectorBindings(IEnumerable<DetectorBinding> bindings) =>
+        (bindings ?? [])
+            .Where(binding => binding is not null)
+            .Where(binding => binding.KeyId > 0)
+            .GroupBy(binding => binding.KeyId)
+            .Select(group => group.Last())
+            .Select(binding => binding with
+            {
+                BaseUrl = binding.BaseUrl.Trim().TrimEnd('/'),
+                Models = (binding.Models ?? [])
+                    .Select(DetectorModelNames.Normalize)
+                    .Where(model => model is not null)
+                    .Select(model => model!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Order()
+                    .ToArray()
+            })
+            .OrderBy(binding => binding.KeyId)
+            .ToArray();
+
+    private static bool BindingsEqual(
+        IReadOnlyList<DetectorBinding> left,
+        IReadOnlyList<DetectorBinding> right)
+    {
+        var leftBindings = left.OrderBy(binding => binding.KeyId).ToArray();
+        var rightBindings = right.OrderBy(binding => binding.KeyId).ToArray();
+        if (leftBindings.Length != rightBindings.Length)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < leftBindings.Length; index++)
+        {
+            var first = leftBindings[index];
+            var second = rightBindings[index];
+            if (first.KeyId != second.KeyId ||
+                first.Enabled != second.Enabled ||
+                !string.Equals(first.BaseUrl.Trim().TrimEnd('/'), second.BaseUrl.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase) ||
+                !(first.Models ?? [])
+                    .Select(DetectorModelNames.Normalize)
+                    .Where(model => model is not null)
+                    .Select(model => model!)
+                    .Order(StringComparer.OrdinalIgnoreCase)
+                    .SequenceEqual(
+                        (second.Models ?? [])
+                            .Select(DetectorModelNames.Normalize)
+                            .Where(model => model is not null)
+                            .Select(model => model!)
+                            .Order(StringComparer.OrdinalIgnoreCase),
+                        StringComparer.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static string? BuildLunaSummary(LunaRouteResult? lunaRoute, int configuredKeyCount)
     {
@@ -739,6 +946,20 @@ public sealed class WebRouterCoordinator : BackgroundService
     private static string? BuildLunaStatus(LunaRouteResult? lunaRoute) =>
         lunaRoute is null ? null : $"Luna：{lunaRoute.HealthMessage}";
 
+    private static string? BuildReliabilityStatus(ChannelReliabilityCycleResult? reliability)
+    {
+        if (reliability is null)
+        {
+            return null;
+        }
+
+        return reliability.ExcludedGroupIds.Count > 0
+            ? $"可靠性隔离 {reliability.ExcludedGroupIds.Count} 个分组"
+            : reliability.Enabled
+                ? "可靠性检测已完成"
+                : null;
+    }
+
     private static PersistentAppSettings ApplyEnvironmentSettings(PersistentAppSettings settings)
     {
         var baseUrl = Environment.GetEnvironmentVariable("AIHUB_BASE_URL");
@@ -793,7 +1014,9 @@ public sealed class WebRouterCoordinator : BackgroundService
         !string.IsNullOrWhiteSpace(credentials.RefreshToken) ||
         credentials.AccessTokenExpiresAt is not null ||
         !string.IsNullOrWhiteSpace(credentials.Cookie) ||
-        !string.IsNullOrWhiteSpace(credentials.UserAgent);
+        !string.IsNullOrWhiteSpace(credentials.UserAgent) ||
+        (credentials.DetectorApiKeys ?? []).Any(pair =>
+            pair.Key > 0 && !string.IsNullOrWhiteSpace(pair.Value));
 
     private static string DisplayPlan(ProviderStatus provider, GroupInfo group) =>
         string.IsNullOrWhiteSpace(provider.PlanType) ? group.Name : provider.PlanType;

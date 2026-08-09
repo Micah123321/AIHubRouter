@@ -100,6 +100,7 @@ fi
 
 printf '正在构建镜像：%s\n' "$image_name"
 docker build --pull --tag "$image_name" "$repo_root"
+printf '可靠性检测 worker 已随镜像部署：python3 + scripts/channel_detector_worker.py；检测密钥不会写入环境文件。\n'
 
 if ! docker volume inspect "$volume_name" >/dev/null 2>&1; then
   printf '正在创建数据卷：%s\n' "$volume_name"

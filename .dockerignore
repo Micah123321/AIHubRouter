@@ -16,8 +16,9 @@ docs
 docs/**
 deploy
 deploy/**
-scripts
 scripts/**
+!scripts/
+!scripts/channel_detector_worker.py
 tests
 tests/**
 src/AIHubRouter.Browser
@@ -29,3 +30,5 @@ src/AIHubRouter.Desktop/**
 *.user
 *.suo
 *.pdb
+**/__pycache__/
+*.pyc

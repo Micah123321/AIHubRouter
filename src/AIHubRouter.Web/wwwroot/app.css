@@ -352,6 +352,10 @@ input:focus-visible + .switch { box-shadow: 0 0 0 3px color-mix(in srgb, var(--f
 .state-badge.recommended, .state-badge.available { background: var(--accent-soft); color: var(--success); }
 .state-badge.warning { color: var(--warning); }
 .state-badge.error, .state-badge.blacklisted { background: var(--danger-soft); color: var(--danger); }
+.reliability-note { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.25; white-space: normal; }
+.reliability-note.available { color: var(--success); }
+.reliability-note.warning { color: var(--warning); }
+.reliability-note.error { color: var(--danger); }
 
 .statusbar {
   position: fixed;

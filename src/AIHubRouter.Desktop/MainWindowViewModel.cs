@@ -470,7 +470,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
                 return Task.CompletedTask;
             },
-            cloudflareChallengeSolver: _cloudflareChallengeSolver);
+            cloudflareChallengeSolver: _cloudflareChallengeSolver,
+            channelQuarantineStore: new JsonChannelQuarantineStore(_store.StorageDirectory));
         _routingSettingsStale = false;
     }
 
@@ -510,6 +511,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         var targetId = result.Decision.Target?.Group.Id;
         var groups = result.Groups.ToDictionary(group => group.Id);
         var groupRows = Groups.ToDictionary(group => group.Id);
+        var reliabilityGroups = result.Reliability?.Groups
+            .GroupBy(group => group.GroupId)
+            .ToDictionary(group => group.Key, group => group.First()) ?? [];
         foreach (var provider in result.Providers
                      .Where(provider => provider.Platform.Equals(
                          RoutingModePlatform(),
@@ -523,7 +527,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 groupRows,
                 targetId,
                 _manualRouteGroupId,
-                result.Evaluation);
+                result.Evaluation,
+                provider.GroupId is { } providerGroupId &&
+                    reliabilityGroups.TryGetValue(providerGroupId, out var reliability)
+                    ? reliability
+                    : null);
             row.PropertyChanged += (_, args) =>
             {
                 if (args.PropertyName == nameof(ProviderRowViewModel.CanManualRoute))
@@ -540,12 +548,29 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         var selected = result.SelectedKeyIds.ToHashSet();
         var persistedLunaIds = _store.Load().Settings.LunaSelectedKeyIds.ToHashSet();
         var selectedForLuna = result.LunaRoute?.SelectedKeyIds.ToHashSet() ?? new HashSet<long>();
+        var reliabilityKeys = result.Reliability?.Keys
+            .GroupBy(key => key.KeyId)
+            .ToDictionary(key => key.Key, key => key.First()) ?? [];
         foreach (var key in result.Keys)
         {
-            Keys.Add(CreateKeyRow(
+            var row = CreateKeyRow(
                 key,
                 selected.Contains(key.Id),
-                selectedForLuna.Contains(key.Id) || persistedLunaIds.Contains(key.Id)));
+                selectedForLuna.Contains(key.Id) || persistedLunaIds.Contains(key.Id));
+            if (reliabilityKeys.TryGetValue(key.Id, out var reliability))
+            {
+                row.ReliabilityState = reliability.Status.ToString();
+                row.ReliabilitySummary = reliability.Status == ChannelReliabilityStatus.Quarantined
+                    ? $"掺水隔离至 {reliability.QuarantinedUntil?.ToLocalTime():MM-dd HH:mm}"
+                    : reliability.Status == ChannelReliabilityStatus.Passed
+                        ? "可靠性通过"
+                        : reliability.Status == ChannelReliabilityStatus.Unavailable
+                            ? "检测不可用"
+                            : reliability.Status == ChannelReliabilityStatus.EvidenceInsufficient
+                                ? "证据不足"
+                                : string.Empty;
+            }
+            Keys.Add(row);
         }
 
         if (_manualRouteGroupId is { } manualGroupId)
@@ -960,7 +985,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         !string.IsNullOrWhiteSpace(credentials.RefreshToken) ||
         credentials.AccessTokenExpiresAt is not null ||
         !string.IsNullOrWhiteSpace(credentials.Cookie) ||
-        !string.IsNullOrWhiteSpace(credentials.UserAgent);
+        !string.IsNullOrWhiteSpace(credentials.UserAgent) ||
+        (credentials.DetectorApiKeys ?? []).Any(pair =>
+            pair.Key > 0 && !string.IsNullOrWhiteSpace(pair.Value));
 
     private void UpdateCredentialStatus()
     {
@@ -1002,7 +1029,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         bool success)
     {
         var warning = success &&
-            (result.ProviderSeriesStatus.IsDegraded || result.ProviderCacheHitRateStatus.IsDegraded);
+            (result.ProviderSeriesStatus.IsDegraded ||
+             result.ProviderCacheHitRateStatus.IsDegraded ||
+             result.Reliability?.Keys.Any(key =>
+                 key.Status is ChannelReliabilityStatus.Unavailable or
+                     ChannelReliabilityStatus.EvidenceInsufficient) == true);
         SetStatus(WithProviderReferenceStatus(message, result), success, warning);
     }
 
@@ -1011,7 +1042,12 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         var details = new[]
         {
             result.ProviderSeriesStatus.Message,
-            result.ProviderCacheHitRateStatus.Message
+            result.ProviderCacheHitRateStatus.Message,
+            result.Reliability is { } reliability && reliability.ExcludedGroupIds.Count > 0
+                ? $"可靠性隔离 {reliability.ExcludedGroupIds.Count} 个分组"
+                : result.Reliability is { Enabled: true }
+                    ? "可靠性检测已启用"
+                    : string.Empty
         }
         .Where(detail => !string.IsNullOrWhiteSpace(detail));
         var suffix = string.Join("；", details);
@@ -1062,7 +1098,8 @@ public sealed class ProviderRowViewModel : ObservableObject
         IReadOnlyDictionary<long, GroupRowViewModel> groupRows,
         long? targetGroupId,
         long? manualTargetGroupId,
-        RouteEvaluation evaluation)
+        RouteEvaluation evaluation,
+        ChannelReliabilityGroupSummary? reliability = null)
     {
         _provider = provider;
         var candidate = FindCandidate(evaluation);
@@ -1095,7 +1132,19 @@ public sealed class ProviderRowViewModel : ObservableObject
             ? $"{cacheHitRate:P1}"
             : "-";
         ApplyEvaluation(evaluation);
-        _baseState = !provider.Enabled ? "停用"
+        ReliabilityState = reliability?.Status.ToString() ?? ChannelReliabilityStatus.Unconfigured.ToString();
+        ReliabilitySummary = reliability is null || reliability.Status == ChannelReliabilityStatus.Unconfigured
+            ? string.Empty
+            : reliability.Status == ChannelReliabilityStatus.Quarantined
+                ? $"掺水隔离至 {reliability.QuarantinedUntil?.ToLocalTime():MM-dd HH:mm}"
+                : reliability.Status == ChannelReliabilityStatus.Passed
+                    ? "可靠性通过"
+                    : reliability.Status == ChannelReliabilityStatus.Unavailable
+                        ? "检测不可用"
+                        : "证据不足";
+        _baseState = reliability?.Status == ChannelReliabilityStatus.Quarantined
+            ? "掺水隔离"
+            : !provider.Enabled ? "停用"
             : !provider.Available ? "异常"
             : provider.HasWarnings ? "警告"
             : provider.GroupId == manualTargetGroupId ? "手动"
@@ -1104,7 +1153,8 @@ public sealed class ProviderRowViewModel : ObservableObject
         CheckedAt = provider.CheckedAt?.ToLocalTime().ToString("MM-dd HH:mm:ss") ?? "-";
         _baseCanManualRoute = provider.GroupId is { } manualGroupId &&
             groups.TryGetValue(manualGroupId, out var manualGroup) &&
-            manualGroup.Status.Equals("active", StringComparison.OrdinalIgnoreCase);
+            manualGroup.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
+            reliability?.Status != ChannelReliabilityStatus.Quarantined;
 
         if (_group is not null)
         {
@@ -1147,6 +1197,8 @@ public sealed class ProviderRowViewModel : ObservableObject
     }
     public string BlacklistToolTip => Blacklisted ? "已禁用，点击恢复候选" : "点击禁用此分组";
     public string State => Blacklisted ? "黑名单" : _baseState;
+    public string ReliabilityState { get; }
+    public string ReliabilitySummary { get; }
     public string CheckedAt { get; }
     public bool CanManualRoute => _baseCanManualRoute && !Blacklisted;
 
@@ -1217,4 +1269,6 @@ public sealed partial class KeyRowViewModel : ObservableObject
     public string Status { get; }
     public string GroupId { get; }
     public string GroupName { get; }
+    public string ReliabilityState { get; set; } = ChannelReliabilityStatus.Unconfigured.ToString();
+    public string ReliabilitySummary { get; set; } = string.Empty;
 }

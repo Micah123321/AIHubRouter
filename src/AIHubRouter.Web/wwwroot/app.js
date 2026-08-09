@@ -145,6 +145,9 @@ function hydrateSettings(settings, force = false) {
   $("#providerSeriesCacheSeconds").value = settings.providerSeriesCacheSeconds;
   $("#providerSeriesRange").value = settings.providerSeriesRange;
   $("#providerSeriesTimezone").value = settings.providerSeriesTimezone;
+  $("#reliabilityDetectionEnabled").checked = settings.reliabilityDetectionEnabled !== false;
+  $("#reliabilityDetectionIntervalSeconds").value = settings.reliabilityDetectionIntervalSeconds ?? 600;
+  $("#reliabilityQuarantineHours").value = settings.reliabilityQuarantineHours ?? 24;
   $("#pollingInterval").value = settings.pollingIntervalSeconds;
   $("#persistCredentials").checked = settings.persistCredentials;
   $("#themeSelect").value = enumValue(settings.themeMode);
@@ -207,7 +210,29 @@ function sortedProviders(providers) {
 }
 
 function stateClass(value) {
-  return ({ "推荐": "recommended", "可用": "available", "警告": "warning", "异常": "error", "停用": "error", "黑名单": "blacklisted" })[value] || "";
+  return ({ "推荐": "recommended", "可用": "available", "警告": "warning", "异常": "error", "停用": "error", "黑名单": "blacklisted", "掺水隔离": "error" })[value] || "";
+}
+
+function reliabilityLabel(state) {
+  return ({
+    passed: "可靠性通过", Passed: "可靠性通过",
+    quarantined: "掺水隔离", Quarantined: "掺水隔离",
+    unavailable: "检测不可用", Unavailable: "检测不可用",
+    evidenceInsufficient: "证据不足", EvidenceInsufficient: "证据不足",
+    unconfigured: "未配置检测", Unconfigured: "未配置检测"
+  })[state] || "未检测";
+}
+
+function reliabilityMarkup(state, until, models) {
+  if (!state || state === "unconfigured" || state === "Unconfigured") return "";
+  const label = reliabilityLabel(state);
+  const modelText = Array.isArray(models) && models.length ? ` · ${models.join("/")}` : "";
+  const isPassed = state === "passed" || state === "Passed";
+  const isQuarantined = state === "quarantined" || state === "Quarantined";
+  const isUnavailable = state === "unavailable" || state === "Unavailable";
+  const untilText = isQuarantined && until ? ` · 至 ${formatDate(until)}` : "";
+  const className = isPassed ? "available" : isQuarantined || isUnavailable ? "error" : "warning";
+  return `<div class="reliability-note ${className}">${escapeHtml(label + modelText + untilText)}</div>`;
 }
 
 function renderProviders(providers) {
@@ -226,7 +251,7 @@ function renderProviders(providers) {
       <td>${Number.isFinite(provider.confidence) ? `${formatPercent(provider.confidence)} / ${provider.sampleCount}` : "-"}</td>
       <td>${formatPercent(provider.cacheHitRate)}</td>
       <td>${formatScore(provider.weightedScore)}</td>
-      <td><span class="state-badge ${stateClass(provider.state)}">${escapeHtml(provider.state)}</span></td>
+      <td><span class="state-badge ${stateClass(provider.state)}">${escapeHtml(provider.state)}</span>${reliabilityMarkup(provider.reliabilityState, provider.reliabilityQuarantinedUntil, provider.reliabilityModels)}</td>
       <td>${formatDate(provider.checkedAt)}</td>
     </tr>`).join("") : '<tr><td class="empty-state" colspan="10">刷新后显示方案</td></tr>';
   $("#manualButton").disabled = state.dashboard?.isBusy || !state.selectedGroupId;
@@ -297,7 +322,7 @@ function renderKeys(keys) {
       <td><input type="checkbox" class="luna-key-check" data-id="${key.id}" aria-label="Luna 路由 ${escapeHtml(key.name)}" ${state.draftLunaKeyIds.has(key.id) ? "checked" : ""}></td>
       <td>${key.id}</td>
       <td>${escapeHtml(key.name)}</td>
-      <td><span class="state-badge ${key.status === "active" ? "available" : "error"}">${escapeHtml(key.status)}</span></td>
+      <td><span class="state-badge ${key.status === "active" ? "available" : "error"}">${escapeHtml(key.status)}</span>${reliabilityMarkup(key.reliabilityState, key.reliabilityQuarantinedUntil, key.reliabilityModels)}</td>
       <td>${key.groupId ?? "-"}</td>
       <td>${escapeHtml(key.groupName)}</td>
     </tr>`).join("") : '<tr><td class="empty-state" colspan="7">刷新后显示 Key</td></tr>';
@@ -365,7 +390,10 @@ function settingsPayload() {
     themeMode: $("#themeSelect").value,
     selectedKeyIds: [...state.draftKeyIds],
     blacklistedGroupIds: [...state.draftBlacklistIds],
-    lunaSelectedKeyIds: [...state.draftLunaKeyIds]
+    lunaSelectedKeyIds: [...state.draftLunaKeyIds],
+    reliabilityDetectionEnabled: $("#reliabilityDetectionEnabled").checked,
+    reliabilityDetectionIntervalSeconds: readBoundedInteger("#reliabilityDetectionIntervalSeconds", 60, 86400, "可靠性检测间隔"),
+    reliabilityQuarantineHours: readBoundedInteger("#reliabilityQuarantineHours", 1, 168, "可靠性隔离时长")
   };
 }
 

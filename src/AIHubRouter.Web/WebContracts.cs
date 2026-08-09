@@ -26,7 +26,15 @@ public sealed record SettingsUpdateRequest(
     AppThemeMode ThemeMode,
     long[] SelectedKeyIds,
     long[] BlacklistedGroupIds,
-    long[]? LunaSelectedKeyIds = null);
+    long[]? LunaSelectedKeyIds = null,
+    bool? ReliabilityDetectionEnabled = null,
+    int? ReliabilityDetectionIntervalSeconds = null,
+    int? ReliabilityQuarantineHours = null,
+    string? DetectorPythonCommand = null,
+    string? DetectorWorkerPath = null,
+    string? DetectorPreset = null,
+    DetectorBinding[]? DetectorBindings = null,
+    Dictionary<long, string>? DetectorApiKeys = null);
 
 public sealed record ManualRouteRequest(long GroupId);
 public sealed record AutoRoutingRequest(bool Enabled);
@@ -47,6 +55,7 @@ public sealed record WebDashboard(
     DateTimeOffset? LastUpdatedAt)
 {
     public WebLunaRoute? LunaRoute { get; init; }
+    public ChannelReliabilityCycleResult? Reliability { get; init; }
 }
 
 public sealed record WebLunaRoute(
@@ -86,7 +95,16 @@ public sealed record WebSettings(
     AppThemeMode ThemeMode,
     long[] SelectedKeyIds,
     long[] LunaSelectedKeyIds,
-    long[] BlacklistedGroupIds);
+    long[] BlacklistedGroupIds)
+{
+    public bool ReliabilityDetectionEnabled { get; init; }
+    public int ReliabilityDetectionIntervalSeconds { get; init; } = 600;
+    public int ReliabilityQuarantineHours { get; init; } = 24;
+    public string DetectorPythonCommand { get; init; } = "python3";
+    public string DetectorWorkerPath { get; init; } = "scripts/channel_detector_worker.py";
+    public string DetectorPreset { get; init; } = "low";
+    public IReadOnlyList<DetectorBinding> DetectorBindings { get; init; } = [];
+}
 
 public sealed record WebProviderSeriesStatus(
     bool Available,
@@ -113,7 +131,12 @@ public sealed record WebProviderRow(
     string State,
     DateTimeOffset? CheckedAt,
     bool CanManualRoute,
-    bool Recommended);
+    bool Recommended)
+{
+    public string ReliabilityState { get; init; } = "Unconfigured";
+    public DateTimeOffset? ReliabilityQuarantinedUntil { get; init; }
+    public IReadOnlyList<string> ReliabilityModels { get; init; } = [];
+}
 
 public sealed record WebGroupRow(
     long Id,
@@ -129,4 +152,9 @@ public sealed record WebKeyRow(
     long? GroupId,
     string GroupName,
     bool Selected,
-    bool LunaSelected);
+    bool LunaSelected)
+{
+    public string ReliabilityState { get; init; } = "Unconfigured";
+    public DateTimeOffset? ReliabilityQuarantinedUntil { get; init; }
+    public IReadOnlyList<string> ReliabilityModels { get; init; } = [];
+}

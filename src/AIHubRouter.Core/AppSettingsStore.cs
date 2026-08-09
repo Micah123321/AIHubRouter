@@ -35,6 +35,13 @@ public sealed record PersistentAppSettings
     public long[] SelectedKeyIds { get; init; } = [];
     public long[] LunaSelectedKeyIds { get; init; } = [];
     public long[] BlacklistedGroupIds { get; init; } = [];
+    public bool ReliabilityDetectionEnabled { get; init; } = true;
+    public int ReliabilityDetectionIntervalSeconds { get; init; } = 600;
+    public int ReliabilityQuarantineHours { get; init; } = 24;
+    public string DetectorPythonCommand { get; init; } = "python3";
+    public string DetectorWorkerPath { get; init; } = "scripts/channel_detector_worker.py";
+    public string DetectorPreset { get; init; } = "low";
+    public DetectorBinding[] DetectorBindings { get; init; } = [];
 
     public BalancedRoutingPolicy CreatePolicy()
     {
@@ -66,6 +73,7 @@ public sealed record PersistentCredentials
     public DateTimeOffset? AccessTokenExpiresAt { get; init; }
     public string Cookie { get; init; } = string.Empty;
     public string UserAgent { get; init; } = string.Empty;
+    public Dictionary<long, string> DetectorApiKeys { get; init; } = [];
 }
 
 public sealed record PersistenceSnapshot(
@@ -132,7 +140,11 @@ public sealed partial class AppSettingsStore
                     : settings.ProviderSeriesRange.Trim(),
                 ProviderSeriesTimezone = string.IsNullOrWhiteSpace(settings.ProviderSeriesTimezone)
                     ? "Asia/Shanghai"
-                    : settings.ProviderSeriesTimezone.Trim()
+                    : settings.ProviderSeriesTimezone.Trim(),
+                SelectedKeyIds = settings.SelectedKeyIds ?? [],
+                LunaSelectedKeyIds = settings.LunaSelectedKeyIds ?? [],
+                BlacklistedGroupIds = settings.BlacklistedGroupIds ?? [],
+                DetectorBindings = settings.DetectorBindings ?? []
             };
             PersistentCredentials? credentials = null;
             var credentialsUnavailable = false;
@@ -145,6 +157,13 @@ public sealed partial class AppSettingsStore
                     try
                     {
                         credentials = JsonSerializer.Deserialize<PersistentCredentials>(plaintext, JsonOptions);
+                        if (credentials is not null)
+                        {
+                            credentials = credentials with
+                            {
+                                DetectorApiKeys = credentials.DetectorApiKeys ?? []
+                            };
+                        }
                     }
                     finally
                     {
@@ -226,7 +245,9 @@ public sealed partial class AppSettingsStore
         !string.IsNullOrWhiteSpace(credentials.RefreshToken) ||
         credentials.AccessTokenExpiresAt is not null ||
         !string.IsNullOrWhiteSpace(credentials.Cookie) ||
-        !string.IsNullOrWhiteSpace(credentials.UserAgent);
+        !string.IsNullOrWhiteSpace(credentials.UserAgent) ||
+        (credentials.DetectorApiKeys ?? []).Any(pair =>
+            pair.Key > 0 && !string.IsNullOrWhiteSpace(pair.Value));
 
     private void EnsureStorageDirectory()
     {

@@ -142,7 +142,10 @@
                       <TextBlock Grid.Column="5" Text="{Binding Confidence}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="6" Text="{Binding CacheHitRate}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="7" Text="{Binding WeightedScore}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="8" Text="{Binding State}" VerticalAlignment="Center" />
+                      <StackPanel Grid.Column="8" Spacing="1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding State}" />
+                        <TextBlock Text="{Binding ReliabilitySummary}" FontSize="10" Opacity="0.72" />
+                      </StackPanel>
                       <TextBlock Grid.Column="9" Text="{Binding CheckedAt}" VerticalAlignment="Center" />
                     </Grid>
                   </DataTemplate>
@@ -170,7 +173,10 @@
                       <CheckBox Grid.Column="1" IsChecked="{Binding SelectedForLuna}" Margin="10,0" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Text="{Binding Id}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="3" Text="{Binding Name}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="4" Text="{Binding Status}" VerticalAlignment="Center" />
+                      <StackPanel Grid.Column="4" Spacing="1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Status}" />
+                        <TextBlock Text="{Binding ReliabilitySummary}" FontSize="10" Opacity="0.72" />
+                      </StackPanel>
                       <TextBlock Grid.Column="5" Text="{Binding GroupId}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="6" Text="{Binding GroupName}" VerticalAlignment="Center" />
                     </Grid>

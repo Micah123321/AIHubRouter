@@ -63,6 +63,7 @@ public sealed record RoutingCycleResult(
     DateTimeOffset CompletedAt)
 {
     public LunaRouteResult? LunaRoute { get; init; }
+    public ChannelReliabilityCycleResult? Reliability { get; init; }
 
     public int ChangedKeyCount =>
         KeyResults.Count(result => result.Changed && result.Success) +
@@ -137,6 +138,8 @@ public sealed class RoutingService : IDisposable
     private readonly Func<PersistentCredentials, CancellationToken, Task>? _persistCredentials;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly ProviderSeriesCache _providerSeriesCache;
+    private readonly IChannelQuarantineStore _channelQuarantineStore;
+    private readonly ChannelReliabilityMonitor? _reliabilityMonitor;
     private PersistentCredentials _credentials;
     private AuthSession? _currentSession;
     private IAIHubApiClient? _sessionClient;
@@ -159,7 +162,9 @@ public sealed class RoutingService : IDisposable
         IAIHubClientFactory? clientFactory = null,
         Func<PersistentCredentials, CancellationToken, Task>? persistCredentials = null,
         Func<DateTimeOffset>? utcNow = null,
-        ICloudflareChallengeSolver? cloudflareChallengeSolver = null)
+        ICloudflareChallengeSolver? cloudflareChallengeSolver = null,
+        IChannelQuarantineStore? channelQuarantineStore = null,
+        IChannelReliabilityDetector? reliabilityDetector = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _credentials = credentials ?? throw new ArgumentNullException(nameof(credentials));
@@ -169,6 +174,23 @@ public sealed class RoutingService : IDisposable
         _persistCredentials = persistCredentials;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _providerSeriesCache = new ProviderSeriesCache(settings);
+        _channelQuarantineStore = channelQuarantineStore ??
+            new JsonChannelQuarantineStore(AppPaths.GetConfigurationDirectory());
+        if (settings.ReliabilityDetectionEnabled)
+        {
+            var workerPath = Path.GetFullPath(settings.DetectorWorkerPath);
+            var workerDirectory = Path.GetDirectoryName(workerPath);
+            _reliabilityMonitor = new ChannelReliabilityMonitor(
+                settings,
+                credentials,
+                reliabilityDetector ?? new ProcessChannelReliabilityDetector(
+                    settings.DetectorPythonCommand,
+                    workerPath,
+                    settings.DetectorPreset,
+                    workingDirectory: workerDirectory),
+                _channelQuarantineStore,
+                _utcNow);
+        }
         _cacheHitRateStatus = settings.ProviderSeriesWeight > 0
             ? ProviderCacheHitRateLoadStatus.Unavailable("供应商缓存命中率尚未加载。")
             : ProviderCacheHitRateLoadStatus.Disabled;
@@ -289,7 +311,7 @@ public sealed class RoutingService : IDisposable
             now,
             forceAccountRefresh,
             cancellationToken,
-            requestedLunaKeyIds.Count > 0);
+            requestedLunaKeyIds.Count > 0 || _settings.ReliabilityDetectionEnabled);
 
         var usageStats = new[] { await usageStatsTask };
         var providerSeries = await providerSeriesTask;
@@ -326,6 +348,22 @@ public sealed class RoutingService : IDisposable
                 $"主路由与 Luna 路由不能选择同一 Key：{string.Join(", ", overlappingKeyIds)}。" );
         }
 
+        var reliabilityKeys = selectedKeys
+            .Concat(selectedLunaKeys)
+            .GroupBy(key => key.Id)
+            .Select(group => group.First())
+            .ToArray();
+        var reliability = _reliabilityMonitor is null
+            ? BuildDisabledReliabilityCycleResult(reliabilityKeys, now)
+            : await _reliabilityMonitor.CheckAsync(
+                reliabilityKeys,
+                _cachedModelHealthByGroup,
+                _cachedGroups,
+                dryRun,
+                force: false,
+                currentKeyResolver: keyId => _cachedKeys.FirstOrDefault(key => key.Id == keyId),
+                cancellationToken: cancellationToken);
+        var reliabilityExcludedGroupIds = reliability.ExcludedGroupIds.ToHashSet();
         var state = _stateStore.Load();
         var evaluation = RoutingEngine.Evaluate(
             providers,
@@ -333,7 +371,8 @@ public sealed class RoutingService : IDisposable
             _cachedRates,
             policy,
             now,
-            providerSeries.Page?.Groups);
+            providerSeries.Page?.Groups,
+            reliabilityExcludedGroupIds);
         var providerSeriesStatus = ResolveProviderSeriesStatus(
             providerSeries.Status,
             evaluation);
@@ -386,7 +425,9 @@ public sealed class RoutingService : IDisposable
                     policy,
                     now,
                     providerSeries.Page?.Groups,
-                    lunaHealth.FailedGroupIds);
+                    lunaHealth.FailedGroupIds
+                        .Concat(reliabilityExcludedGroupIds)
+                        .ToHashSet());
                 var lunaState = new RouteState { CurrentGroupId = state.LunaCurrentGroupId };
                 var lunaDecisionResult = RouteDecisionEngine.Decide(
                     lunaEvaluation,
@@ -399,7 +440,9 @@ public sealed class RoutingService : IDisposable
                     lunaEvaluation,
                     selectedLunaKeys.Select(key => key.Id).ToArray(),
                     [],
-                    lunaHealth.FailedGroupIds.Count,
+                    lunaHealth.FailedGroupIds
+                        .Union(reliabilityExcludedGroupIds)
+                        .Count(),
                     true,
                     lunaHealth.Message);
                 lunaExecutionTask = ExecuteRouteLaneAsync(
@@ -463,7 +506,8 @@ public sealed class RoutingService : IDisposable
             dryRun,
             _utcNow())
         {
-            LunaRoute = lunaRoute
+            LunaRoute = lunaRoute,
+            Reliability = reliability
         };
     }
 
@@ -522,6 +566,52 @@ public sealed class RoutingService : IDisposable
         }
 
         return new RouteLaneExecution(decisionResult, keyResults, updatedKeys);
+    }
+
+    private ChannelReliabilityCycleResult BuildDisabledReliabilityCycleResult(
+        IReadOnlyList<ApiKeyInfo> selectedKeys,
+        DateTimeOffset now)
+    {
+        var snapshot = new ChannelQuarantineSnapshot
+        {
+            CapturedAt = now.ToUniversalTime(),
+            Records = _channelQuarantineStore.LoadLatest()
+        };
+        return new ChannelReliabilityCycleResult
+        {
+            Enabled = false,
+            StartedAt = now.ToUniversalTime(),
+            CompletedAt = now.ToUniversalTime(),
+            Keys = selectedKeys
+                .Select(key => new ChannelReliabilityKeySummary
+                {
+                    KeyId = key.Id,
+                    KeyName = key.Name,
+                    GroupId = key.GroupId,
+                    Status = snapshot.IsActive(key.GroupId ?? 0, now)
+                        ? ChannelReliabilityStatus.Quarantined
+                        : ChannelReliabilityStatus.Unconfigured,
+                    QuarantinedUntil = key.GroupId is { } groupId
+                        ? snapshot.Records.FirstOrDefault(record =>
+                            record.GroupId == groupId && record.IsActiveAt(now))?.ExpiresAt
+                        : null
+                })
+                .ToArray(),
+            Groups = snapshot.Records
+                .Where(record => record.IsActiveAt(now))
+                .GroupBy(record => record.GroupId)
+                .Select(group => new ChannelReliabilityGroupSummary
+                {
+                    GroupId = group.Key,
+                    Status = ChannelReliabilityStatus.Quarantined,
+                    Verdict = group.First().Verdict,
+                    SourceKeyId = group.First().SourceKeyId,
+                    QuarantinedUntil = group.First().ExpiresAt
+                })
+                .OrderBy(group => group.GroupId)
+                .ToArray(),
+            Quarantine = snapshot
+        };
     }
 
     private (bool Available, IReadOnlySet<long> FailedGroupIds, string Message) ResolveLunaHealth()
@@ -600,6 +690,11 @@ public sealed class RoutingService : IDisposable
         if (_settings.BlacklistedGroupIds.Contains(groupId))
         {
             throw new InvalidOperationException("所选分组已加入黑名单。" );
+        }
+
+        if (_channelQuarantineStore.GetActive(now).Any(record => record.GroupId == groupId))
+        {
+            throw new InvalidOperationException("所选分组处于可靠性隔离期，暂不能手动路由。" );
         }
 
         var targetGroup = _cachedGroups.FirstOrDefault(group =>
@@ -714,7 +809,9 @@ public sealed class RoutingService : IDisposable
         var groupsTask = client.GetAvailableGroupsAsync(cancellationToken);
         var ratesTask = client.GetUserGroupRatesAsync(cancellationToken);
         var keysTask = client.GetAllKeysAsync(cancellationToken);
-        var shouldLoadProviderReferences = _settings.ProviderSeriesWeight > 0 || requireLunaHealth;
+        var shouldLoadProviderReferences = _settings.ProviderSeriesWeight > 0 ||
+            requireLunaHealth ||
+            _settings.ReliabilityDetectionEnabled;
         var cacheHitRatesTask = shouldLoadProviderReferences
             ? LoadProviderCacheHitRatesAsync(
                 client,
@@ -904,7 +1001,8 @@ public sealed class RoutingService : IDisposable
             RefreshToken = session.RefreshToken,
             AccessTokenExpiresAt = session.ExpiresAt,
             Cookie = _credentials.Cookie,
-            UserAgent = _credentials.UserAgent
+            UserAgent = _credentials.UserAgent,
+            DetectorApiKeys = _credentials.DetectorApiKeys
         };
 
         if (_persistCredentials is not null)
@@ -944,6 +1042,7 @@ public sealed class RoutingService : IDisposable
 
     public void Dispose()
     {
+        _reliabilityMonitor?.Dispose();
         _authenticatedClient?.Dispose();
         _sessionClient?.Dispose();
     }

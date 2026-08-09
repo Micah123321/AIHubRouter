@@ -331,7 +331,8 @@ internal static class CliApplication
 
                 return Task.CompletedTask;
             },
-            cloudflareChallengeSolver: CloudflareSolver.Value);
+            cloudflareChallengeSolver: CloudflareSolver.Value,
+            channelQuarantineStore: new JsonChannelQuarantineStore(store.StorageDirectory));
     }
 
     private static async Task<bool> WaitForWatchEventAsync(
@@ -375,7 +376,17 @@ internal static class CliApplication
                 canPersistCredentials = store.CanPersistCredentials,
                 credentialProtection = store.CredentialProtection,
                 hasStoredCredentials = snapshot.Credentials is not null || snapshot.CredentialsUnavailable,
-                credentialsUnavailable = snapshot.CredentialsUnavailable
+                credentialsUnavailable = snapshot.CredentialsUnavailable,
+                reliabilityDetectionEnabled = snapshot.Settings.ReliabilityDetectionEnabled,
+                reliabilityDetectionIntervalSeconds = snapshot.Settings.ReliabilityDetectionIntervalSeconds,
+                reliabilityQuarantineHours = snapshot.Settings.ReliabilityQuarantineHours,
+                detectorBindingKeyIds = (snapshot.Settings.DetectorBindings ?? [])
+                    .Where(binding => binding is not null)
+                    .Select(binding => binding.KeyId)
+                    .Order()
+                    .ToArray(),
+                hasDetectorCredentials = snapshot.Credentials?.DetectorApiKeys?.Any(pair =>
+                    pair.Key > 0 && !string.IsNullOrWhiteSpace(pair.Value)) == true
             }, JsonOptions));
             return 0;
         }
@@ -409,9 +420,23 @@ internal static class CliApplication
         var selectedKeys = GetOption(args, "--selected-keys");
         var lunaSelectedKeys = GetOption(args, "--luna-selected-keys");
         var blacklistedGroups = GetOption(args, "--blacklisted-groups");
+        var reliabilityEnabledOption = GetOption(args, "--reliability-enabled");
+        var reliabilityInterval = GetIntOption(args, "--reliability-interval");
+        var reliabilityQuarantineHours = GetIntOption(args, "--reliability-quarantine-hours");
+        var detectorPythonCommand = GetOption(args, "--detector-python");
+        var detectorWorkerPath = GetOption(args, "--detector-worker");
+        var detectorPreset = GetOption(args, "--detector-preset");
         var allowLoopback = HasFlag(args, "--allow-insecure-loopback")
             ? true
             : settings.AllowInsecureLoopback;
+
+        bool? reliabilityEnabled = null;
+        if (reliabilityEnabledOption is not null)
+        {
+            reliabilityEnabled = bool.TryParse(reliabilityEnabledOption, out var parsed)
+                ? parsed
+                : throw new ArgumentException("--reliability-enabled 必须是 true 或 false。" );
+        }
 
         if (mode is not null && !Enum.TryParse<RoutingMode>(mode, ignoreCase: true, out _))
         {
@@ -459,6 +484,32 @@ internal static class CliApplication
         if (providerSeriesTimezone is not null && string.IsNullOrWhiteSpace(providerSeriesTimezone))
         {
             throw new ArgumentException("--provider-series-timezone 不能为空。");
+        }
+
+        if (reliabilityInterval is < 60 or > 86_400)
+        {
+            throw new ArgumentException("--reliability-interval 必须是 60 到 86400 之间的整数。");
+        }
+
+        if (reliabilityQuarantineHours is < 1 or > 168)
+        {
+            throw new ArgumentException("--reliability-quarantine-hours 必须是 1 到 168 之间的整数。");
+        }
+
+        if (detectorPythonCommand is not null && string.IsNullOrWhiteSpace(detectorPythonCommand))
+        {
+            throw new ArgumentException("--detector-python 不能为空。");
+        }
+
+        if (detectorWorkerPath is not null && string.IsNullOrWhiteSpace(detectorWorkerPath))
+        {
+            throw new ArgumentException("--detector-worker 不能为空。");
+        }
+
+        if (detectorPreset is not null &&
+            !detectorPreset.Trim().Equals("low", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("--detector-preset 当前只支持 low。");
         }
 
         long[]? parsedKeys = null;
@@ -541,7 +592,13 @@ internal static class CliApplication
                 settings.KeySelectionInitialized,
             SelectedKeyIds = parsedKeys ?? settings.SelectedKeyIds,
             LunaSelectedKeyIds = parsedLunaKeys ?? settings.LunaSelectedKeyIds,
-            BlacklistedGroupIds = parsedBlacklistedGroups ?? settings.BlacklistedGroupIds
+            BlacklistedGroupIds = parsedBlacklistedGroups ?? settings.BlacklistedGroupIds,
+            ReliabilityDetectionEnabled = reliabilityEnabled ?? settings.ReliabilityDetectionEnabled,
+            ReliabilityDetectionIntervalSeconds = reliabilityInterval ?? settings.ReliabilityDetectionIntervalSeconds,
+            ReliabilityQuarantineHours = reliabilityQuarantineHours ?? settings.ReliabilityQuarantineHours,
+            DetectorPythonCommand = detectorPythonCommand?.Trim() ?? settings.DetectorPythonCommand,
+            DetectorWorkerPath = detectorWorkerPath?.Trim() ?? settings.DetectorWorkerPath,
+            DetectorPreset = detectorPreset?.Trim().ToLowerInvariant() ?? settings.DetectorPreset
         };
     }
 
@@ -624,7 +681,8 @@ internal static class CliApplication
                 $"[{result.CompletedAt:O}] 无可用路由。" +
                 $"序列：{result.ProviderSeriesStatus.Message} " +
                 $"缓存命中率：{result.ProviderCacheHitRateStatus.Message}" +
-                FormatLunaCycleSummary(result.LunaRoute));
+                FormatLunaCycleSummary(result.LunaRoute) +
+                FormatReliabilitySummary(result.Reliability));
             return;
         }
 
@@ -634,9 +692,10 @@ internal static class CliApplication
             $"rate={decision.Target.EffectiveMultiplier:0.####}x, " +
             $"first-token={FormatLatency(decision.Target.Provider.FirstTokenLatencyMs)}, " +
             $"switch={decision.ShouldSwitch}, changed={result.ChangedKeyCount}, failed={result.FailedKeyCount}, " +
-            $"provider-series={result.ProviderSeriesStatus.Message}, " +
-            $"cache-hit-rate={result.ProviderCacheHitRateStatus.Message}" +
-            FormatLunaCycleSummary(result.LunaRoute));
+                $"provider-series={result.ProviderSeriesStatus.Message}, " +
+                $"cache-hit-rate={result.ProviderCacheHitRateStatus.Message}" +
+            FormatLunaCycleSummary(result.LunaRoute) +
+            FormatReliabilitySummary(result.Reliability));
     }
 
     private static string FormatLunaCycleSummary(LunaRouteResult? lunaRoute)
@@ -653,6 +712,24 @@ internal static class CliApplication
         var health = lunaRoute.HealthAvailable ? "可用" : "不可用";
         return $", luna-target={targetText}, luna-filtered={lunaRoute.FilteredGroupCount}, " +
             $"luna-health={health} ({lunaRoute.HealthMessage})";
+    }
+
+    private static string FormatReliabilitySummary(ChannelReliabilityCycleResult? reliability)
+    {
+        if (reliability is null)
+        {
+            return string.Empty;
+        }
+
+        var active = reliability.ExcludedGroupIds;
+        if (active.Count == 0)
+        {
+            return reliability.Enabled
+                ? ", reliability=enabled"
+                : ", reliability=disabled";
+        }
+
+        return $", reliability=quarantined:{active.Count} group(s) [{string.Join(',', active)}]";
     }
 
     private static object BuildCyclePayload(RoutingCycleResult result)
@@ -728,6 +805,7 @@ internal static class CliApplication
             },
             result.ChangedKeyCount,
             result.FailedKeyCount,
+            reliability = result.Reliability,
             lunaRoute = result.LunaRoute is { } lunaRoute
                 ? new
                 {
@@ -1035,6 +1113,12 @@ internal static class CliApplication
               --selected-keys <id,id,...>
               --luna-selected-keys <id,id,...>
               --blacklisted-groups <id,id,...>
+              --reliability-enabled <true|false>
+              --reliability-interval <60-86400>
+              --reliability-quarantine-hours <1-168>
+              --detector-python <command>
+              --detector-worker <path>
+              --detector-preset <low>
 
             Audit options for route/watch:
               --log-file <path>
@@ -1046,7 +1130,9 @@ internal static class CliApplication
               AIHUB_COOKIE, AIHUB_USER_AGENT, AIHUB_ROUTER_MASTER_KEY
 
             No command opens or embeds a browser. Passwords and tokens are not accepted
-            as regular command-line option values.
+            as regular command-line option values. Detector bindings and per-Key detector
+            credentials are configured through the Web settings API and are never shown by
+            `config show`.
             """ );
     }
 
