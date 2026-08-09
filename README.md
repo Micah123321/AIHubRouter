@@ -219,8 +219,8 @@ AIHubRouter 只负责“把 Key 放到合适的分组”。它不会转发你的
 ## CLI 命令
 
 ```text
-aihub-router auth login --email <email> --password-stdin [--persist]
-aihub-router auth import-token --stdin [--persist]
+aihub-router auth login --email <email> --password-stdin [--persist|--no-persist]
+aihub-router auth import-token --stdin [--persist|--no-persist]
 aihub-router route --once [--dry-run] [--json]
 aihub-router watch [--interval <seconds>] [--dry-run] [--json]
 aihub-router status [--json]
@@ -228,7 +228,17 @@ aihub-router config show
 aihub-router config set [options]
 ```
 
-密码和 Token 不接受普通命令行参数，可通过 stdin、安全凭据文件或环境变量提供。运行 `aihub-router --help` 查看完整选项。
+密码和 Token 不接受普通命令行参数，可通过 stdin、安全凭据文件或环境变量提供。认证命令默认按配置安全保存；`--persist` 是强制保存的兼容别名，`--no-persist` 只对本次命令禁用保存，不会删除已有凭据。只有将 `PersistCredentials` 设为 `false`（Web/Desktop 保存设置或 `config set`）才会清理本地凭据文件。运行 `aihub-router --help` 查看完整选项。
+
+### 配置与认证持久化
+
+普通路由设置始终保存到 `settings.json`。新配置以及缺少 `persistCredentials` 字段的旧配置默认启用认证持久化；旧文件中明确写出的 `persistCredentials: false` 会继续保留，避免升级时意外改变用户选择。通过 Web/Desktop 或配置设置关闭 `PersistCredentials` 后，邮箱、密码、Bearer Token、Refresh Token、Cookie 和 User-Agent 的本地加密文件 `credentials.dat` 会被清理；CLI 的 `--no-persist` 只影响当前认证命令，不删除已有文件。
+
+认证信息不会以明文写入配置：Windows 使用当前用户 DPAPI，Linux/macOS 无头环境和 Docker 使用 `AIHUB_ROUTER_MASTER_KEY` 提供的 AES-GCM。没有可用保护器时，带认证内容的保存会明确失败，程序不会回退到明文；仅保存普通设置或空认证仍可完成。若已有加密凭据暂时无法解密，普通设置保存会保留原 `credentials.dat`，恢复保护器后仍可读取；只有明确关闭持久化才会删除该文件。保存采用跨进程持久化锁、两个文件的替换、事务记录和失败恢复，避免设置和凭据只更新一半；进程异常退出后，下次加载会先恢复未完成的提交。
+
+Web 与 CLI 的 `AIHUB_BASE_URL`、`AIHUB_EMAIL`、`AIHUB_PASSWORD`、`AIHUB_TOKEN`、`AIHUB_REFRESH_TOKEN`、`AIHUB_COOKIE` 和 `AIHUB_USER_AGENT` 只覆盖当前进程的有效值，不会被普通设置保存或 Token 刷新回写到文件。移除环境变量后，程序才会重新使用文件中的值。
+
+Docker 数据目录是 `/app/data/AIHubRouter`。替换容器时必须同时保留挂载到 `/app/data` 的数据卷和原有 `AIHUB_ROUTER_MASTER_KEY`；丢失或更换主密钥后，原 `credentials.dat` 无法解密。
 
 供应商参考数据配置示例（序列响应缓存与供应商命中率是两个不同概念）：
 

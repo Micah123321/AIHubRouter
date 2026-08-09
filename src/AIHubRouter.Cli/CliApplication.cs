@@ -104,20 +104,29 @@ internal static class CliApplication
             return FailUsage("auth 需要 login 或 import-token 子命令。" );
         }
 
+        var forcePersist = HasFlag(args, "--persist");
+        var disablePersist = HasFlag(args, "--no-persist");
+        if (forcePersist && disablePersist)
+        {
+            return FailUsage("--persist 与 --no-persist 不能同时使用。" );
+        }
+
         var snapshot = store.Load();
         var settings = ApplyEnvironmentSettings(snapshot.Settings);
         var credentials = ApplyEnvironmentCredentials(snapshot.Credentials ?? new PersistentCredentials());
-        var persist = HasFlag(args, "--persist");
+        var persist = forcePersist || (!disablePersist && snapshot.Settings.PersistCredentials);
         switch (args[0].ToLowerInvariant())
         {
             case "login":
             {
-                var email = GetOption(args, "--email") ?? Environment.GetEnvironmentVariable("AIHUB_EMAIL");
+                var explicitEmail = GetOption(args, "--email");
+                var email = explicitEmail ?? Environment.GetEnvironmentVariable("AIHUB_EMAIL");
                 if (string.IsNullOrWhiteSpace(email) || !HasFlag(args, "--password-stdin"))
                 {
                     return FailUsage("login 需要 --email 和 --password-stdin。" );
                 }
 
+                EnsureCredentialPersistenceAvailable(store, persist);
                 var password = await ReadSecretLineAsync("Password: ", cancellationToken);
                 using var client = new AIHubClient(
                     settings.BaseUrl,
@@ -128,9 +137,10 @@ internal static class CliApplication
                 var session = await client.LoginAsync(
                     new LoginCredentials(email, password),
                     cancellationToken);
-                var savedCredentials = new PersistentCredentials
+                var storedCredentials = snapshot.Credentials ?? new PersistentCredentials();
+                var savedCredentials = storedCredentials with
                 {
-                    Email = email.Trim(),
+                    Email = explicitEmail is null ? storedCredentials.Email : email.Trim(),
                     Password = password,
                     BearerToken = session.AccessToken,
                     RefreshToken = session.RefreshToken,
@@ -140,17 +150,12 @@ internal static class CliApplication
                 {
                     if (persist)
                     {
-                        if (!store.CanPersistCredentials)
-                        {
-                            throw new InvalidOperationException(store.CredentialProtection);
-                        }
-
-                        store.Save(settings with { PersistCredentials = true }, savedCredentials);
+                        store.Save(snapshot.Settings with { PersistCredentials = true }, savedCredentials);
                     }
 
                     Console.WriteLine(persist
                         ? $"登录成功，session 已安全保存，有效期至 {session.ExpiresAt:O}。"
-                        : $"登录成功，session 未保存，有效期至 {session.ExpiresAt:O}。" );
+                        : $"登录成功，session 本次未保存，有效期至 {session.ExpiresAt:O}。" );
                     return 0;
                 }
                 finally
@@ -165,6 +170,7 @@ internal static class CliApplication
                     return FailUsage("import-token 需要 --stdin。" );
                 }
 
+                EnsureCredentialPersistenceAvailable(store, persist);
                 var token = await ReadSecretLineAsync("Token: ", cancellationToken);
                 using var client = new AIHubClient(
                     settings.BaseUrl,
@@ -176,17 +182,13 @@ internal static class CliApplication
                 await client.ValidateLoginAsync(cancellationToken);
                 if (persist)
                 {
-                    if (!store.CanPersistCredentials)
-                    {
-                        throw new InvalidOperationException(store.CredentialProtection);
-                    }
-
+                    var storedCredentials = snapshot.Credentials ?? new PersistentCredentials();
                     store.Save(
-                        settings with { PersistCredentials = true },
-                        new PersistentCredentials { BearerToken = token });
+                        snapshot.Settings with { PersistCredentials = true },
+                        storedCredentials with { BearerToken = token });
                 }
 
-                Console.WriteLine(persist ? "Token 有效并已安全保存。" : "Token 有效，但未保存。" );
+                Console.WriteLine(persist ? "Token 有效并已安全保存。" : "Token 有效，本次未保存。" );
                 return 0;
             }
             default:
@@ -316,10 +318,15 @@ internal static class CliApplication
             persistCredentials: (updated, token) =>
             {
                 token.ThrowIfCancellationRequested();
-                var latestSettings = store.Load().Settings;
-                if (latestSettings.PersistCredentials)
+                var latestSnapshot = store.Load();
+                if (latestSnapshot.Settings.PersistCredentials &&
+                    !latestSnapshot.CredentialsUnavailable &&
+                    latestSnapshot.Credentials is not null)
                 {
-                    store.Save(latestSettings, updated);
+                    var storedCredentials = latestSnapshot.Credentials;
+                    store.Save(
+                        latestSnapshot.Settings,
+                        PreserveEnvironmentCredentials(storedCredentials, updated));
                 }
 
                 return Task.CompletedTask;
@@ -554,6 +561,49 @@ internal static class CliApplication
             Cookie = Environment.GetEnvironmentVariable("AIHUB_COOKIE") ?? credentials.Cookie,
             UserAgent = Environment.GetEnvironmentVariable("AIHUB_USER_AGENT") ?? credentials.UserAgent
         };
+    }
+
+    private static PersistentCredentials PreserveEnvironmentCredentials(
+        PersistentCredentials stored,
+        PersistentCredentials effective)
+    {
+        var runtimeTokenChainOverride = HasEnvironmentVariable("AIHUB_PASSWORD") ||
+            HasEnvironmentVariable("AIHUB_TOKEN") ||
+            HasEnvironmentVariable("AIHUB_REFRESH_TOKEN") ||
+            HasEnvironmentVariable("AIHUB_COOKIE");
+        return effective with
+        {
+            Email = Environment.GetEnvironmentVariable("AIHUB_EMAIL") is null
+                ? effective.Email
+                : stored.Email,
+            Password = Environment.GetEnvironmentVariable("AIHUB_PASSWORD") is null
+                ? effective.Password
+                : stored.Password,
+            BearerToken = runtimeTokenChainOverride ? stored.BearerToken : effective.BearerToken,
+            RefreshToken = runtimeTokenChainOverride ? stored.RefreshToken : effective.RefreshToken,
+            AccessTokenExpiresAt = runtimeTokenChainOverride
+                ? stored.AccessTokenExpiresAt
+                : effective.AccessTokenExpiresAt,
+            Cookie = Environment.GetEnvironmentVariable("AIHUB_COOKIE") is null
+                ? effective.Cookie
+                : stored.Cookie,
+            UserAgent = Environment.GetEnvironmentVariable("AIHUB_USER_AGENT") is null
+                ? effective.UserAgent
+                : stored.UserAgent
+        };
+    }
+
+    private static bool HasEnvironmentVariable(string name) =>
+        Environment.GetEnvironmentVariable(name) is not null;
+
+    private static void EnsureCredentialPersistenceAvailable(
+        AppSettingsStore store,
+        bool persist)
+    {
+        if (persist && !store.CanPersistCredentials)
+        {
+            throw new InvalidOperationException(store.CredentialProtection);
+        }
     }
 
     private static void WriteCycle(RoutingCycleResult result, bool json, AuditLogWriter? auditLog)
@@ -959,8 +1009,8 @@ internal static class CliApplication
             AIHubRouter API-only cross-platform router
 
             Usage:
-              aihub-router auth login --email <email> --password-stdin [--persist]
-              aihub-router auth import-token --stdin [--persist]
+              aihub-router auth login --email <email> --password-stdin [--persist|--no-persist]
+              aihub-router auth import-token --stdin [--persist|--no-persist]
               aihub-router route --once [--dry-run] [--json]
               aihub-router watch [--interval <seconds>] [--dry-run] [--json]
               aihub-router status [--json]

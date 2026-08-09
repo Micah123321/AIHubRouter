@@ -59,7 +59,13 @@ var tests = new (string Name, Action Body)[]
     ("Unknown current latency uses measured route", TestUnknownCurrentLatencyUsesMeasuredRoute),
     ("Price winner switches immediately", TestPriceWinnerSwitchesImmediately),
     ("Plain HTTP is rejected", TestPlainHttpIsRejected),
+    ("Credential persistence defaults to enabled", TestCredentialPersistenceDefaultsToEnabled),
     ("AES settings roundtrip has no plaintext", TestAesSettingsRoundtrip),
+    ("Credential protection failure preserves previous files", TestCredentialProtectionFailurePreservesPreviousFiles),
+    ("Credential commit failure rolls back settings", TestCredentialCommitFailureRollsBackSettings),
+    ("Pending persistence transaction recovers on load", TestPendingPersistenceTransactionRecoversOnLoad),
+    ("Unavailable credential storage preserves unreadable files", TestUnavailableCredentialStoragePreservesUnreadableFiles),
+    ("Empty credentials do not create a credential file", TestEmptyCredentialsDoNotCreateCredentialFile),
     ("Profile settings changes signal hot reload", TestProfileSettingsChangeSignal),
     ("Unavailable credential storage fails before settings write", TestUnavailableCredentialStorageIsAtomic),
     ("Legacy hard-gate settings are ignored", TestLegacyHardGateSettingsAreIgnored),
@@ -1419,6 +1425,41 @@ static void TestPlainHttpIsRejected()
     using var loopback = new AIHubClient("http://127.0.0.1:8080", allowInsecureLoopback: true);
 }
 
+static void TestCredentialPersistenceDefaultsToEnabled()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        Assert(new PersistentAppSettings().PersistCredentials,
+            "New settings did not default credential persistence to enabled.");
+
+        var protector = new UnavailableCredentialProtector("unit test unavailable protector");
+        var store = new AppSettingsStore(directory, protector);
+        Assert(store.Load().Settings.PersistCredentials,
+            "Missing settings did not default credential persistence to enabled.");
+
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(
+            Path.Combine(directory, "settings.json"),
+            "{\"baseUrl\":\"https://example.test\"}");
+        Assert(store.Load().Settings.PersistCredentials,
+            "Settings without persistCredentials did not use the new default.");
+
+        File.WriteAllText(
+            Path.Combine(directory, "settings.json"),
+            "{\"persistCredentials\":false}");
+        Assert(!store.Load().Settings.PersistCredentials,
+            "An explicit legacy false persistence choice was not preserved.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
 static void TestAesSettingsRoundtrip()
 {
     var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
@@ -1431,7 +1472,11 @@ static void TestAesSettingsRoundtrip()
         {
             Email = "user@example.test",
             Password = "secret-password",
-            BearerToken = "secret-token"
+            BearerToken = "secret-token",
+            RefreshToken = "secret-refresh-token",
+            AccessTokenExpiresAt = new DateTimeOffset(2026, 8, 9, 12, 0, 0, TimeSpan.Zero),
+            Cookie = "session=secret-cookie",
+            UserAgent = "secret-user-agent"
         };
         store.Save(
             new PersistentAppSettings
@@ -1443,11 +1488,20 @@ static void TestAesSettingsRoundtrip()
 
         var encrypted = File.ReadAllBytes(Path.Combine(directory, "credentials.dat"));
         var encryptedText = Encoding.UTF8.GetString(encrypted);
+        Assert(!encryptedText.Contains(credentials.Email, StringComparison.Ordinal), "AES file contains email plaintext.");
         Assert(!encryptedText.Contains(credentials.Password, StringComparison.Ordinal), "AES file contains password plaintext.");
         Assert(!encryptedText.Contains(credentials.BearerToken, StringComparison.Ordinal), "AES file contains token plaintext.");
+        Assert(!encryptedText.Contains(credentials.RefreshToken, StringComparison.Ordinal), "AES file contains refresh token plaintext.");
+        Assert(!encryptedText.Contains(credentials.Cookie, StringComparison.Ordinal), "AES file contains cookie plaintext.");
+        Assert(!encryptedText.Contains(credentials.UserAgent, StringComparison.Ordinal), "AES file contains user-agent plaintext.");
         var loaded = store.Load();
         Assert(loaded.Credentials?.Password == credentials.Password, "AES password did not roundtrip.");
         Assert(loaded.Credentials?.BearerToken == credentials.BearerToken, "AES token did not roundtrip.");
+        Assert(loaded.Credentials?.Email == credentials.Email, "AES email did not roundtrip.");
+        Assert(loaded.Credentials?.RefreshToken == credentials.RefreshToken, "AES refresh token did not roundtrip.");
+        Assert(loaded.Credentials?.AccessTokenExpiresAt == credentials.AccessTokenExpiresAt, "AES expiry did not roundtrip.");
+        Assert(loaded.Credentials?.Cookie == credentials.Cookie, "AES cookie did not roundtrip.");
+        Assert(loaded.Credentials?.UserAgent == credentials.UserAgent, "AES user-agent did not roundtrip.");
         Assert(loaded.Settings.ThemeMode == AppThemeMode.Dark, "Theme mode did not roundtrip.");
     }
     finally
@@ -2112,6 +2166,215 @@ static void TestLegacyHardGateSettingsAreIgnored()
     }
     finally
     {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestCredentialProtectionFailurePreservesPreviousFiles()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    var key = Enumerable.Range(0, 32).Select(value => (byte)value).ToArray();
+    try
+    {
+        using var protector = new AesGcmCredentialProtector(key);
+        var store = new AppSettingsStore(directory, protector);
+        store.Save(
+            new PersistentAppSettings { BaseUrl = "https://old.example.test" },
+            new PersistentCredentials { BearerToken = "old-token" });
+        var oldSettings = File.ReadAllBytes(Path.Combine(directory, "settings.json"));
+        var oldCredentials = File.ReadAllBytes(Path.Combine(directory, "credentials.dat"));
+
+        var failingStore = new AppSettingsStore(directory, new ThrowingCredentialProtector());
+        var rejected = false;
+        try
+        {
+            failingStore.Save(
+                new PersistentAppSettings { BaseUrl = "https://new.example.test" },
+                new PersistentCredentials { BearerToken = "new-token" });
+        }
+        catch (InvalidOperationException)
+        {
+            rejected = true;
+        }
+
+        Assert(rejected, "A protector failure was not reported.");
+        Assert(oldSettings.SequenceEqual(File.ReadAllBytes(Path.Combine(directory, "settings.json"))),
+            "Settings changed after credential protection failed.");
+        Assert(oldCredentials.SequenceEqual(File.ReadAllBytes(Path.Combine(directory, "credentials.dat"))),
+            "Credentials changed after credential protection failed.");
+        Assert(!Directory.EnumerateFiles(directory, "*.tmp").Any(),
+            "A temporary persistence file remained after protection failed.");
+    }
+    finally
+    {
+        Array.Clear(key);
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestCredentialCommitFailureRollsBackSettings()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    var key = Enumerable.Range(0, 32).Select(value => (byte)value).ToArray();
+    try
+    {
+        using var protector = new AesGcmCredentialProtector(key);
+        var store = new AppSettingsStore(directory, protector);
+        store.Save(
+            new PersistentAppSettings { BaseUrl = "https://old.example.test" },
+            new PersistentCredentials { BearerToken = "old-token" });
+        var oldSettings = File.ReadAllBytes(Path.Combine(directory, "settings.json"));
+        var oldCredentials = File.ReadAllBytes(Path.Combine(directory, "credentials.dat"));
+
+        Directory.Delete(Path.Combine(directory, "credentials.dat"));
+        Directory.CreateDirectory(Path.Combine(directory, "credentials.dat"));
+        var rejected = false;
+        try
+        {
+            store.Save(
+                new PersistentAppSettings { BaseUrl = "https://new.example.test" },
+                new PersistentCredentials { BearerToken = "new-token" });
+        }
+        catch (IOException)
+        {
+            rejected = true;
+        }
+
+        Assert(rejected, "A credential file commit failure was not reported.");
+        Assert(oldSettings.SequenceEqual(File.ReadAllBytes(Path.Combine(directory, "settings.json"))),
+            "Settings changed after credential file commit failed.");
+        Assert(Directory.Exists(Path.Combine(directory, "credentials.dat")),
+            "The blocking credential path was unexpectedly removed.");
+        Assert(!Directory.EnumerateFiles(directory, "*.tmp").Any(),
+            "A temporary persistence file remained after commit rollback.");
+
+        Directory.Delete(Path.Combine(directory, "credentials.dat"));
+        File.WriteAllBytes(Path.Combine(directory, "credentials.dat"), oldCredentials);
+    }
+    finally
+    {
+        Array.Clear(key);
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestPendingPersistenceTransactionRecoversOnLoad()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        var settingsTemporary = Path.Combine(directory, $"settings.json.{Guid.NewGuid():N}.tmp");
+        var settingsBackup = Path.Combine(directory, $"settings.json.backup.{Guid.NewGuid():N}.tmp");
+        var credentialsBackup = Path.Combine(directory, $"credentials.dat.backup.{Guid.NewGuid():N}.tmp");
+        File.WriteAllText(settingsTemporary, "{\"baseUrl\":\"https://new.example.test\"}");
+        File.WriteAllText(settingsBackup, "{\"baseUrl\":\"https://old.example.test\"}");
+        File.WriteAllText(
+            Path.Combine(directory, "persistence.transaction.json"),
+            JsonSerializer.Serialize(new
+            {
+                settingsTemporary,
+                credentialsTemporary = (string?)null,
+                settingsBackup,
+                credentialsBackup,
+                credentialsChanged = false,
+                credentialsExpected = false,
+                settingsOriginallyExists = true,
+                credentialsOriginallyExists = false,
+                credentialsCommitted = false,
+                settingsBackedUp = true,
+                credentialsBackedUp = false,
+                settingsCommitted = false,
+                commitCompleted = false
+            }));
+
+        var store = new AppSettingsStore(
+            directory,
+            new UnavailableCredentialProtector("unit test unavailable protector"));
+        var recovered = store.Load().Settings;
+
+        Assert(recovered.BaseUrl == "https://old.example.test",
+            "An incomplete transaction did not restore the previous settings file.");
+        Assert(File.Exists(Path.Combine(directory, "settings.json")),
+            "Transaction recovery did not restore settings.json.");
+        Assert(!File.Exists(Path.Combine(directory, "persistence.transaction.json")) &&
+               !File.Exists(settingsTemporary) &&
+               !File.Exists(settingsBackup),
+            "Transaction recovery left journal or temporary files behind.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestUnavailableCredentialStoragePreservesUnreadableFiles()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    var key = Enumerable.Range(0, 32).Select(value => (byte)value).ToArray();
+    try
+    {
+        using var protector = new AesGcmCredentialProtector(key);
+        var writableStore = new AppSettingsStore(directory, protector);
+        writableStore.Save(
+            new PersistentAppSettings { BaseUrl = "https://stored.example.test" },
+            new PersistentCredentials { BearerToken = "stored-token" });
+        var oldCredentials = File.ReadAllBytes(Path.Combine(directory, "credentials.dat"));
+
+        var unavailableStore = new AppSettingsStore(
+            directory,
+            new UnavailableCredentialProtector("unit test unavailable protector"));
+        var snapshot = unavailableStore.Load();
+        Assert(snapshot.Credentials is null && snapshot.CredentialsUnavailable,
+            "An unreadable credential file was not reported as unavailable.");
+
+        unavailableStore.Save(snapshot.Settings with { BaseUrl = "https://settings-only.example.test" }, null);
+        Assert(oldCredentials.SequenceEqual(File.ReadAllBytes(Path.Combine(directory, "credentials.dat"))),
+            "Saving ordinary settings deleted an unreadable credential file.");
+    }
+    finally
+    {
+        Array.Clear(key);
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
+static void TestEmptyCredentialsDoNotCreateCredentialFile()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "AIHubRouter.Tests", Guid.NewGuid().ToString("N"));
+    var key = Enumerable.Range(0, 32).Select(value => (byte)value).ToArray();
+    try
+    {
+        using var protector = new AesGcmCredentialProtector(key);
+        var store = new AppSettingsStore(directory, protector);
+        store.Save(
+            new PersistentAppSettings(),
+            new PersistentCredentials { BearerToken = "temporary-token" });
+        store.Save(new PersistentAppSettings(), new PersistentCredentials());
+
+        Assert(File.Exists(Path.Combine(directory, "settings.json")),
+            "Ordinary settings were not saved when no credentials were supplied.");
+        Assert(!File.Exists(Path.Combine(directory, "credentials.dat")),
+            "An empty credential record did not remove the existing credential file.");
+    }
+    finally
+    {
+        Array.Clear(key);
         if (Directory.Exists(directory))
         {
             Directory.Delete(directory, recursive: true);
@@ -3019,6 +3282,18 @@ sealed class MemoryRouteStateStore(RouteState? initial = null) : IRouteStateStor
     public RouteState Current => _state;
     public RouteState Load() => _state;
     public void Save(RouteState state) => _state = state;
+}
+
+sealed class ThrowingCredentialProtector : ICredentialProtector
+{
+    public bool IsAvailable => true;
+    public string Description => "unit test throwing protector";
+
+    public byte[] Protect(ReadOnlySpan<byte> plaintext) =>
+        throw new InvalidOperationException("unit test protection failure");
+
+    public byte[] Unprotect(ReadOnlySpan<byte> encrypted) =>
+        throw new InvalidOperationException("unit test unprotect failure");
 }
 
 sealed class StubAIHubClientFactory(IAIHubApiClient client) : IAIHubClientFactory

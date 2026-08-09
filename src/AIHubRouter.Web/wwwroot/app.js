@@ -166,6 +166,7 @@ function updateCredentialState(settings) {
   const parts = [];
   if (settings.hasPassword && !state.clearPassword) parts.push("密码已配置");
   if (settings.hasBearerToken && !state.clearToken) parts.push("Token 已配置");
+  if (!settings.canPersistCredentials) parts.push("加密保存不可用");
   $("#credentialState").textContent = parts.length ? parts.join(" · ") : "未配置认证";
   $("#persistCredentials").disabled = !settings.canPersistCredentials;
   $("#persistCredentials").title = settings.canPersistCredentials ? "" : settings.credentialProtection;

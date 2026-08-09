@@ -26,6 +26,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _autoRoutingCancellation;
     private CancellationTokenSource? _manualMonitoringCancellation;
     private PersistentCredentials _loadedCredentials = new();
+    private bool _credentialsUnavailable;
     private string? _providerSortField = "WeightedScore";
     private bool _providerSortDescending = true;
     private RoutingCycleResult? _lastCycleResult;
@@ -55,7 +56,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _providerSeriesRange = "6h";
     [ObservableProperty] private string _providerSeriesTimezone = "Asia/Shanghai";
     [ObservableProperty] private decimal _pollingIntervalSeconds = 60;
-    [ObservableProperty] private bool _persistCredentials;
+    [ObservableProperty] private bool _persistCredentials = true;
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ManualRouteCommand))]
     [NotifyPropertyChangedFor(nameof(CanChangeRoutingMode))]
@@ -449,6 +450,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             ?? throw new InvalidOperationException("另一个 AIHubRouter 实例正在使用当前 profile。" );
         var snapshot = _store.Load();
         var credentials = snapshot.Credentials ?? BuildCredentials();
+        var credentialsUnavailable = snapshot.CredentialsUnavailable;
         _service = new RoutingService(
             snapshot.Settings,
             credentials,
@@ -458,9 +460,11 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
                 token.ThrowIfCancellationRequested();
                 _loadedCredentials = updated;
                 BearerToken = updated.BearerToken;
-                if (snapshot.Settings.PersistCredentials)
+                if (snapshot.Settings.PersistCredentials &&
+                    (!credentialsUnavailable || HasCredentialValues(updated)))
                 {
                     _store.Save(snapshot.Settings, updated);
+                    _credentialsUnavailable = false;
                 }
 
                 return Task.CompletedTask;
@@ -802,6 +806,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             var snapshot = _store.Load();
             var settings = snapshot.Settings;
             _loadedCredentials = snapshot.Credentials ?? new PersistentCredentials();
+            _credentialsUnavailable = snapshot.CredentialsUnavailable;
             BaseUrl = settings.BaseUrl;
             RoutingMode = settings.RoutingMode;
             GroupStickiness = (decimal)settings.CreatePolicy().MinimumScoreAdvantageToSwitch;
@@ -899,13 +904,16 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         };
         settings.CreatePolicy().Validate();
         var credentials = BuildCredentials();
-        if (PersistCredentials && !_store.CanPersistCredentials)
-        {
-            throw new InvalidOperationException(_store.CredentialProtection);
-        }
-
-        _store.Save(settings, PersistCredentials ? credentials : null);
+        var credentialsToSave = PersistCredentials &&
+            (!_credentialsUnavailable || HasCredentialValues(credentials))
+            ? credentials
+            : null;
+        _store.Save(settings, credentialsToSave);
         _loadedCredentials = credentials;
+        if (!PersistCredentials || credentialsToSave is not null)
+        {
+            _credentialsUnavailable = false;
+        }
     }
 
     private (double Minimum, double Maximum) ParsePriceRange()
@@ -941,6 +949,15 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             Cookie = Cookie.Trim()
         };
     }
+
+    private static bool HasCredentialValues(PersistentCredentials credentials) =>
+        !string.IsNullOrWhiteSpace(credentials.Email) ||
+        !string.IsNullOrWhiteSpace(credentials.Password) ||
+        !string.IsNullOrWhiteSpace(credentials.BearerToken) ||
+        !string.IsNullOrWhiteSpace(credentials.RefreshToken) ||
+        credentials.AccessTokenExpiresAt is not null ||
+        !string.IsNullOrWhiteSpace(credentials.Cookie) ||
+        !string.IsNullOrWhiteSpace(credentials.UserAgent);
 
     private void ResetService()
     {

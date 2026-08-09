@@ -7,6 +7,9 @@ public sealed class WebRouterCoordinator : BackgroundService
     private readonly AppSettingsStore _store = new();
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly object _stateLock = new();
+    private PersistentAppSettings _storedSettings;
+    private PersistentCredentials _storedCredentials;
+    private bool _storedCredentialsUnavailable;
     private PersistentAppSettings _settings;
     private PersistentCredentials _credentials;
     private RoutingService? _service;
@@ -22,8 +25,11 @@ public sealed class WebRouterCoordinator : BackgroundService
     public WebRouterCoordinator()
     {
         var snapshot = _store.Load();
-        _settings = ApplyEnvironmentSettings(snapshot.Settings);
-        _credentials = ApplyEnvironmentCredentials(snapshot.Credentials ?? new PersistentCredentials());
+        _storedSettings = snapshot.Settings;
+        _storedCredentials = snapshot.Credentials ?? new PersistentCredentials();
+        _storedCredentialsUnavailable = snapshot.CredentialsUnavailable;
+        _settings = ApplyEnvironmentSettings(_storedSettings);
+        _credentials = ApplyEnvironmentCredentials(_storedCredentials);
     }
 
     public WebDashboard GetDashboard()
@@ -60,20 +66,31 @@ public sealed class WebRouterCoordinator : BackgroundService
             }
 
             var oldSettings = _settings;
-            var credentials = _credentials with
+            var storedCredentials = _storedCredentials with
             {
-                Email = request.Email.Trim(),
+                Email = HasEnvironmentVariable("AIHUB_EMAIL")
+                    ? _storedCredentials.Email
+                    : request.Email.Trim(),
                 Password = request.ClearPassword
-                    ? string.Empty
-                    : request.Password is null ? _credentials.Password : request.Password,
+                    ? HasEnvironmentVariable("AIHUB_PASSWORD")
+                        ? _storedCredentials.Password
+                        : string.Empty
+                    : request.Password is null
+                        ? _storedCredentials.Password
+                        : request.Password,
                 BearerToken = request.ClearBearerToken
-                    ? string.Empty
-                    : request.BearerToken is null ? _credentials.BearerToken :
-                        CredentialParser.NormalizeBearerToken(request.BearerToken)
+                    ? HasEnvironmentVariable("AIHUB_TOKEN")
+                        ? _storedCredentials.BearerToken
+                        : string.Empty
+                    : request.BearerToken is null
+                        ? _storedCredentials.BearerToken
+                        : CredentialParser.NormalizeBearerToken(request.BearerToken)
             };
-            var settings = _settings with
+            var storedSettings = _storedSettings with
             {
-                BaseUrl = request.BaseUrl.Trim().TrimEnd('/'),
+                BaseUrl = HasEnvironmentVariable("AIHUB_BASE_URL")
+                    ? _storedSettings.BaseUrl
+                    : request.BaseUrl.Trim().TrimEnd('/'),
                 RoutingMode = request.RoutingMode,
                 GroupStickiness = request.GroupStickiness,
                 MinimumPriceMultiplier = request.MinimumPriceMultiplier,
@@ -99,15 +116,28 @@ public sealed class WebRouterCoordinator : BackgroundService
                 LunaSelectedKeyIds = lunaSelectedKeyIds,
                 BlacklistedGroupIds = request.BlacklistedGroupIds.Where(id => id > 0).Distinct().Order().ToArray()
             };
+            var persistedCredentials = storedSettings.PersistCredentials
+                ? storedCredentials
+                : new PersistentCredentials();
+            var credentialsToSave = storedSettings.PersistCredentials &&
+                (!_storedCredentialsUnavailable ||
+                 HasCredentialValues(storedCredentials) ||
+                 request.ClearPassword ||
+                 request.ClearBearerToken)
+                ? storedCredentials
+                : null;
+            var settings = ApplyEnvironmentSettings(storedSettings);
+            var credentials = ApplyEnvironmentCredentials(persistedCredentials);
 
-            if (settings.PersistCredentials && !_store.CanPersistCredentials)
-            {
-                throw new InvalidOperationException(_store.CredentialProtection);
-            }
-
-            _store.Save(settings, settings.PersistCredentials ? credentials : null);
+            _store.Save(storedSettings, credentialsToSave);
             lock (_stateLock)
             {
+                _storedSettings = storedSettings;
+                _storedCredentials = persistedCredentials;
+                if (credentialsToSave is not null || !storedSettings.PersistCredentials)
+                {
+                    _storedCredentialsUnavailable = false;
+                }
                 _settings = settings;
                 _credentials = credentials;
                 _status = "配置已保存。";
@@ -174,10 +204,12 @@ public sealed class WebRouterCoordinator : BackgroundService
 
             if (_settings.AutoRoutingEnabled)
             {
-                var settings = _settings with { AutoRoutingEnabled = false };
-                _store.Save(settings, settings.PersistCredentials ? _credentials : null);
+                var storedSettings = _storedSettings with { AutoRoutingEnabled = false };
+                var settings = ApplyEnvironmentSettings(storedSettings);
+                _store.Save(storedSettings, CredentialsForPersistence(storedSettings));
                 lock (_stateLock)
                 {
+                    _storedSettings = storedSettings;
                     _settings = settings;
                 }
             }
@@ -229,10 +261,12 @@ public sealed class WebRouterCoordinator : BackgroundService
         SetBusy(true);
         try
         {
-            var settings = _settings with { AutoRoutingEnabled = enabled };
-            _store.Save(settings, settings.PersistCredentials ? _credentials : null);
+            var storedSettings = _storedSettings with { AutoRoutingEnabled = enabled };
+            var settings = ApplyEnvironmentSettings(storedSettings);
+            _store.Save(storedSettings, CredentialsForPersistence(storedSettings));
             lock (_stateLock)
             {
+                _storedSettings = storedSettings;
                 _settings = settings;
                 _status = enabled ? "自动路由已启动。" : "自动路由已停止。";
                 _statusKind = "success";
@@ -321,6 +355,7 @@ public sealed class WebRouterCoordinator : BackgroundService
     private void PrepareForKeyDiscovery()
     {
         bool resetSelection;
+        PersistentAppSettings? storedSettings = null;
         lock (_stateLock)
         {
             resetSelection = _lastResult is null &&
@@ -329,13 +364,17 @@ public sealed class WebRouterCoordinator : BackgroundService
                 _settings.LunaSelectedKeyIds.Length == 0;
             if (resetSelection)
             {
-                _settings = _settings with { KeySelectionInitialized = false };
+                storedSettings = _storedSettings with { KeySelectionInitialized = false };
+                _storedSettings = storedSettings;
+                _settings = ApplyEnvironmentSettings(storedSettings);
             }
         }
 
-        if (resetSelection)
+        if (resetSelection && storedSettings is not null)
         {
-            _store.Save(_settings, _settings.PersistCredentials ? _credentials : null);
+            _store.Save(
+                storedSettings,
+                CredentialsForPersistence(storedSettings));
             ResetService();
         }
     }
@@ -512,16 +551,31 @@ public sealed class WebRouterCoordinator : BackgroundService
             persistCredentials: (updated, token) =>
             {
                 token.ThrowIfCancellationRequested();
-                PersistentAppSettings currentSettings;
+                PersistentAppSettings storedSettings;
+                PersistentCredentials storedCredentials;
+                bool credentialsUnavailable;
+                lock (_stateLock)
+                {
+                    storedCredentials = MergeStoredCredentials(_storedCredentials, updated);
+                    storedSettings = _storedSettings;
+                    credentialsUnavailable = _storedCredentialsUnavailable;
+                }
+
+                var credentialsSaved = false;
+                if (storedSettings.PersistCredentials && !credentialsUnavailable)
+                {
+                    _store.Save(storedSettings, storedCredentials);
+                    credentialsSaved = true;
+                }
+
                 lock (_stateLock)
                 {
                     _credentials = updated;
-                    currentSettings = _settings;
-                }
-
-                if (currentSettings.PersistCredentials)
-                {
-                    _store.Save(currentSettings, updated);
+                    if (credentialsSaved)
+                    {
+                        _storedCredentials = storedCredentials;
+                        _storedCredentialsUnavailable = false;
+                    }
                 }
 
                 return Task.CompletedTask;
@@ -696,6 +750,45 @@ public sealed class WebRouterCoordinator : BackgroundService
             Cookie = Environment.GetEnvironmentVariable("AIHUB_COOKIE") ?? credentials.Cookie,
             UserAgent = Environment.GetEnvironmentVariable("AIHUB_USER_AGENT") ?? credentials.UserAgent
         };
+
+    private static PersistentCredentials MergeStoredCredentials(
+        PersistentCredentials stored,
+        PersistentCredentials effective)
+    {
+        var runtimeTokenChainOverride = HasEnvironmentVariable("AIHUB_PASSWORD") ||
+            HasEnvironmentVariable("AIHUB_TOKEN") ||
+            HasEnvironmentVariable("AIHUB_REFRESH_TOKEN") ||
+            HasEnvironmentVariable("AIHUB_COOKIE");
+        return stored with
+        {
+            Email = HasEnvironmentVariable("AIHUB_EMAIL") ? stored.Email : effective.Email,
+            Password = HasEnvironmentVariable("AIHUB_PASSWORD") ? stored.Password : effective.Password,
+            BearerToken = runtimeTokenChainOverride ? stored.BearerToken : effective.BearerToken,
+            RefreshToken = runtimeTokenChainOverride ? stored.RefreshToken : effective.RefreshToken,
+            AccessTokenExpiresAt = runtimeTokenChainOverride
+                ? stored.AccessTokenExpiresAt
+                : effective.AccessTokenExpiresAt,
+            Cookie = HasEnvironmentVariable("AIHUB_COOKIE") ? stored.Cookie : effective.Cookie,
+            UserAgent = HasEnvironmentVariable("AIHUB_USER_AGENT") ? stored.UserAgent : effective.UserAgent
+        };
+    }
+
+    private static bool HasEnvironmentVariable(string name) =>
+        Environment.GetEnvironmentVariable(name) is not null;
+
+    private PersistentCredentials? CredentialsForPersistence(PersistentAppSettings settings) =>
+        settings.PersistCredentials && !_storedCredentialsUnavailable
+            ? _storedCredentials
+            : null;
+
+    private static bool HasCredentialValues(PersistentCredentials credentials) =>
+        !string.IsNullOrWhiteSpace(credentials.Email) ||
+        !string.IsNullOrWhiteSpace(credentials.Password) ||
+        !string.IsNullOrWhiteSpace(credentials.BearerToken) ||
+        !string.IsNullOrWhiteSpace(credentials.RefreshToken) ||
+        credentials.AccessTokenExpiresAt is not null ||
+        !string.IsNullOrWhiteSpace(credentials.Cookie) ||
+        !string.IsNullOrWhiteSpace(credentials.UserAgent);
 
     private static string DisplayPlan(ProviderStatus provider, GroupInfo group) =>
         string.IsNullOrWhiteSpace(provider.PlanType) ? group.Name : provider.PlanType;

@@ -194,9 +194,14 @@ public interface IRouteSelector;
 普通设置与凭据分离：
 
 - Windows：保留当前用户范围 DPAPI。
-- Linux/macOS GUI：后续平台适配器使用 Secret Service/Keychain。
-- 无头模式：优先从环境变量或 stdin 读取；可使用外部提供的主密钥保存 AES-GCM 加密凭据。
-- 没有安全存储或主密钥时禁用持久化，不写明文。
+- Linux/macOS GUI 与无头模式：当前统一使用 `AIHUB_ROUTER_MASTER_KEY` 保存 AES-GCM 加密凭据；Secret Service/Keychain 适配器属于后续平台增强，不是当前实现。
+- 无头模式：优先从环境变量或 stdin 读取；没有外部主密钥时不保存非空凭据，也不回退到明文。
+- `PersistentAppSettings.PersistCredentials` 对新配置和缺少该字段的旧配置默认为 `true`；旧配置中明确写出的 `false` 继续保留，避免升级时改变用户的安全选择。
+- 邮箱、密码、Bearer/Refresh Token、Cookie 和 User-Agent 只写入加密的 `credentials.dat`；普通设置写入 `settings.json`，两个文件不会混存敏感字段。
+- 保存先完成序列化和加密，再使用进程内锁和同目录 `persistence.lock` 跨进程排他锁提交两个文件；临时/备份路径只接受当前 profile 生成的固定文件名模式。事务记录用于进程异常退出恢复，加密或替换失败时恢复旧文件，不留下明文或半提交状态。这不承诺所有操作系统上的断电级目录元数据原子性。
+- 没有安全存储或主密钥时，带非空凭据的保存会明确失败；普通设置和空凭据仍可保存，绝不回退到明文。
+- 如果保护器暂时不可用但目录中已有 `credentials.dat`，加载状态会标记凭据不可用；普通设置保存不会把该文件当成空凭据删除，恢复主密钥后仍可尝试解密。用户明确关闭 `PersistCredentials` 时才会清理该文件。
+- Web/CLI 的环境变量只覆盖本次运行时值，不回写 `settings.json` 或 `credentials.dat`；环境变量提供的 Token 刷新结果也只保留在进程内。
 
 供应商参考设置包括 `ProviderSeriesWeight`、`ProviderSeriesCacheSeconds`、`ProviderSeriesRange` 和 `ProviderSeriesTimezone`。默认值分别为 `0.20`、`300`、`6h` 和 `Asia/Shanghai`。其中 `ProviderSeriesCacheSeconds` 只控制序列响应缓存；供应商 `cache_hit_rate` 来自 `/providers`，没有单独的伪缓存命中率配置。
 
@@ -207,19 +212,20 @@ public interface IRouteSelector;
 - Windows：`%LocalAppData%/AIHubRouter`
 - Linux：`$XDG_CONFIG_HOME/AIHubRouter`，回退 `~/.config/AIHubRouter`
 - macOS：`~/Library/Application Support/AIHubRouter`
+- Docker：`/app/data/AIHubRouter`（需要同时保留数据卷和 `AIHUB_ROUTER_MASTER_KEY`）
 
 ## 8. CLI 合约
 
 ```text
-aihub-router auth login --email <email> --password-stdin
-aihub-router auth import-token --stdin
+aihub-router auth login --email <email> --password-stdin [--persist|--no-persist]
+aihub-router auth import-token --stdin [--persist|--no-persist]
 aihub-router route --once [--dry-run] [--json]
 aihub-router watch [--interval <seconds>] [--json]
 aihub-router status [--json]
 aihub-router config show|set
 ```
 
-敏感值不得作为普通命令行参数。CLI 使用稳定退出码：
+认证命令默认按 `PersistCredentials` 安全保存登录会话或 Token；`--persist` 是强制保存的兼容别名，`--no-persist` 只对本次命令禁用保存，不清理已有文件。通过 `config set`、Web 或 Desktop 将 `PersistCredentials` 设为 `false` 时才会删除 `credentials.dat`。敏感值不得作为普通命令行参数。CLI 使用稳定退出码：
 
 - `0`：成功或无需切换。
 - `2`：参数错误。
@@ -242,6 +248,7 @@ Avalonia UI 只负责编辑配置、调用应用服务和显示结果。主界�
 - 跟随系统、浅色和深色主题选择，主题偏好持久化。
 - 供应商倍率、首字延迟、状态和推荐结果。
 - 单次路由、dry-run、自动路由开关。
+- 认证默认以加密形式持久化；关闭 `PersistCredentials` 设置会清理本地凭据文件，不会写入明文；CLI 的 `--no-persist` 不删除已有文件。
 
 不提供“打开登录页”，只允许复制站点地址或认证说明。
 
