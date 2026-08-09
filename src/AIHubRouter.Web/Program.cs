@@ -132,7 +132,19 @@ app.MapPost("/api/auth/logout", (HttpContext context, WebSessionManager sessions
 app.MapGet("/api/dashboard", (WebRouterCoordinator coordinator) =>
     Results.Ok(coordinator.GetDashboard()));
 app.MapPut("/api/settings", async (SettingsUpdateRequest request, WebRouterCoordinator coordinator, CancellationToken token) =>
-    Results.Ok(await coordinator.SaveSettingsAsync(request, token)));
+{
+    IResult result;
+    try
+    {
+        result = Results.Ok(await coordinator.SaveSettingsAsync(request, token));
+    }
+    catch (InvalidOperationException exception)
+    {
+        result = Results.BadRequest(new { error = exception.Message });
+    }
+
+    return result;
+});
 app.MapPost("/api/actions/refresh", async (WebRouterCoordinator coordinator, CancellationToken token) =>
     Results.Ok(await coordinator.RunCycleAsync(dryRun: true, forceRefresh: true, token)));
 app.MapPost("/api/actions/dry-run", async (WebRouterCoordinator coordinator, CancellationToken token) =>

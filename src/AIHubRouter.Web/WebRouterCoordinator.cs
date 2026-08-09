@@ -5,6 +5,7 @@ namespace AIHubRouter.Web;
 public sealed class WebRouterCoordinator : BackgroundService
 {
     private readonly AppSettingsStore _store = new();
+    private readonly ILogger<WebRouterCoordinator> _logger;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly object _stateLock = new();
     private PersistentAppSettings _storedSettings;
@@ -22,8 +23,9 @@ public sealed class WebRouterCoordinator : BackgroundService
     private DateTimeOffset? _lastUpdatedAt;
     private DateTimeOffset _nextAutoRun = DateTimeOffset.MinValue;
 
-    public WebRouterCoordinator()
+    public WebRouterCoordinator(ILogger<WebRouterCoordinator> logger)
     {
+        _logger = logger;
         var snapshot = _store.Load();
         _storedSettings = snapshot.Settings;
         _storedCredentials = snapshot.Credentials ?? new PersistentCredentials();
@@ -172,7 +174,9 @@ public sealed class WebRouterCoordinator : BackgroundService
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
+            _logger.LogError(exception, "Saving Web router settings failed.");
             SetError(exception);
+            throw new InvalidOperationException(SafeMessage(exception), exception);
         }
         finally
         {
@@ -802,6 +806,9 @@ public sealed class WebRouterCoordinator : BackgroundService
         AIHubApiException api => api.Message,
         HttpRequestException => "网络连接失败。",
         TaskCanceledException => "请求超时。",
+        UnauthorizedAccessException => "无法写入配置数据。请检查 Docker 数据卷权限。",
+        IOException => "配置保存失败。请检查 Docker 数据卷权限和剩余空间。",
+        CryptographicException => "认证加密失败。请确认 AIHUB_ROUTER_MASTER_KEY 未变更。",
         InvalidOperationException invalid => invalid.Message,
         ArgumentException argument => argument.Message,
         _ => "操作失败。"

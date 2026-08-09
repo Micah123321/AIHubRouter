@@ -9,6 +9,7 @@ const state = {
   draftLunaKeyIds: new Set(),
   draftBlacklistIds: new Set(),
   settingsHydrated: false,
+  credentialDraftChanged: false,
   requestInFlight: false
 };
 
@@ -152,6 +153,7 @@ function hydrateSettings(settings, force = false) {
   if (modeInput) modeInput.checked = true;
   state.clearPassword = false;
   state.clearToken = false;
+  state.credentialDraftChanged = false;
   state.draftKeyIds = new Set(settings.selectedKeyIds || []);
   state.draftLunaKeyIds = new Set(settings.lunaSelectedKeyIds || []);
   for (const id of state.draftKeyIds) state.draftLunaKeyIds.delete(id);
@@ -423,12 +425,25 @@ $("#logoutButton").addEventListener("click", async () => {
 
 $("#saveButton").addEventListener("click", async () => {
   if (state.requestInFlight) return;
+  const persistCredentials = $("#persistCredentials");
+  const autoEnabledCredentialPersistence =
+    state.credentialDraftChanged && !persistCredentials.checked;
+  if (autoEnabledCredentialPersistence && persistCredentials.disabled) {
+    showStatusError("当前环境没有可用的安全凭据存储，无法保存认证。请配置 AIHUB_ROUTER_MASTER_KEY。");
+    return;
+  }
+
+  if (autoEnabledCredentialPersistence) persistCredentials.checked = true;
   state.requestInFlight = true;
   try {
     const dashboard = await api("/api/settings", { method: "PUT", body: JSON.stringify(settingsPayload()) });
+    if (autoEnabledCredentialPersistence) {
+      dashboard.status = "配置已保存，认证已启用安全持久化。";
+    }
     state.settingsHydrated = false;
     renderDashboard(dashboard, true);
   } catch (error) {
+    if (autoEnabledCredentialPersistence) persistCredentials.checked = false;
     showStatusError(error.message);
   } finally {
     state.requestInFlight = false;
@@ -464,22 +479,27 @@ $("#autoRouting").addEventListener("change", async event => {
 
 $("#themeSelect").addEventListener("change", event => applyTheme(event.target.value));
 $("#baseUrl").addEventListener("input", event => { $("#visitSite").href = event.target.value; });
+$("#email").addEventListener("input", () => { state.credentialDraftChanged = true; });
 $("#password").addEventListener("input", () => {
+  state.credentialDraftChanged = true;
   state.clearPassword = false;
   updateSecretControls(state.dashboard.settings);
 });
 $("#bearerToken").addEventListener("input", () => {
+  state.credentialDraftChanged = true;
   state.clearToken = false;
   updateSecretControls(state.dashboard.settings);
 });
 $("#clearPassword").addEventListener("click", () => {
   $("#password").value = "";
+  state.credentialDraftChanged = true;
   state.clearPassword = true;
   updateCredentialState(state.dashboard.settings);
   updateSecretControls(state.dashboard.settings);
 });
 $("#clearToken").addEventListener("click", () => {
   $("#bearerToken").value = "";
+  state.credentialDraftChanged = true;
   state.clearToken = true;
   updateCredentialState(state.dashboard.settings);
   updateSecretControls(state.dashboard.settings);

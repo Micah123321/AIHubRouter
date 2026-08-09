@@ -232,7 +232,7 @@ aihub-router config set [options]
 
 ### 配置与认证持久化
 
-普通路由设置始终保存到 `settings.json`。新配置以及缺少 `persistCredentials` 字段的旧配置默认启用认证持久化；旧文件中明确写出的 `persistCredentials: false` 会继续保留，避免升级时意外改变用户选择。通过 Web/Desktop 或配置设置关闭 `PersistCredentials` 后，邮箱、密码、Bearer Token、Refresh Token、Cookie 和 User-Agent 的本地加密文件 `credentials.dat` 会被清理；CLI 的 `--no-persist` 只影响当前认证命令，不删除已有文件。
+普通路由设置始终保存到 `settings.json`。新配置以及缺少 `persistCredentials` 字段的旧配置默认启用认证持久化；旧文件中明确写出的 `persistCredentials: false` 会继续保留，避免升级时意外改变用户选择。Web 页面在用户编辑邮箱、密码或 Token 后保存时，会自动启用“安全保存认证”，避免将刚输入的认证误作关闭持久化后的清除操作；用户仍可在未编辑认证的情况下关闭该开关，以清理本地认证。通过 Desktop 或配置设置关闭 `PersistCredentials` 后，邮箱、密码、Bearer Token、Refresh Token、Cookie 和 User-Agent 的本地加密文件 `credentials.dat` 会被清理；CLI 的 `--no-persist` 只影响当前认证命令，不删除已有文件。
 
 认证信息不会以明文写入配置：Windows 使用当前用户 DPAPI，Linux/macOS 无头环境和 Docker 使用 `AIHUB_ROUTER_MASTER_KEY` 提供的 AES-GCM。没有可用保护器时，带认证内容的保存会明确失败，程序不会回退到明文；仅保存普通设置或空认证仍可完成。若已有加密凭据暂时无法解密，普通设置保存会保留原 `credentials.dat`，恢复保护器后仍可读取；只有明确关闭持久化才会删除该文件。保存采用跨进程持久化锁、两个文件的替换、事务记录和失败恢复，避免设置和凭据只更新一半；进程异常退出后，下次加载会先恢复未完成的提交。
 
