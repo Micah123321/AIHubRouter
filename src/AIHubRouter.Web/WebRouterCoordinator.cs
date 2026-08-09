@@ -808,7 +808,7 @@ public sealed class WebRouterCoordinator : BackgroundService
         TaskCanceledException => "请求超时。",
         UnauthorizedAccessException => "无法写入配置数据。请检查 Docker 数据卷权限。",
         IOException => "配置保存失败。请检查 Docker 数据卷权限和剩余空间。",
-        CryptographicException => "认证加密失败。请确认 AIHUB_ROUTER_MASTER_KEY 未变更。",
+        System.Security.Cryptography.CryptographicException => "认证加密失败。请确认 AIHUB_ROUTER_MASTER_KEY 未变更。",
         InvalidOperationException invalid => invalid.Message,
         ArgumentException argument => argument.Message,
         _ => "操作失败。"
