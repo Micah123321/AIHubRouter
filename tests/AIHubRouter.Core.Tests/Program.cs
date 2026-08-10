@@ -1,5 +1,6 @@
 using AIHubRouter.Core;
 using AIHubRouter.Cli;
+using AIHubRouter.Web;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -48,6 +49,7 @@ var tests = new (string Name, Action Body)[]
     ("Economy latency utility is continuous", TestEconomyLatencyUtilityIsContinuous),
     ("Economy mode compresses sub-threshold speed gain", TestEconomyModeCompressesSubThresholdSpeedGain),
     ("Economy latency utility penalizes severe latency", TestEconomyLatencyUtilityPenalizesSevereLatency),
+    ("Economy provider quality cannot reverse severe latency", TestEconomyProviderQualityCannotReverseSevereLatency),
     ("Non-economy latency utility remains raw", TestNonEconomyLatencyUtilityRemainsRaw),
     ("Speed mode accepts larger price premium", TestSpeedModeAcceptsLargerPremium),
     ("Missing latency ranks last", TestMissingLatencyRanksLast),
@@ -86,6 +88,7 @@ var tests = new (string Name, Action Body)[]
     ("Manual route rejects blacklisted group", TestManualRouteRejectsBlacklistedGroup),
     ("Manual route rejects out-of-range group", TestManualRouteRejectsOutOfRangeGroup),
     ("Manual route clears state after terminal authentication failure", TestManualRouteClearsStateAfterTerminalAuthenticationFailure),
+    ("Background cycle only handles non-host cancellation", TestBackgroundCycleOnlyHandlesNonHostCancellation),
     ("Manual route preserves changes across authentication retry", TestManualRoutePreservesChangesAcrossAuthenticationRetry),
     ("Encrypted settings roundtrip", TestEncryptedSettingsRoundtrip),
     ("Usable access token is reused", TestUsableAccessTokenIsReused),
@@ -1113,6 +1116,35 @@ static void TestEconomyLatencyUtilityPenalizesSevereLatency()
         "Economy severe latency did not use the increased post-threshold slope.");
     Assert(verySlow > 20_000,
         "Economy severe latency did not reduce the effective score of a very slow candidate.");
+}
+
+static void TestEconomyProviderQualityCannotReverseSevereLatency()
+{
+    var now = DateTimeOffset.UtcNow;
+    var evaluation = RoutingEngine.Evaluate(
+        [
+            Provider(1, 0.05, true, 0.992, now, latency: 14_539, cacheHitRate: 0.01),
+            Provider(2, 0.05, true, 0.992, now, latency: 30_024, cacheHitRate: 0.99)
+        ],
+        [Group(1), Group(2)],
+        new Dictionary<long, double>(),
+        Policy(RoutingMode.Economy) with { ProviderSeriesWeight = 0.20 },
+        now,
+        new Dictionary<long, ProviderSeriesMetrics>
+        {
+            [1] = new(1, 0.10, 10_000, 10_000, 20, 20, now),
+            [2] = new(2, 1.00, 100, 100, 20, 20, now)
+        });
+    var slower = evaluation.EligibleCandidates.Single(candidate => candidate.Group.Id == 2);
+    var slowerScore = RoutingEngine.CalculateWeightedScore(evaluation, slower);
+    var baselineScore = RoutingEngine.CalculateWeightedScore(evaluation, evaluation.Baseline!);
+
+    Assert(evaluation.Recommended?.Group.Id == 1,
+        "Provider quality reversed a severe live-latency disadvantage in economy mode.");
+    Assert(slowerScore is { } slowerValue &&
+           baselineScore is { } baselineValue &&
+           slowerValue < baselineValue,
+        "Provider quality offset the negative live-latency score of a severe slower candidate.");
 }
 
 static void TestBalancedModeRejectsCatastrophicCheapLatency()
@@ -2179,6 +2211,25 @@ static void TestLegacyHardGateSettingsAreIgnored()
             Directory.Delete(directory, recursive: true);
         }
     }
+}
+
+static void TestBackgroundCycleOnlyHandlesNonHostCancellation()
+{
+    using var stopping = new CancellationTokenSource();
+    Assert(WebRouterCoordinator.ShouldHandleOperationCancellation(
+            new TaskCanceledException("request timeout"),
+            stopping.Token),
+        "An HttpClient-style timeout should be recoverable while the host is running.");
+    Assert(!WebRouterCoordinator.ShouldHandleOperationCancellation(
+            new InvalidOperationException("not a cancellation"),
+            stopping.Token),
+        "A non-cancellation exception should not enter the timeout recovery branch.");
+
+    stopping.Cancel();
+    Assert(!WebRouterCoordinator.ShouldHandleOperationCancellation(
+            new TaskCanceledException("host stopping"),
+            stopping.Token),
+        "Host shutdown cancellation must propagate out of the background cycle.");
 }
 
 static void TestCredentialProtectionFailurePreservesPreviousFiles()

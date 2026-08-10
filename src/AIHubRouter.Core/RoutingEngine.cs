@@ -320,7 +320,17 @@ public static class RoutingEngine
             return score;
         }
 
-        return score + providerSeriesWeight * (candidateQuality - baselineQuality);
+        var adjustedScore = score + providerSeriesWeight * (candidateQuality - baselineQuality);
+        if (mode == RoutingMode.Economy &&
+            effectiveCandidateLatency > BalancedRoutingPolicy.EconomySevereLatencyThresholdMs &&
+            effectiveCandidateLatency > effectiveBaselineLatency &&
+            score <= 0)
+        {
+            // Historical quality cannot offset a severe live-latency disadvantage.
+            return Math.Min(adjustedScore, score);
+        }
+
+        return adjustedScore;
     }
 
     private static double GetConservativeLatency(

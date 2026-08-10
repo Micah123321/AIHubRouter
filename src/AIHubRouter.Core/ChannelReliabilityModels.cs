@@ -183,7 +183,6 @@ public sealed record ChannelQuarantineRecord
     [JsonPropertyName("sourceModel")]
     public string SourceModel { get; init; } = string.Empty;
 
-    [JsonIgnore]
     public bool IsActiveAt(DateTimeOffset now) => ExpiresAt > now;
 }
 

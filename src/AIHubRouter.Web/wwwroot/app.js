@@ -210,7 +210,7 @@ function sortedProviders(providers) {
 }
 
 function stateClass(value) {
-  return ({ "推荐": "recommended", "可用": "available", "警告": "warning", "异常": "error", "停用": "error", "黑名单": "blacklisted", "掺水隔离": "error" })[value] || "";
+  return ({ "推荐": "recommended", "可用": "available", "警告": "warning", "价格范围外": "warning", "异常": "error", "停用": "error", "黑名单": "blacklisted", "掺水隔离": "error" })[value] || "";
 }
 
 function reliabilityLabel(state) {

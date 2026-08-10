@@ -362,6 +362,11 @@ public sealed class WebRouterCoordinator : BackgroundService
         }
     }
 
+    internal static bool ShouldHandleOperationCancellation(
+        Exception exception,
+        CancellationToken ownerToken) =>
+        exception is OperationCanceledException && !ownerToken.IsCancellationRequested;
+
     private async Task<WebDashboard> RunCycleCoreAsync(
         bool dryRun,
         bool forceRefresh,
@@ -395,6 +400,14 @@ public sealed class WebRouterCoordinator : BackgroundService
                         : "success";
                 _showProviderSeriesStatus = true;
             }
+        }
+        catch (OperationCanceledException exception)
+            when (ShouldHandleOperationCancellation(exception, cancellationToken))
+        {
+            _logger.LogWarning(
+                exception,
+                "路由周期请求被上游超时取消，本轮已结束，后台服务将继续运行。");
+            SetError(exception);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -447,6 +460,7 @@ public sealed class WebRouterCoordinator : BackgroundService
         var selectedIds = effectiveSelectedIds.ToHashSet();
         var lunaSelectedIds = effectiveLunaSelectedIds.ToHashSet();
         var blacklistedIds = settings.BlacklistedGroupIds.ToHashSet();
+        var policy = settings.CreatePolicy();
         var groupsById = result?.Groups.GroupBy(group => group.Id)
             .ToDictionary(group => group.Key, group => group.First()) ?? [];
         var reliabilityGroups = result?.Reliability?.Groups
@@ -475,7 +489,9 @@ public sealed class WebRouterCoordinator : BackgroundService
             .Select(provider => BuildProviderRow(
                 provider,
                 groupsById,
+                result!.UserGroupRates,
                 result!.Evaluation,
+                policy,
                 targetId,
                 blacklistedIds,
                 reliabilityGroups))
@@ -581,14 +597,21 @@ public sealed class WebRouterCoordinator : BackgroundService
     private static WebProviderRow BuildProviderRow(
         ProviderStatus provider,
         IReadOnlyDictionary<long, GroupInfo> groups,
+        IReadOnlyDictionary<long, double> userGroupRates,
         RouteEvaluation evaluation,
+        BalancedRoutingPolicy policy,
         long? targetGroupId,
         IReadOnlySet<long> blacklistedGroupIds,
         IReadOnlyDictionary<long, ChannelReliabilityGroupSummary> reliabilityGroups)
     {
         var candidate = evaluation.EligibleCandidates.FirstOrDefault(item =>
             item.Group.Id == provider.GroupId && item.Provider.Id == provider.Id);
-        var multiplier = candidate?.EffectiveMultiplier ?? provider.PriceMultiplier;
+        var multiplier = provider.GroupId is { } groupId &&
+            userGroupRates.TryGetValue(groupId, out var userRate)
+                ? userRate
+                : provider.PriceMultiplier;
+        var priceOutOfRange = !double.IsFinite(multiplier) ||
+            !RoutingEngine.IsWithinPriceRange(multiplier, policy);
         var score = candidate is null ? null : RoutingEngine.CalculateWeightedScore(evaluation, candidate);
         var reliability = provider.GroupId is { } reliabilityGroupId &&
             reliabilityGroups.TryGetValue(reliabilityGroupId, out var reliabilitySummary)
@@ -599,15 +622,18 @@ public sealed class WebRouterCoordinator : BackgroundService
             ? "黑名单"
             : reliabilityQuarantined
                 ? "掺水隔离"
-            : provider.GroupId == targetGroupId
-                ? "推荐"
-                : !provider.Enabled ? "停用" : !provider.Available ? "异常" :
-                    provider.HasWarnings ? "警告" : "可用";
+                : priceOutOfRange
+                    ? "价格范围外"
+                    : provider.GroupId == targetGroupId
+                        ? "推荐"
+                        : !provider.Enabled ? "停用" : !provider.Available ? "异常" :
+                            provider.HasWarnings ? "警告" : "可用";
         var canManualRoute = provider.GroupId is { } manualGroupId &&
             groups.TryGetValue(manualGroupId, out var group) &&
             group.Status.Equals("active", StringComparison.OrdinalIgnoreCase) &&
             !blacklistedGroupIds.Contains(manualGroupId) &&
-            !reliabilityQuarantined;
+            !reliabilityQuarantined &&
+            !priceOutOfRange;
 
         return new WebProviderRow(
             provider.Id,
