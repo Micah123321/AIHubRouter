@@ -618,7 +618,7 @@ public sealed class WebRouterCoordinator : BackgroundService
             ? reliabilitySummary
             : null;
         var reliabilityQuarantined = reliability?.Status == ChannelReliabilityStatus.Quarantined;
-        var state = provider.GroupId is { } groupId && blacklistedGroupIds.Contains(groupId)
+        var state = provider.GroupId is { } stateGroupId && blacklistedGroupIds.Contains(stateGroupId)
             ? "黑名单"
             : reliabilityQuarantined
                 ? "掺水隔离"

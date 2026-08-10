@@ -277,7 +277,7 @@ public static class RoutingEngine
     private static bool IsKnownLatency(double? latency) =>
         latency is > 0 && double.IsFinite(latency.Value);
 
-    internal static bool IsWithinPriceRange(double multiplier, BalancedRoutingPolicy policy) =>
+    public static bool IsWithinPriceRange(double multiplier, BalancedRoutingPolicy policy) =>
         multiplier >= policy.MinimumPriceMultiplier &&
         multiplier <= policy.MaximumPriceMultiplier;
 
