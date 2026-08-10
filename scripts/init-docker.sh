@@ -7,9 +7,13 @@ readonly container_name="aihub-router-web"
 readonly image_name="aihub-router-web:local"
 readonly volume_name="aihub-router-web-data"
 readonly environment_file="/etc/aihub-router-web.env"
+readonly detector_directory="$repo_root/gpt56_api_detector"
+readonly detector_repository="https://github.com/Micah123321/gpt56_api_detector.git"
+readonly detector_revision="e9ef5d0f9cd4b0fa401a4e9960d959557610b852"
 
 generated_password=""
 temporary_file=""
+temporary_detector_parent=""
 
 die() {
   printf '错误：%s\n' "$*" >&2
@@ -23,6 +27,9 @@ require_command() {
 cleanup() {
   if [[ -n "$temporary_file" && -e "$temporary_file" ]]; then
     rm -f "$temporary_file"
+  fi
+  if [[ -n "$temporary_detector_parent" && -e "$temporary_detector_parent" ]]; then
+    rm -rf "$temporary_detector_parent"
   fi
 }
 
@@ -38,6 +45,33 @@ done
 
 docker info >/dev/null 2>&1 || die 'Docker daemon 不可用，请先启动 Docker。'
 [[ -f "$repo_root/Dockerfile" ]] || die "未找到 Dockerfile：$repo_root"
+
+ensure_detector_source() {
+  if [[ -f "$detector_directory/gpt56_vnext/detector.py" &&
+    -f "$detector_directory/gpt56_vnext/presets.py" ]]; then
+    return
+  fi
+
+  if [[ -e "$detector_directory" ]]; then
+    die "参考检测器目录不完整：$detector_directory。请补齐 gpt56_vnext/detector.py 和 presets.py。"
+  fi
+
+  require_command git
+  temporary_detector_parent="$(mktemp -d "$repo_root/.gpt56_api_detector.XXXXXX")"
+  local temporary_detector="$temporary_detector_parent/source"
+
+  printf '未找到参考检测器，正在获取固定版本：%s\n' "$detector_revision"
+  if ! git clone --quiet --no-tags --no-checkout "$detector_repository" "$temporary_detector"; then
+    die "无法获取参考检测器：$detector_repository。请检查服务器网络，或手动放置 $detector_directory。"
+  fi
+  if ! git -C "$temporary_detector" checkout --quiet --detach "$detector_revision"; then
+    die "参考检测器不包含固定版本：$detector_revision。请手动放置匹配版本的 $detector_directory。"
+  fi
+
+  mv "$temporary_detector" "$detector_directory"
+  rmdir "$temporary_detector_parent"
+  temporary_detector_parent=""
+}
 
 write_environment_file() {
   local web_password="$1"
@@ -98,6 +132,7 @@ else
   unset new_password new_master_key
 fi
 
+ensure_detector_source
 printf '正在构建镜像：%s\n' "$image_name"
 docker build --pull --tag "$image_name" "$repo_root"
 printf '可靠性检测 worker 已随镜像部署：python3 + scripts/channel_detector_worker.py；检测密钥不会写入环境文件。\n'

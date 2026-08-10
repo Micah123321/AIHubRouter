@@ -124,7 +124,7 @@ finalScore = weightedScore
 
 可靠性检测按当前选中的 active Key 独立调度，默认间隔 600 秒；首次运行、Key 换组或强制刷新会提前检测。每个 `KeyId` 只使用自己的 `DetectorBinding` 和加密 `DetectorApiKeys`，检测不会借用其他 Key 的凭据。探测集合是绑定模型和该分组 `model_health` 中显式 `healthy` 模型的交集；失败、未知或没有可用模型时不发送探针，也不据此判定掺水。
 
-worker 通过 stdin 调用 `gpt56_api_detector/gpt56_vnext` 的官方 `single/low` preset，并只返回脱敏状态。`可能非GPT`、`Juice混用`、`仅概率探针混用` 才能创建硬隔离；网络、HTTP、超时、截断流、证据不足或 worker 不可用只显示状态，不隔离。硬异常按 `GroupId` 写入独立的 `channel-reliability.json`，默认本地隔离 24 小时，并在主/Luna 候选计算前与永久黑名单取并集；dry-run 不写入，重启可恢复，过期自动恢复，不调用远端禁用。
+worker 通过 stdin 调用 `gpt56_api_detector/gpt56_vnext` 的官方 `single/low` preset，并只返回脱敏状态。Docker 初始化脚本在构建上下文缺少该参考目录时，会拉取并固定到已验证提交 `e9ef5d0f9cd4b0fa401a4e9960d959557610b852`；获取失败会停止构建并提示人工补齐，不会静默关闭检测。`可能非GPT`、`Juice混用`、`仅概率探针混用` 才能创建硬隔离；网络、HTTP、超时、截断流、证据不足或 worker 不可用只显示状态，不隔离。硬异常按 `GroupId` 写入独立的 `channel-reliability.json`，默认本地隔离 24 小时，并在主/Luna 候选计算前与永久黑名单取并集；dry-run 不写入，重启可恢复，过期自动恢复，不调用远端禁用。
 
 ### 4.4 权重稳定机制
 

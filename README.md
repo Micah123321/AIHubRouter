@@ -48,7 +48,7 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 检测复用仓库中的 `gpt56_api_detector/gpt56_vnext` 官方 `single/low` preset。参考结果为 `可能非GPT`、`Juice混用` 或 `仅概率探针混用` 时，Router 会把对应 `GroupId` 标记为“掺水隔离”，写入 profile 的 `channel-reliability.json` 并本地禁用 24 小时；HTTP 错误、超时、截断流、证据不足或 worker 不可用不会误隔离。隔离分组会从主路由和 Luna 路由候选中排除，过期后自动恢复，不会调用 AIHub 远端禁用接口。
 
-Web 设置接口接收 `detectorBindings` 和一次性 `detectorApiKeys`，凭据写入加密 `credentials.dat`，dashboard、CLI JSON、日志和页面只显示 Key/模型/状态/到期时间，不回显密钥。Docker 镜像已带 `python3`、worker 和参考检测器；自定义部署缺少 Python 时会明确显示“检测不可用”，但不会阻断原有路由。
+Web 设置接口接收 `detectorBindings` 和一次性 `detectorApiKeys`，凭据写入加密 `credentials.dat`，dashboard、CLI JSON、日志和页面只显示 Key/模型/状态/到期时间，不回显密钥。Docker 镜像已带 `python3`、worker 和参考检测器；`scripts/init-docker.sh` 构建前若发现 `gpt56_api_detector` 缺失，会从固定仓库提交 `e9ef5d0f9cd4b0fa401a4e9960d959557610b852` 获取它。获取失败会明确停止构建，不会静默关闭检测；直接执行 `docker build` 时请先准备该目录。自定义部署缺少 Python 时会明确显示“检测不可用”，但不会阻断原有路由。
 
 默认 `Balanced` 对价格与首 Token 速度各占 50% 权重；`Economy` 以价格为主，`Speed` 以首 Token 速度为主。当前分组仍然有效时，新分组还必须超过“分组粘性”才会切换；默认值为 `0.10`，可在 Web、桌面端或 CLI 的 `--group-stickiness` 中调整。数值越大，越不容易因短时波动切换分组。每次结果都会告诉你为什么选它。
 
