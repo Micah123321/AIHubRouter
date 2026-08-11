@@ -48,7 +48,7 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 检测复用仓库中的 `gpt56_api_detector/gpt56_vnext` 官方 `single/low` preset；当前参考源为 detector `4.1.0`，worker 接收报告 schema `3` 并按七种 `outcome_code` 归一化：`juice_pass_*` 表示 Juice 通过，`juice_mismatch_*` 表示 Juice 与申报型号不一致，`juice_insufficient_*` 表示 Juice 证据不足，`possible_non_gpt` 表示可能不是已知 GPT。只有 `juice_mismatch_*` 和 `possible_non_gpt` 会进入“掺水隔离”；低档常见的 `juice_pass_fingerprint_unclear` 是正常通过但指纹主动弃权，不是故障。HTTP 错误、超时、截断流、证据不足或 worker 不可用不会误隔离。隔离分组会从主路由和 Luna 路由候选中排除，过期后自动恢复，不会调用 AIHub 远端禁用接口。
 
-Web 设置接口接收 `detectorBindings` 和一次性 `detectorApiKeys`，凭据写入加密 `credentials.dat`，dashboard、CLI JSON、日志和页面只显示 Key/模型/状态/到期时间，不回显密钥。Docker 镜像已带 `python3`、worker 和参考检测器；`scripts/init-docker.sh` 构建前若发现 `gpt56_api_detector` 缺失，会从 `https://github.com/chen-006/gpt56_api_detector.git` 的固定提交 `cc9c53c43c83da8d52220b5da2e2c94d7ca4d9cf` 获取 detector `4.1.0`，并校验 `gpt56_vnext/baselines/trusted_fingerprint_v3.json`。已有旧版本目录会明确停止构建，不会静默继续使用；直接执行 `docker build` 时请先准备匹配目录。自定义部署缺少 Python 时会明确显示“检测不可用”，但不会阻断原有路由。
+Web 设置接口接收 `detectorBindings` 和一次性 `detectorApiKeys`，凭据写入加密 `credentials.dat`，dashboard、CLI JSON、日志和页面只显示 Key/模型/状态/到期时间，不回显密钥。Docker 镜像已带 `python3`、worker 和参考检测器；`scripts/init-docker.sh` 构建前若发现 `gpt56_api_detector` 缺失、版本不匹配或文件不完整，会从 `https://github.com/chen-006/gpt56_api_detector.git` 的固定提交 `cc9c53c43c83da8d52220b5da2e2c94d7ca4d9cf` 获取 detector `4.1.0`，并校验 `gpt56_vnext/baselines/trusted_fingerprint_v3.json`。校验通过后旧目录会自动改名为 `gpt56_api_detector.backup.<timestamp>` 并保留，新目录安装后继续构建；网络、checkout 或校验失败时不会覆盖旧目录。后续发布更新的项目脚本后，服务器仍执行同一条 `bash scripts/init-docker.sh` 即可。直接执行 `docker build` 时请先准备匹配目录。自定义部署缺少 Python 时会明确显示“检测不可用”，但不会阻断原有路由。
 
 Web 页面下方的“可靠性检测”工作台会实时显示运行阶段、触发来源（新渠道、每小时复检、配置变更、手动检测）、当前进度、每个 Key/模型/探针族的状态、脱敏网络统计、证据摘要和审计时间线。未到一小时、未配置、无健康样本等跳过或提示原因会单独显示。时间线与当前探针是进程内有界数据（最多 1024 个事件、512 条探针），轮询不会覆盖正在编辑的检测地址或凭据输入；容器重启后只保留最新的 24 小时隔离摘要，不提供长期逐探针历史。自动路由开关关闭时，可靠性检测仍按每小时独立运行；一次检测超时会标记失败并等待下一周期，不会让 Web Host 退出。
 
@@ -136,6 +136,15 @@ bash scripts/init-docker.sh
 ⚠️ 直连公网 HTTP 是本次部署中明确确认的高风险选择。若要回到更安全的部署方式，把脚本中的端口映射改回 `127.0.0.1:5080:5080`，再由 Nginx/Caddy 终止 HTTPS。
 
 脚本可以从任意当前目录调用，因为它会根据自身位置定位仓库根目录。已有环境文件缺少口令或主密钥时，脚本会停止而不会生成新密钥覆盖旧数据。
+
+当仓库中已有旧的或不完整的 `gpt56_api_detector` 目录时，脚本会在临时目录获取并校验固定提交，成功后把旧目录保留为 `gpt56_api_detector.backup.<timestamp>` 再安装新版本；获取失败不会覆盖旧目录。服务器后续更新时先拉取本项目最新代码，再执行上面的同一条命令即可：
+
+```bash
+git pull --ff-only
+bash scripts/init-docker.sh
+```
+
+备份目录仅用于回滚，不会被复制进 Docker 镜像构建上下文；可在确认新容器稳定后按运维策略清理。
 
 #### 手动 Docker 命令（可选）
 

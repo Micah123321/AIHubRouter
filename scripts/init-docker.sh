@@ -16,6 +16,7 @@ readonly detector_baseline="gpt56_vnext/baselines/trusted_fingerprint_v3.json"
 generated_password=""
 temporary_file=""
 temporary_detector_parent=""
+detector_backup_directory=""
 
 die() {
   printf '错误：%s\n' "$*" >&2
@@ -48,40 +49,114 @@ done
 docker info >/dev/null 2>&1 || die 'Docker daemon 不可用，请先启动 Docker。'
 [[ -f "$repo_root/Dockerfile" ]] || die "未找到 Dockerfile：$repo_root"
 
-ensure_detector_source() {
-  local version_file="$detector_directory/VERSION"
-  local baseline_file="$detector_directory/$detector_baseline"
+detector_source_is_current() {
+  local source_directory="$1"
+  local version_file="$source_directory/VERSION"
 
-  if [[ -f "$detector_directory/gpt56_vnext/detector.py" &&
-    -f "$detector_directory/gpt56_vnext/presets.py" &&
-    -f "$version_file" &&
-    -f "$baseline_file" ]]; then
-    local detector_local_version
-    detector_local_version="$(tr -d '\r\n' < "$version_file")"
-    [[ "$detector_local_version" == "$detector_version" ]] ||
-      die "参考检测器版本不匹配：期望 $detector_version，当前 $detector_local_version：$detector_directory"
+  if [[ ! -f "$source_directory/gpt56_vnext/detector.py" ||
+    ! -f "$source_directory/gpt56_vnext/presets.py" ||
+    ! -f "$version_file" ||
+    ! -f "$source_directory/$detector_baseline" ]]; then
+    return 1
+  fi
+
+  local detector_local_version
+  if ! detector_local_version="$(tr -d '\r\n' < "$version_file")"; then
+    return 1
+  fi
+  [[ "$detector_local_version" == "$detector_version" ]]
+}
+
+fetch_detector_source() {
+  local temporary_detector="$1"
+
+  printf '正在获取参考检测器固定版本：%s\n' "$detector_revision"
+  if ! git clone --quiet --no-tags --no-checkout "$detector_repository" "$temporary_detector"; then
+    die "无法获取参考检测器：$detector_repository。请检查服务器网络；现有目录未被修改。"
+  fi
+  if ! git -C "$temporary_detector" checkout --quiet --detach "$detector_revision"; then
+    die "参考检测器不包含固定版本：$detector_revision；现有目录未被修改。"
+  fi
+
+  if [[ ! -f "$temporary_detector/gpt56_vnext/detector.py" ||
+    ! -f "$temporary_detector/gpt56_vnext/presets.py" ||
+    ! -f "$temporary_detector/VERSION" ||
+    ! -f "$temporary_detector/$detector_baseline" ]]; then
+    die "固定版本缺少 4.1.0 必需文件；现有目录未被修改。"
+  fi
+
+  local temporary_detector_version
+  if ! temporary_detector_version="$(tr -d '\r\n' < "$temporary_detector/VERSION")"; then
+    die "无法读取固定版本 VERSION；现有目录未被修改。"
+  fi
+  if [[ "$temporary_detector_version" != "$detector_version" ]]; then
+    die "固定提交版本不匹配：期望 $detector_version，当前 $temporary_detector_version；现有目录未被修改。"
+  fi
+}
+
+backup_existing_detector() {
+  detector_backup_directory=""
+  if [[ ! -e "$detector_directory" && ! -L "$detector_directory" ]]; then
     return
   fi
 
-  if [[ -e "$detector_directory" ]]; then
-    die "参考检测器目录缺少 4.1.0 必需文件或版本不匹配：$detector_directory。请更新到 $detector_revision。"
+  local backup_base="$repo_root/gpt56_api_detector.backup.$(date +%Y%m%d%H%M%S)"
+  local backup_suffix=0
+  detector_backup_directory="$backup_base"
+  while [[ -e "$detector_backup_directory" || -L "$detector_backup_directory" ]]; do
+    backup_suffix=$((backup_suffix + 1))
+    detector_backup_directory="$backup_base.$backup_suffix"
+  done
+
+  if ! mv -- "$detector_directory" "$detector_backup_directory"; then
+    die "无法备份现有参考检测器目录：$detector_directory；新版本尚未安装。"
+  fi
+  printf '旧参考检测器已备份到：%s\n' "$detector_backup_directory"
+}
+
+replace_detector_source() {
+  local temporary_detector="$1"
+  local backup_detector="$2"
+
+  if mv -- "$temporary_detector" "$detector_directory"; then
+    return
+  fi
+
+  if [[ -n "$backup_detector" &&
+    ! -e "$detector_directory" &&
+    ! -L "$detector_directory" ]]; then
+    if ! mv -- "$backup_detector" "$detector_directory"; then
+      die "新参考检测器安装失败，且旧目录恢复失败：$backup_detector"
+    fi
+    die "新参考检测器安装失败，旧目录已恢复：$detector_directory"
+  fi
+  die "新参考检测器安装失败；旧目录备份保留在：${backup_detector:-无}"
+}
+
+ensure_detector_source() {
+  if detector_source_is_current "$detector_directory"; then
+    return
+  fi
+
+  if [[ -e "$detector_directory" || -L "$detector_directory" ]]; then
+    printf '发现参考检测器目录缺失、版本不匹配或不完整，准备自动更新到 %s，并保留旧目录备份。\n' \
+      "$detector_version"
+  else
+    printf '未找到参考检测器，准备获取固定版本：%s\n' "$detector_revision"
   fi
 
   require_command git
   temporary_detector_parent="$(mktemp -d "$repo_root/.gpt56_api_detector.XXXXXX")"
   local temporary_detector="$temporary_detector_parent/source"
+  fetch_detector_source "$temporary_detector"
+  backup_existing_detector
+  replace_detector_source "$temporary_detector" "$detector_backup_directory"
 
-  printf '未找到参考检测器，正在获取固定版本：%s\n' "$detector_revision"
-  if ! git clone --quiet --no-tags --no-checkout "$detector_repository" "$temporary_detector"; then
-    die "无法获取参考检测器：$detector_repository。请检查服务器网络，或手动放置 $detector_directory。"
+  if ! rmdir "$temporary_detector_parent"; then
+    die "参考检测器已安装，但临时目录清理失败：$temporary_detector_parent"
   fi
-  if ! git -C "$temporary_detector" checkout --quiet --detach "$detector_revision"; then
-    die "参考检测器不包含固定版本：$detector_revision。请手动放置匹配版本的 $detector_directory。"
-  fi
-
-  mv "$temporary_detector" "$detector_directory"
-  rmdir "$temporary_detector_parent"
   temporary_detector_parent=""
+  printf '参考检测器已更新到 %s：%s\n' "$detector_version" "$detector_directory"
 }
 
 write_environment_file() {

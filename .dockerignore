@@ -16,6 +16,8 @@ docs
 docs/**
 deploy
 deploy/**
+gpt56_api_detector.backup.*
+.gpt56_api_detector.*
 scripts/**
 !scripts/
 !scripts/channel_detector_worker.py
