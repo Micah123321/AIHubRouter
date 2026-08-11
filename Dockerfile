@@ -31,6 +31,7 @@ ENV DOTNET_RUNNING_IN_CONTAINER=true \
 
 COPY --from=build /app/publish ./
 COPY scripts/channel_detector_worker.py ./scripts/channel_detector_worker.py
+COPY scripts/channel_detector_worker_protocol.py ./scripts/channel_detector_worker_protocol.py
 COPY gpt56_api_detector ./gpt56_api_detector
 
 RUN mkdir -p /app/data \

@@ -40,9 +40,15 @@ internal static class ChannelReliabilityWorkerProtocol
                 response = new WorkerResponse(
                     status,
                     TryString(summary, "overall_verdict", out var verdict) ? verdict : null,
+                    TryString(summary, "title_cn", out var titleCn) ? titleCn : null,
                     TryString(summary, "error_code", out var errorCode) ? errorCode : null,
                     TryBoolean(summary, "official", out var official) ? official : null,
                     TryString(summary, "claimed_model", out var claimedModel) ? claimedModel : null,
+                    ReadNullableBoundedInteger(summary, "report_schema_version"),
+                    ParseOutcomeCode(ReadBoundedString(summary, "outcome_code")),
+                    NormalizeJuiceState(ReadBoundedString(summary, "juice_state")),
+                    NormalizeFingerprintState(ReadBoundedString(summary, "fingerprint_state")),
+                    NormalizeModel(ReadBoundedString(summary, "fingerprint_model")),
                     ParseNetworkSummary(summary),
                     ParseEvidenceSummary(summary));
                 return true;
@@ -65,6 +71,7 @@ internal static class ChannelReliabilityWorkerProtocol
             "processing_error" => DetectorErrorCategory.ProcessingError,
             "truncated_stream" => DetectorErrorCategory.StreamTruncated,
             "evidence_insufficient" => DetectorErrorCategory.EvidenceInsufficient,
+            "unsupported_schema" => DetectorErrorCategory.InvalidResponse,
             "invalid_input" => DetectorErrorCategory.InvalidResponse,
             _ => DetectorErrorCategory.Unknown
         };
@@ -117,9 +124,13 @@ internal static class ChannelReliabilityWorkerProtocol
 
         return new DetectorEvidenceSummary
         {
+            ReportSchemaVersion = ReadNullableBoundedInteger(summary, "report_schema_version"),
+            OutcomeCode = ParseOutcomeCode(ReadBoundedString(summary, "outcome_code")),
             VerdictAvailable = ReadBoolean(summary, "verdict_available"),
             HardVerdict = ReadBoolean(summary, "hard_verdict"),
             JuiceState = NormalizeJuiceState(ReadBoundedString(summary, "juice_state")),
+            FingerprintState = NormalizeFingerprintState(ReadBoundedString(summary, "fingerprint_state")),
+            FingerprintModel = NormalizeModel(ReadBoundedString(summary, "fingerprint_model")),
             JuiceValidCompleted = ReadBoundedInteger(summary, "juice_valid_completed"),
             JuiceCurrentSuccess = ReadBoundedInteger(summary, "juice_current_success"),
             JuiceMixed = ReadBoundedInteger(summary, "juice_mixed"),
@@ -128,11 +139,16 @@ internal static class ChannelReliabilityWorkerProtocol
             OutputExact = ReadBoundedInteger(summary, "output_exact"),
             CoverageRequests = ReadBoundedInteger(summary, "coverage_requests"),
             CoverageHardAnomaly = ReadBoolean(summary, "coverage_hard_anomaly"),
-            ProbabilityEnabled = ReadBoolean(summary, "probability_enabled"),
-            ProbabilityFormalEligible = ReadNullableBoolean(summary, "probability_formal_eligible"),
+            FingerprintEnabled = ReadBoolean(summary, "fingerprint_enabled"),
+            FingerprintFormalEligible = ReadNullableBoolean(summary, "fingerprint_formal_eligible"),
             EvidenceInsufficient = ReadBoolean(summary, "evidence_insufficient")
         };
     }
+
+    private static int? ReadNullableBoundedInteger(JsonElement root, string propertyName) =>
+        root.TryGetProperty(propertyName, out var value) && TryBoundedInteger(value, out var result)
+            ? result
+            : null;
 
     private static int ReadBoundedInteger(JsonElement root, string propertyName) =>
         root.TryGetProperty(propertyName, out var value) && TryBoundedInteger(value, out var result)
@@ -178,11 +194,41 @@ internal static class ChannelReliabilityWorkerProtocol
     private static string NormalizeJuiceState(string? value) =>
         value?.Trim().ToLowerInvariant() switch
         {
-            "juice_pass" => "juice_pass",
-            "juice_mixed" => "juice_mixed",
-            "juice_all_unsuccessful" => "juice_all_unsuccessful",
-            "data_insufficient" => "data_insufficient",
+            "pass" => "pass",
+            "mismatch" => "mismatch",
+            "insufficient" => "insufficient",
+            "possible_non_gpt" => "possible_non_gpt",
             _ => "unknown"
+        };
+
+    private static string NormalizeFingerprintState(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            "strong_match" => "strong_match",
+            "unclear" => "unclear",
+            _ => "unknown"
+        };
+
+    private static string? NormalizeModel(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            "gpt-5.6-sol" => "gpt-5.6-sol",
+            "gpt-5.6-terra" => "gpt-5.6-terra",
+            "gpt-5.6-luna" => "gpt-5.6-luna",
+            _ => null
+        };
+
+    private static DetectorOutcomeCode ParseOutcomeCode(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            "juice_pass_fingerprint_strong" => DetectorOutcomeCode.JuicePassFingerprintStrong,
+            "juice_pass_fingerprint_unclear" => DetectorOutcomeCode.JuicePassFingerprintUnclear,
+            "juice_mismatch_fingerprint_strong" => DetectorOutcomeCode.JuiceMismatchFingerprintStrong,
+            "juice_mismatch_fingerprint_unclear" => DetectorOutcomeCode.JuiceMismatchFingerprintUnclear,
+            "juice_insufficient_fingerprint_strong" => DetectorOutcomeCode.JuiceInsufficientFingerprintStrong,
+            "juice_insufficient_fingerprint_unclear" => DetectorOutcomeCode.JuiceInsufficientFingerprintUnclear,
+            "possible_non_gpt" => DetectorOutcomeCode.PossibleNonGpt,
+            _ => DetectorOutcomeCode.Unknown
         };
 
     private static bool TryString(JsonElement root, string name, out string value)
@@ -227,6 +273,7 @@ internal static class ChannelReliabilityWorkerProtocol
             "network_error" => "network_error",
             "processing_error" => "processing_error",
             "evidence_insufficient" => "evidence_insufficient",
+            "unsupported_schema" => "unsupported_schema",
             _ => string.Empty
         };
         return normalized.Length > 0;
@@ -235,9 +282,15 @@ internal static class ChannelReliabilityWorkerProtocol
     internal sealed record WorkerResponse(
         string Status,
         string? OverallVerdict,
+        string? TitleCn,
         string? ErrorCode,
         bool? Official,
         string? ClaimedModel,
+        int? ReportSchemaVersion,
+        DetectorOutcomeCode OutcomeCode,
+        string JuiceState,
+        string FingerprintState,
+        string? FingerprintModel,
         DetectorNetworkSummary NetworkSummary,
         DetectorEvidenceSummary EvidenceSummary);
 }

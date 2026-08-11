@@ -30,9 +30,13 @@ public sealed class WebRouterCoordinator : BackgroundService
     private DateTimeOffset _nextAutoRun = DateTimeOffset.MinValue;
     private DateTimeOffset _nextReliabilityRun = DateTimeOffset.MinValue;
     private ChannelReliabilityTrigger? _pendingReliabilityTrigger;
+    private bool _pendingReliabilityForce;
+    private readonly HashSet<long> _pendingReliabilityKeyIds = [];
+    private bool _pendingReliabilityAllKeys;
     private bool _reliabilityRunning;
     private CancellationTokenSource? _activeReliabilityCancellation;
     private readonly SemaphoreSlim _reliabilityGate = new(1, 1);
+    private readonly ChannelReliabilityLedger _reliabilityLedger = new();
 
     public WebRouterCoordinator(ILogger<WebRouterCoordinator> logger)
     {
@@ -46,6 +50,7 @@ public sealed class WebRouterCoordinator : BackgroundService
         _pendingReliabilityTrigger = _settings.ReliabilityDetectionEnabled
             ? ChannelReliabilityTrigger.Startup
             : null;
+        _pendingReliabilityAllKeys = _settings.ReliabilityDetectionEnabled;
         _nextReliabilityRun = _settings.ReliabilityDetectionEnabled
             ? DateTimeOffset.MinValue
             : DateTimeOffset.MaxValue;
@@ -134,6 +139,7 @@ public sealed class WebRouterCoordinator : BackgroundService
             }
 
             var oldSettings = _settings;
+            var oldCredentials = _credentials;
             var storedCredentials = _storedCredentials with
             {
                 Email = HasEnvironmentVariable("AIHUB_EMAIL")
@@ -185,8 +191,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 BlacklistedGroupIds = request.BlacklistedGroupIds.Where(id => id > 0).Distinct().Order().ToArray(),
                 ReliabilityDetectionEnabled = request.ReliabilityDetectionEnabled ??
                     _storedSettings.ReliabilityDetectionEnabled,
-                ReliabilityDetectionIntervalSeconds = request.ReliabilityDetectionIntervalSeconds ??
-                    _storedSettings.ReliabilityDetectionIntervalSeconds,
+                ReliabilityDetectionIntervalSeconds = 3600,
                 ReliabilityQuarantineHours = request.ReliabilityQuarantineHours ??
                     _storedSettings.ReliabilityQuarantineHours,
                 DetectorPythonCommand = string.IsNullOrWhiteSpace(request.DetectorPythonCommand)
@@ -213,6 +218,21 @@ public sealed class WebRouterCoordinator : BackgroundService
                 : null;
             var settings = ApplyEnvironmentSettings(storedSettings);
             var credentials = ApplyEnvironmentCredentials(persistedCredentials);
+            var globalReliabilityChange =
+                oldSettings.ReliabilityDetectionEnabled != settings.ReliabilityDetectionEnabled ||
+                oldSettings.ReliabilityQuarantineHours != settings.ReliabilityQuarantineHours ||
+                !string.Equals(oldSettings.DetectorPythonCommand, settings.DetectorPythonCommand, StringComparison.Ordinal) ||
+                !string.Equals(oldSettings.DetectorWorkerPath, settings.DetectorWorkerPath, StringComparison.Ordinal) ||
+                !string.Equals(oldSettings.DetectorPreset, settings.DetectorPreset, StringComparison.Ordinal);
+            var affectedReliabilityKeyIds = ChangedReliabilityKeyIds(
+                oldSettings.DetectorBindings,
+                settings.DetectorBindings,
+                oldCredentials.DetectorApiKeys,
+                credentials.DetectorApiKeys)
+                .Intersect(settings.SelectedKeyIds.Concat(settings.LunaSelectedKeyIds))
+                .Order()
+                .ToArray();
+            var reliabilityConfigurationChanged = globalReliabilityChange || affectedReliabilityKeyIds.Length > 0;
 
             await StopReliabilityServiceAsync(cancellationToken);
             _store.Save(storedSettings, credentialsToSave);
@@ -251,7 +271,6 @@ public sealed class WebRouterCoordinator : BackgroundService
                     !BindingsEqual(oldSettings.DetectorBindings, settings.DetectorBindings))
                 {
                     _lastResult = null;
-                    _lastReliability = null;
                 }
                 else if (!oldSettings.LunaSelectedKeyIds.SequenceEqual(settings.LunaSelectedKeyIds) &&
                          _lastResult is { } staleResult)
@@ -262,12 +281,20 @@ public sealed class WebRouterCoordinator : BackgroundService
                 }
 
                 _nextAutoRun = DateTimeOffset.MinValue;
-                _nextReliabilityRun = settings.ReliabilityDetectionEnabled
-                    ? DateTimeOffset.MinValue
-                    : DateTimeOffset.MaxValue;
-                _pendingReliabilityTrigger = settings.ReliabilityDetectionEnabled
-                    ? ChannelReliabilityTrigger.ConfigurationChanged
-                    : null;
+                if (!settings.ReliabilityDetectionEnabled)
+                {
+                    _nextReliabilityRun = DateTimeOffset.MaxValue;
+                    _pendingReliabilityTrigger = null;
+                    _pendingReliabilityForce = false;
+                    _pendingReliabilityKeyIds.Clear();
+                    _pendingReliabilityAllKeys = false;
+                }
+                else if (reliabilityConfigurationChanged)
+                {
+                    QueueReliabilityCheckLocked(
+                        ChannelReliabilityTrigger.ConfigurationChanged,
+                        globalReliabilityChange ? null : affectedReliabilityKeyIds);
+                }
             }
 
             ResetService();
@@ -300,7 +327,9 @@ public sealed class WebRouterCoordinator : BackgroundService
         return RunCycleCoreAsync(dryRun, forceRefresh, cancellationToken);
     }
 
-    public ReliabilityQueueResponse QueueReliabilityCheck(ChannelReliabilityTrigger trigger = ChannelReliabilityTrigger.Manual)
+    public ReliabilityQueueResponse QueueReliabilityCheck(
+        ChannelReliabilityTrigger trigger = ChannelReliabilityTrigger.Manual,
+        IReadOnlyCollection<long>? keyIds = null)
     {
         lock (_stateLock)
         {
@@ -311,23 +340,7 @@ public sealed class WebRouterCoordinator : BackgroundService
                 return new ReliabilityQueueResponse(false, false, BuildDashboard());
             }
 
-            var alreadyQueued = _pendingReliabilityTrigger is not null;
-            var merged = _reliabilityRunning || alreadyQueued;
-            if (!_reliabilityRunning)
-            {
-                _pendingReliabilityTrigger = PromoteReliabilityTrigger(_pendingReliabilityTrigger, trigger);
-                _nextReliabilityRun = DateTimeOffset.MinValue;
-                _status = alreadyQueued
-                    ? "可靠性检测已排队，本次请求已合并。"
-                    : "可靠性检测已排队。";
-                _statusKind = alreadyQueued ? "neutral" : "success";
-            }
-            else
-            {
-                _status = "可靠性检测正在运行，本次请求已合并。";
-                _statusKind = "neutral";
-            }
-
+            var merged = QueueReliabilityCheckLocked(trigger, keyIds);
             return new ReliabilityQueueResponse(true, merged, BuildDashboard());
         }
     }
@@ -382,6 +395,14 @@ public sealed class WebRouterCoordinator : BackgroundService
                 else
                 {
                     _status = $"已将所选 Key 路由到 {group.Id} / {group.Name}；自动路由已关闭。";
+                }
+                var changedKeyIds = result.KeyResults
+                    .Where(item => item.Changed && item.Success)
+                    .Select(item => item.KeyId)
+                    .ToArray();
+                if (changedKeyIds.Length > 0 && _settings.ReliabilityDetectionEnabled)
+                {
+                    QueueReliabilityCheckLocked(ChannelReliabilityTrigger.KeyGroupChanged, changedKeyIds);
                 }
             }
         }
@@ -467,18 +488,25 @@ public sealed class WebRouterCoordinator : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             ChannelReliabilityTrigger trigger;
-            int interval;
+            long[]? keyIds = null;
+            var forceRefresh = false;
             var shouldRun = false;
             lock (_stateLock)
             {
-                interval = Math.Clamp(_settings.ReliabilityDetectionIntervalSeconds, 60, 86_400);
                 trigger = _pendingReliabilityTrigger ?? ChannelReliabilityTrigger.Scheduled;
+                forceRefresh = _pendingReliabilityForce || ForcesReliabilityProbe(trigger);
                 shouldRun = _settings.ReliabilityDetectionEnabled &&
                     !_reliabilityRunning &&
                     (_pendingReliabilityTrigger is not null || DateTimeOffset.UtcNow >= _nextReliabilityRun);
                 if (shouldRun)
                 {
+                    keyIds = _pendingReliabilityTrigger is null || _pendingReliabilityAllKeys
+                        ? null
+                        : _pendingReliabilityKeyIds.ToArray();
                     _pendingReliabilityTrigger = null;
+                    _pendingReliabilityForce = false;
+                    _pendingReliabilityKeyIds.Clear();
+                    _pendingReliabilityAllKeys = false;
                     _reliabilityRunning = true;
                 }
             }
@@ -489,16 +517,21 @@ public sealed class WebRouterCoordinator : BackgroundService
                 {
                     await RunReliabilityCycleCoreAsync(
                         dryRun: false,
-                        forceRefresh: trigger is not ChannelReliabilityTrigger.Scheduled,
+                        forceRefresh: forceRefresh,
                         trigger: trigger,
+                        keyIds: keyIds,
                         stoppingToken: stoppingToken);
                 }
                 finally
                 {
                     lock (_stateLock)
                     {
-                        _reliabilityRunning = false;
-                        _nextReliabilityRun = DateTimeOffset.UtcNow.AddSeconds(interval);
+                    _reliabilityRunning = false;
+                        if (_pendingReliabilityTrigger is null &&
+                            _nextReliabilityRun <= DateTimeOffset.UtcNow)
+                        {
+                            _nextReliabilityRun = DateTimeOffset.UtcNow.AddHours(1);
+                        }
                     }
                 }
             }
@@ -545,6 +578,16 @@ public sealed class WebRouterCoordinator : BackgroundService
                         ? "warning"
                         : "success";
                 _showProviderSeriesStatus = true;
+                var changedKeyIds = result.KeyResults
+                    .Concat(result.LunaRoute?.KeyResults ?? [])
+                    .Where(item => item.Changed && item.Success)
+                    .Select(item => item.KeyId)
+                    .Distinct()
+                    .ToArray();
+                if (!dryRun && changedKeyIds.Length > 0 && _settings.ReliabilityDetectionEnabled)
+                {
+                    QueueReliabilityCheckLocked(ChannelReliabilityTrigger.KeyGroupChanged, changedKeyIds);
+                }
             }
         }
         catch (OperationCanceledException exception)
@@ -572,6 +615,7 @@ public sealed class WebRouterCoordinator : BackgroundService
         bool dryRun,
         bool forceRefresh,
         ChannelReliabilityTrigger trigger,
+        IReadOnlyCollection<long>? keyIds,
         CancellationToken stoppingToken)
     {
         await _operationGate.WaitAsync(stoppingToken);
@@ -593,16 +637,20 @@ public sealed class WebRouterCoordinator : BackgroundService
                     dryRun,
                     forceRefresh,
                     linkedCancellation.Token,
-                    trigger);
+                    trigger,
+                    selectedKeyIds: keyIds,
+                    selectedLunaKeyIds: keyIds is null ? null : []);
                 lock (_stateLock)
                 {
-                    _lastReliability = result;
+                    _lastReliability = MergeReliabilityCycles(_lastReliability, result);
+                    result = _lastReliability;
                     if (_lastResult is { } routeResult)
                     {
                         _lastResult = routeResult with { Reliability = result };
                     }
 
                     _lastUpdatedAt = result.CompletedAt;
+                    _nextReliabilityRun = result.Runtime?.NextCheckAt ?? DateTimeOffset.UtcNow.AddHours(1);
                     _status = BuildReliabilityStatus(result) ?? "可靠性检测已完成。";
                     _statusKind = result.Keys.Any(key => key.Status is
                         ChannelReliabilityStatus.Unavailable or ChannelReliabilityStatus.EvidenceInsufficient)
@@ -973,8 +1021,9 @@ public sealed class WebRouterCoordinator : BackgroundService
             _credentials,
             new JsonRouteStateStore(_store.StorageDirectory),
             persistCredentials: PersistUpdatedCredentialsAsync,
-            channelQuarantineStore: new JsonChannelQuarantineStore(_store.StorageDirectory),
-            runReliabilityDuringRouting: false);
+             channelQuarantineStore: new JsonChannelQuarantineStore(_store.StorageDirectory),
+             runReliabilityDuringRouting: false,
+             reliabilityLedger: _reliabilityLedger);
 
     private Task PersistUpdatedCredentialsAsync(
         PersistentCredentials updated,
@@ -1226,14 +1275,108 @@ public sealed class WebRouterCoordinator : BackgroundService
         return current.Value;
     }
 
+    private static ChannelReliabilityCycleResult MergeReliabilityCycles(
+        ChannelReliabilityCycleResult? previous,
+        ChannelReliabilityCycleResult current)
+    {
+        if (previous is null)
+        {
+            return current;
+        }
+
+        var keys = previous.Keys
+            .Concat(current.Keys)
+            .GroupBy(item => item.KeyId)
+            .Select(group => group.Last())
+            .ToArray();
+        var groups = previous.Groups
+            .Concat(current.Groups)
+            .GroupBy(item => item.GroupId)
+            .Select(group => group.Last())
+            .ToArray();
+        var results = previous.Results
+            .Concat(current.Results)
+            .GroupBy(item => item.KeyId)
+            .Select(group => group.Last())
+            .ToArray();
+        return current with { Keys = keys, Groups = groups, Results = results };
+    }
+
     private static int ReliabilityTriggerPriority(ChannelReliabilityTrigger trigger) => trigger switch
     {
         ChannelReliabilityTrigger.Manual => 4,
         ChannelReliabilityTrigger.Refresh => 3,
         ChannelReliabilityTrigger.ConfigurationChanged => 2,
+        ChannelReliabilityTrigger.KeyGroupChanged => 2,
         ChannelReliabilityTrigger.Startup => 1,
         _ => 0
     };
+
+    private bool QueueReliabilityCheckLocked(
+        ChannelReliabilityTrigger trigger,
+        IReadOnlyCollection<long>? keyIds)
+    {
+        var alreadyQueued = _pendingReliabilityTrigger is not null;
+        var merged = _reliabilityRunning || alreadyQueued;
+        _pendingReliabilityTrigger = PromoteReliabilityTrigger(_pendingReliabilityTrigger, trigger);
+        _pendingReliabilityForce |= ForcesReliabilityProbe(trigger);
+        if (keyIds is null)
+        {
+            _pendingReliabilityAllKeys = true;
+            _pendingReliabilityKeyIds.Clear();
+        }
+        else if (!_pendingReliabilityAllKeys)
+        {
+            _pendingReliabilityKeyIds.UnionWith(keyIds.Where(id => id > 0));
+        }
+        _nextReliabilityRun = DateTimeOffset.MinValue;
+        _status = _reliabilityRunning
+            ? "可靠性检测正在运行，本次请求已合并。"
+            : alreadyQueued
+                ? "可靠性检测已排队，本次请求已合并。"
+                : "可靠性检测已排队。";
+        _statusKind = merged ? "neutral" : "success";
+        return merged;
+    }
+
+    internal static bool ForcesReliabilityProbe(ChannelReliabilityTrigger trigger) =>
+        trigger is ChannelReliabilityTrigger.Manual or ChannelReliabilityTrigger.ConfigurationChanged;
+
+    internal static long[] ChangedReliabilityKeyIds(
+        IReadOnlyList<DetectorBinding> oldBindings,
+        IReadOnlyList<DetectorBinding> newBindings,
+        IReadOnlyDictionary<long, string>? oldCredentials,
+        IReadOnlyDictionary<long, string>? newCredentials)
+    {
+        var bindingIds = oldBindings.Select(item => item.KeyId)
+            .Concat(newBindings.Select(item => item.KeyId));
+        var credentialIds = (oldCredentials ?? EmptyDetectorCredentials).Keys
+            .Concat((newCredentials ?? EmptyDetectorCredentials).Keys);
+        return bindingIds.Concat(credentialIds)
+            .Distinct()
+            .Where(keyId => !BindingEqualForKey(oldBindings, newBindings, keyId) ||
+                !CredentialEqualForKey(oldCredentials, newCredentials, keyId))
+            .Order()
+            .ToArray();
+    }
+
+    private static bool BindingEqualForKey(
+        IReadOnlyList<DetectorBinding> left,
+        IReadOnlyList<DetectorBinding> right,
+        long keyId) => BindingsEqual(
+            left.Where(item => item.KeyId == keyId).ToArray(),
+            right.Where(item => item.KeyId == keyId).ToArray());
+
+    private static bool CredentialEqualForKey(
+        IReadOnlyDictionary<long, string>? left,
+        IReadOnlyDictionary<long, string>? right,
+        long keyId) => string.Equals(
+            (left ?? EmptyDetectorCredentials).GetValueOrDefault(keyId),
+            (right ?? EmptyDetectorCredentials).GetValueOrDefault(keyId),
+            StringComparison.Ordinal);
+
+    private static IReadOnlyDictionary<long, string> EmptyDetectorCredentials { get; } =
+        new Dictionary<long, string>();
 
     private static void TryCancel(CancellationTokenSource? cancellation)
     {
@@ -1393,7 +1536,11 @@ public sealed class WebRouterCoordinator : BackgroundService
     private static PersistentAppSettings ApplyEnvironmentSettings(PersistentAppSettings settings)
     {
         var baseUrl = Environment.GetEnvironmentVariable("AIHUB_BASE_URL");
-        return string.IsNullOrWhiteSpace(baseUrl) ? settings : settings with { BaseUrl = baseUrl.Trim() };
+        return settings with
+        {
+            BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? settings.BaseUrl : baseUrl.Trim(),
+            ReliabilityDetectionIntervalSeconds = 3600
+        };
     }
 
     private static PersistentCredentials ApplyEnvironmentCredentials(PersistentCredentials credentials) =>

@@ -19,12 +19,6 @@ public static class ChannelReliabilityTests
         Assert(DetectorModelNames.IsSupported("terra"), "Terra should be a supported detector model.");
 
         var selected = ChannelReliabilityRules.SelectProbeModels(
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                [DetectorModelNames.Sol] = "healthy",
-                [DetectorModelNames.Terra] = "healthy",
-                [DetectorModelNames.Luna] = "healthy"
-            },
             new DetectorBinding
             {
                 Models = [DetectorModelNames.Sol, DetectorModelNames.Terra]
@@ -35,24 +29,19 @@ public static class ChannelReliabilityTests
             "A sol/terra-only binding must never probe luna.");
     }
 
-    public static void TestSelectProbeModelsSkipsFailedAndUnknown()
+    public static void TestSelectProbeModelsIgnoresCapabilityHealth()
     {
         var selected = ChannelReliabilityRules.SelectProbeModels(
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                [DetectorModelNames.Sol] = "failed",
-                [DetectorModelNames.Terra] = "unknown",
-                [DetectorModelNames.Luna] = "failed"
-            },
             new DetectorBinding
             {
                 Models = [DetectorModelNames.Sol, DetectorModelNames.Terra, DetectorModelNames.Luna]
             });
 
-        Assert(selected.Count == 0, "Failed and unknown detector models must not be probed.");
+        Assert(
+            selected.SequenceEqual([DetectorModelNames.Sol, DetectorModelNames.Terra, DetectorModelNames.Luna]),
+            "Configured detector models must not be filtered by model health samples.");
 
         var disabled = ChannelReliabilityRules.SelectProbeModels(
-            new Dictionary<string, string> { [DetectorModelNames.Sol] = "healthy" },
             new DetectorBinding { Models = [DetectorModelNames.Sol], Enabled = false });
         Assert(disabled.Count == 0, "Disabled detector bindings must not be probed.");
     }
@@ -147,7 +136,7 @@ public static class ChannelReliabilityTests
     public static void TestMapperValidatesCompleteEvidence()
     {
         const string valid = """
-            {"status":"complete","overall_verdict":"Juice混用","error_code":null,"official":true,"claimed_model":"gpt-5.6-sol","network_summary":{"logical_tasks":4,"logical_completed":4,"successful":4,"final_errors":0,"cancelled":0,"http_attempts":4,"retries":0,"in_flight":0},"evidence_summary":{"verdict_available":true,"hard_verdict":true,"juice_state":"juice_mixed","probability_enabled":false,"probability_formal_eligible":null,"evidence_insufficient":false}}
+            {"status":"complete","overall_verdict":"Juice与申报型号不一致；指纹证据不明确","title_cn":"Juice与申报型号不一致；指纹证据不明确","error_code":null,"official":true,"claimed_model":"gpt-5.6-sol","report_schema_version":3,"outcome_code":"juice_mismatch_fingerprint_unclear","juice_state":"mismatch","fingerprint_state":"unclear","fingerprint_model":null,"network_summary":{"logical_tasks":4,"logical_completed":4,"successful":4,"final_errors":0,"cancelled":0,"http_attempts":4,"retries":0,"in_flight":0,"error_categories":{}},"evidence_summary":{"report_schema_version":3,"outcome_code":"juice_mismatch_fingerprint_unclear","verdict_available":true,"hard_verdict":true,"juice_state":"mismatch","fingerprint_state":"unclear","fingerprint_model":null,"fingerprint_enabled":false,"fingerprint_formal_eligible":false,"evidence_insufficient":false}}
             """;
         var accepted = MapWorkerSummary(valid);
         Assert(accepted.ErrorCategory == DetectorErrorCategory.None && accepted.IsQuarantineEligible,
@@ -158,7 +147,7 @@ public static class ChannelReliabilityTests
             valid.Replace("\"final_errors\":0", "\"final_errors\":1", StringComparison.Ordinal),
             valid.Replace("\"logical_completed\":4", "\"logical_completed\":3", StringComparison.Ordinal),
             valid.Replace("\"hard_verdict\":true", "\"hard_verdict\":false", StringComparison.Ordinal),
-            valid.Replace("\"juice_state\":\"juice_mixed\"", "\"juice_state\":\"juice_pass\"", StringComparison.Ordinal)
+            valid.Replace("\"juice_state\":\"mismatch\"", "\"juice_state\":\"pass\"", StringComparison.Ordinal)
         ];
         foreach (var summary in invalid)
         {
@@ -167,6 +156,35 @@ public static class ChannelReliabilityTests
                 "A conflicting complete summary must be rejected as an invalid response.");
             Assert(!rejected.IsQuarantineEligible,
                 "A conflicting complete summary must never become quarantine eligible.");
+        }
+    }
+
+    public static void TestMapperMapsAllSevenDetectorOutcomes()
+    {
+        var cases = new[]
+        {
+            ("juice_pass_fingerprint_strong", "pass", "strong_match", "gpt-5.6-sol", DetectorVerdict.Passed, false, false),
+            ("juice_pass_fingerprint_unclear", "pass", "unclear", (string?)null, DetectorVerdict.Passed, false, false),
+            ("juice_mismatch_fingerprint_strong", "mismatch", "strong_match", "gpt-5.6-sol", DetectorVerdict.JuiceMixed, true, false),
+            ("juice_mismatch_fingerprint_unclear", "mismatch", "unclear", (string?)null, DetectorVerdict.JuiceMixed, true, false),
+            ("juice_insufficient_fingerprint_strong", "insufficient", "strong_match", "gpt-5.6-sol", DetectorVerdict.EvidenceInsufficient, false, true),
+            ("juice_insufficient_fingerprint_unclear", "insufficient", "unclear", (string?)null, DetectorVerdict.EvidenceInsufficient, false, true),
+            ("possible_non_gpt", "possible_non_gpt", "unclear", (string?)null, DetectorVerdict.PossibleNonGpt, true, false)
+        };
+
+        foreach (var item in cases)
+        {
+            var result = MapWorkerSummary(BuildCompleteSummary(
+                item.Item1, item.Item2, item.Item3, item.Item4, item.Item5, item.Item6, item.Item7));
+            Assert(result.ErrorCategory == DetectorErrorCategory.None,
+                $"The {item.Item1} outcome should be accepted.");
+            Assert(result.OutcomeCode.ToString() != nameof(DetectorOutcomeCode.Unknown),
+                $"The {item.Item1} outcome was lost at the Core boundary.");
+            Assert(result.Verdict == item.Item5, $"The {item.Item1} outcome mapped to the wrong coarse verdict.");
+            Assert(result.IsQuarantineEligible == item.Item6,
+                $"The {item.Item1} outcome has the wrong quarantine eligibility.");
+            Assert(result.EvidenceSummary?.EvidenceInsufficient == item.Item7,
+                $"The {item.Item1} evidence insufficiency state was lost.");
         }
     }
 
@@ -287,7 +305,7 @@ public static class ChannelReliabilityTests
                         },
                         Evidence = new DetectorEvidenceSummary
                         {
-                            JuiceState = "juice_pass",
+                            JuiceState = "pass",
                             JuiceValidCompleted = 8,
                             VerdictAvailable = true
                         }
@@ -363,6 +381,38 @@ public static class ChannelReliabilityTests
         Assert(!json.Contains("isQuarantineEligible", StringComparison.Ordinal), "Computed properties must not be serialized.");
     }
 
+    public static void TestRuntimeSkipsDisabledFingerprintFamily()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var key = new ApiKeyInfo { Id = 44, Name = "low-preset-key", GroupId = 440, Status = "active" };
+        var runtime = new ChannelReliabilityRuntime();
+        runtime.BeginRun(ChannelReliabilityTrigger.Manual, now, selectedKeyCount: 1);
+        runtime.QueueModel(key, DetectorModelNames.Sol, now, DetectorModelCapabilityStatus.Healthy);
+        runtime.StartModel(key, DetectorModelNames.Sol, now.AddSeconds(1));
+        runtime.CompleteModel(key, new DetectorResult
+        {
+            Model = DetectorModelNames.Sol,
+            Status = ChannelReliabilityStatus.Passed,
+            Verdict = DetectorVerdict.Passed,
+            OutcomeCode = DetectorOutcomeCode.JuicePassFingerprintUnclear,
+            Official = true,
+            ClaimedModel = "gpt-5.6-sol",
+            EvidenceSummary = new DetectorEvidenceSummary
+            {
+                VerdictAvailable = true,
+                JuiceState = "pass",
+                FingerprintState = "unclear",
+                FingerprintEnabled = false,
+                FingerprintFormalEligible = false
+            }
+        }, now.AddSeconds(2));
+
+        var fingerprint = runtime.Snapshot.Probes.Single(item =>
+            item.Family == ChannelReliabilityProbeFamily.Fingerprint);
+        Assert(fingerprint.Stage == ChannelReliabilityProbeStage.Skipped,
+            "A low preset without fingerprint probes must be shown as skipped, not failed.");
+    }
+
     public static void TestMonitorKeepsKeyBindingsIndependent()
     {
         var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
@@ -434,9 +484,73 @@ public static class ChannelReliabilityTests
         Assert(result.Runtime?.Probes.Any(probe =>
                 probe.KeyId == 1 &&
                 probe.Model == DetectorModelNames.Sol &&
-                probe.Family == ChannelReliabilityProbeFamily.Network &&
+                probe.Family == ChannelReliabilityProbeFamily.Process &&
                 probe.Stage == ChannelReliabilityProbeStage.Completed) == true,
             "The runtime snapshot must expose categorized per-model probe progress.");
+    }
+
+    public static void TestMonitorSchedulesEachChannelModelHourly()
+    {
+        var current = new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);
+        var key = new ApiKeyInfo { Id = 7, Name = "hourly-key", GroupId = 70, Status = "active" };
+        var settings = new PersistentAppSettings
+        {
+            ReliabilityDetectionEnabled = true,
+            ReliabilityDetectionIntervalSeconds = 60,
+            DetectorBindings =
+            [new DetectorBinding
+            {
+                KeyId = key.Id,
+                BaseUrl = "https://channel.example.test/v1",
+                Models = [DetectorModelNames.Sol, DetectorModelNames.Luna]
+            }]
+        };
+        var detector = new RecordingDetector(DetectorVerdict.Passed);
+        using var monitor = new ChannelReliabilityMonitor(
+            settings,
+            new PersistentCredentials
+            {
+                DetectorApiKeys = new Dictionary<long, string> { [key.Id] = "key-seven" }
+            },
+            detector,
+            new MemoryQuarantineStore(),
+            () => current);
+        var noHealthSamples = new Dictionary<long, IReadOnlyDictionary<string, string>>();
+
+        var first = monitor.CheckAsync([key], noHealthSamples).GetAwaiter().GetResult();
+        Assert(detector.Calls.Count == 2,
+            "A new channel must probe every configured model even without health samples.");
+        Assert(first.Runtime?.Probes.All(probe =>
+                probe.CapabilityStatus == DetectorModelCapabilityStatus.Missing) == true,
+            "Missing model health samples must be explicit without blocking probes.");
+
+        current = current.AddMinutes(30);
+        var early = monitor.CheckAsync([key], noHealthSamples).GetAwaiter().GetResult();
+        Assert(detector.Calls.Count == 2, "A channel checked less than one hour ago must not be probed again.");
+        Assert(early.Runtime?.Events.Count(item =>
+                item.SkipReason == ChannelReliabilitySkipReason.NotDue) == 2,
+            "Each model skipped before one hour must record NotDue.");
+        Assert(early.Keys.Single().LastCheckedAt == current.AddMinutes(-30),
+            "A skipped cycle must preserve the last actual check time.");
+        Assert(early.Keys.Single().Models.SequenceEqual([DetectorModelNames.Sol, DetectorModelNames.Luna]),
+            "A cached cycle must keep the configured model list in the key summary.");
+        Assert(early.Keys.Single().NextCheckAt == current.AddMinutes(30),
+            "A skipped cycle must expose the remaining wait time.");
+
+        current = current.AddMinutes(1);
+        key = new ApiKeyInfo { Id = 7, Name = "hourly-key", GroupId = 71, Status = "active" };
+        monitor.CheckAsync([key], noHealthSamples).GetAwaiter().GetResult();
+        Assert(detector.Calls.Count == 4, "A never-checked channel must be probed immediately after routing.");
+
+        current = current.AddMinutes(1);
+        key = new ApiKeyInfo { Id = 7, Name = "hourly-key", GroupId = 70, Status = "active" };
+        monitor.CheckAsync([key], noHealthSamples).GetAwaiter().GetResult();
+        Assert(detector.Calls.Count == 4,
+            "Returning to a channel checked less than one hour ago must reuse its own ledger entry.");
+
+        current = current.AddMinutes(29);
+        monitor.CheckAsync([key], noHealthSamples).GetAwaiter().GetResult();
+        Assert(detector.Calls.Count == 6, "Each channel model must be probed again after one hour.");
     }
 
     public static void TestMonitorQuarantinesHardVerdict()
@@ -642,7 +756,11 @@ public static class ChannelReliabilityTests
 
         var key = new ApiKeyInfo { Id = 15, Name = "cancel-key", GroupId = 150, Status = "active" };
         runtime.BeginRun(ChannelReliabilityTrigger.Manual, now.AddMinutes(1), selectedKeyCount: 1);
-        runtime.QueueModel(key, DetectorModelNames.Sol, now.AddMinutes(1));
+        runtime.QueueModel(
+            key,
+            DetectorModelNames.Sol,
+            now.AddMinutes(1),
+            DetectorModelCapabilityStatus.Healthy);
         runtime.StartModel(key, DetectorModelNames.Sol, now.AddMinutes(1).AddSeconds(1));
         runtime.Abort(ChannelReliabilityRunPhase.Cancelled, now.AddMinutes(1).AddSeconds(2));
 
@@ -747,6 +865,57 @@ public static class ChannelReliabilityTests
             executionFailed: false,
             timedOut: false,
             cancelled: false);
+
+    private static string BuildCompleteSummary(
+        string outcomeCode,
+        string juiceState,
+        string fingerprintState,
+        string? fingerprintModel,
+        DetectorVerdict verdict,
+        bool hardVerdict,
+        bool evidenceInsufficient)
+    {
+        _ = verdict;
+        return JsonSerializer.Serialize(new
+        {
+            status = "complete",
+            overall_verdict = "test",
+            title_cn = "test",
+            error_code = (string?)null,
+            official = true,
+            claimed_model = "gpt-5.6-sol",
+            report_schema_version = 3,
+            outcome_code = outcomeCode,
+            juice_state = juiceState,
+            fingerprint_state = fingerprintState,
+            fingerprint_model = fingerprintModel,
+            network_summary = new
+            {
+                logical_tasks = 4,
+                logical_completed = 4,
+                successful = 4,
+                final_errors = 0,
+                cancelled = 0,
+                http_attempts = 4,
+                retries = 0,
+                in_flight = 0,
+                error_categories = new Dictionary<string, int>()
+            },
+            evidence_summary = new
+            {
+                report_schema_version = 3,
+                outcome_code = outcomeCode,
+                verdict_available = true,
+                hard_verdict = hardVerdict,
+                juice_state = juiceState,
+                fingerprint_state = fingerprintState,
+                fingerprint_model = fingerprintModel,
+                fingerprint_enabled = fingerprintState == "strong_match",
+                fingerprint_formal_eligible = fingerprintState == "strong_match",
+                evidence_insufficient = evidenceInsufficient
+            }
+        });
+    }
 
     private sealed class RecordingDetector(DetectorVerdict verdict) : IChannelReliabilityDetector
     {

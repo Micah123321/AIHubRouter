@@ -46,7 +46,7 @@ public enum ChannelReliabilityProbeFamily
     Juice,
     Identity,
     Coverage,
-    Probability,
+    Fingerprint,
     Verdict
 }
 
@@ -66,6 +66,16 @@ public enum ChannelReliabilityEventType
     RunCompleted,
     RunFailed,
     RunCancelled
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ChannelReliabilitySkipReason
+{
+    NotDue,
+    MissingGroup,
+    MissingBinding,
+    MissingCredential,
+    NoModels
 }
 
 public sealed record DetectorErrorCount
@@ -109,6 +119,12 @@ public sealed record DetectorNetworkSummary
 
 public sealed record DetectorEvidenceSummary
 {
+    [JsonPropertyName("reportSchemaVersion")]
+    public int? ReportSchemaVersion { get; init; }
+
+    [JsonPropertyName("outcomeCode")]
+    public DetectorOutcomeCode OutcomeCode { get; init; }
+
     [JsonPropertyName("verdictAvailable")]
     public bool VerdictAvailable { get; init; }
 
@@ -117,6 +133,12 @@ public sealed record DetectorEvidenceSummary
 
     [JsonPropertyName("juiceState")]
     public string JuiceState { get; init; } = "unknown";
+
+    [JsonPropertyName("fingerprintState")]
+    public string FingerprintState { get; init; } = "unknown";
+
+    [JsonPropertyName("fingerprintModel")]
+    public string? FingerprintModel { get; init; }
 
     [JsonPropertyName("juiceValidCompleted")]
     public int JuiceValidCompleted { get; init; }
@@ -142,11 +164,11 @@ public sealed record DetectorEvidenceSummary
     [JsonPropertyName("coverageHardAnomaly")]
     public bool CoverageHardAnomaly { get; init; }
 
-    [JsonPropertyName("probabilityEnabled")]
-    public bool ProbabilityEnabled { get; init; }
+    [JsonPropertyName("fingerprintEnabled")]
+    public bool FingerprintEnabled { get; init; }
 
-    [JsonPropertyName("probabilityFormalEligible")]
-    public bool? ProbabilityFormalEligible { get; init; }
+    [JsonPropertyName("fingerprintFormalEligible")]
+    public bool? FingerprintFormalEligible { get; init; }
 
     [JsonPropertyName("evidenceInsufficient")]
     public bool EvidenceInsufficient { get; init; } = true;
@@ -190,6 +212,9 @@ public sealed record ChannelReliabilityProbeProgress
     [JsonPropertyName("verdict")]
     public DetectorVerdict? Verdict { get; init; }
 
+    [JsonPropertyName("outcomeCode")]
+    public DetectorOutcomeCode? OutcomeCode { get; init; }
+
     [JsonPropertyName("errorCategory")]
     public DetectorErrorCategory ErrorCategory { get; init; }
 
@@ -201,6 +226,15 @@ public sealed record ChannelReliabilityProbeProgress
 
     [JsonPropertyName("quarantinedUntil")]
     public DateTimeOffset? QuarantinedUntil { get; init; }
+
+    [JsonPropertyName("skipReason")]
+    public ChannelReliabilitySkipReason? SkipReason { get; init; }
+
+    [JsonPropertyName("capabilityStatus")]
+    public DetectorModelCapabilityStatus? CapabilityStatus { get; init; }
+
+    [JsonPropertyName("nextCheckAt")]
+    public DateTimeOffset? NextCheckAt { get; init; }
 }
 
 public sealed record ChannelReliabilityAuditEvent
@@ -247,11 +281,23 @@ public sealed record ChannelReliabilityAuditEvent
     [JsonPropertyName("verdict")]
     public DetectorVerdict? Verdict { get; init; }
 
+    [JsonPropertyName("outcomeCode")]
+    public DetectorOutcomeCode? OutcomeCode { get; init; }
+
     [JsonPropertyName("errorCategory")]
     public DetectorErrorCategory ErrorCategory { get; init; }
 
     [JsonPropertyName("quarantinedUntil")]
     public DateTimeOffset? QuarantinedUntil { get; init; }
+
+    [JsonPropertyName("skipReason")]
+    public ChannelReliabilitySkipReason? SkipReason { get; init; }
+
+    [JsonPropertyName("capabilityStatus")]
+    public DetectorModelCapabilityStatus? CapabilityStatus { get; init; }
+
+    [JsonPropertyName("nextCheckAt")]
+    public DateTimeOffset? NextCheckAt { get; init; }
 }
 
 public sealed record ChannelReliabilityRuntimeSnapshot

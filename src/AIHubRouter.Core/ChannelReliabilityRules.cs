@@ -10,12 +10,10 @@ public static class ChannelReliabilityRules
             _ => DetectorModelCapabilityStatus.Unknown
         };
 
-    public static IReadOnlyList<string> SelectProbeModels(
-        IReadOnlyDictionary<string, string>? modelHealth,
-        DetectorBinding binding)
+    public static IReadOnlyList<string> SelectProbeModels(DetectorBinding binding)
     {
         ArgumentNullException.ThrowIfNull(binding);
-        if (!binding.Enabled || modelHealth is null)
+        if (!binding.Enabled)
         {
             return [];
         }
@@ -27,8 +25,7 @@ public static class ChannelReliabilityRules
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return DetectorModelNames.Models
-            .Where(model => IsHealthy(modelHealth, model) &&
-                (declaredModels.Count == 0 || declaredModels.Contains(model)))
+            .Where(model => declaredModels.Count == 0 || declaredModels.Contains(model))
             .ToArray();
     }
 
@@ -36,6 +33,11 @@ public static class ChannelReliabilityRules
         verdict is DetectorVerdict.PossibleNonGpt or
             DetectorVerdict.JuiceMixed or
             DetectorVerdict.ProbabilityOnlyMixed;
+
+    public static bool IsHardOutcome(DetectorOutcomeCode outcomeCode) => outcomeCode is
+        DetectorOutcomeCode.PossibleNonGpt or
+        DetectorOutcomeCode.JuiceMismatchFingerprintStrong or
+        DetectorOutcomeCode.JuiceMismatchFingerprintUnclear;
 
     public static ChannelReliabilityStatus ResolveStatus(
         IReadOnlyCollection<DetectorResult>? results)
@@ -101,17 +103,4 @@ public static class ChannelReliabilityRules
         return ChannelReliabilityStatus.EvidenceInsufficient;
     }
 
-    private static bool IsHealthy(
-        IReadOnlyDictionary<string, string> modelHealth,
-        string model)
-    {
-        if (modelHealth.TryGetValue(model, out var status))
-        {
-            return ParseCapabilityStatus(status) == DetectorModelCapabilityStatus.Healthy;
-        }
-
-        return modelHealth.Any(entry =>
-            string.Equals(entry.Key, model, StringComparison.OrdinalIgnoreCase) &&
-            ParseCapabilityStatus(entry.Value) == DetectorModelCapabilityStatus.Healthy);
-    }
 }

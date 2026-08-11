@@ -154,10 +154,6 @@
               <input id="reliabilityDetectionEnabled" type="checkbox">
             </label>
             <label class="field">
-              <span>检测间隔秒数</span>
-              <input id="reliabilityDetectionIntervalSeconds" type="number" min="60" max="86400" step="60">
-            </label>
-            <label class="field">
               <span>隔离时长小时</span>
               <input id="reliabilityQuarantineHours" type="number" min="1" max="168" step="1">
             </label>
@@ -231,7 +227,7 @@
         <div class="table-frame reliability-probe-frame">
           <table class="data-table reliability-probe-table">
             <thead>
-              <tr><th>Key / 分组</th><th>模型</th><th>探针</th><th>阶段</th><th>结论</th><th>网络</th><th>证据</th><th>完成时间</th></tr>
+              <tr><th>Key / 分组</th><th>模型</th><th>探针</th><th>阶段</th><th>结论 / 原因</th><th>网络</th><th>证据</th><th>时间 / 下次</th></tr>
             </thead>
             <tbody id="reliabilityProbeRows"><tr><td class="empty-state" colspan="8">等待检测</td></tr></tbody>
           </table>
@@ -244,7 +240,7 @@
         <div class="table-frame reliability-timeline-frame">
           <table class="data-table reliability-timeline-table">
             <thead>
-              <tr><th>序号</th><th>时间</th><th>Key / 分组</th><th>模型</th><th>探针</th><th>事件</th><th>状态</th><th>错误 / 隔离</th></tr>
+              <tr><th>序号</th><th>时间</th><th>Key / 分组</th><th>模型</th><th>探针</th><th>事件</th><th>状态</th><th>原因 / 结果</th></tr>
             </thead>
             <tbody id="reliabilityTimelineRows"><tr><td class="empty-state" colspan="8">等待检测</td></tr></tbody>
           </table>

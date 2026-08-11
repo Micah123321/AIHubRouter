@@ -36,7 +36,7 @@ public sealed record PersistentAppSettings
     public long[] LunaSelectedKeyIds { get; init; } = [];
     public long[] BlacklistedGroupIds { get; init; } = [];
     public bool ReliabilityDetectionEnabled { get; init; } = true;
-    public int ReliabilityDetectionIntervalSeconds { get; init; } = 600;
+    public int ReliabilityDetectionIntervalSeconds { get; init; } = 3600;
     public int ReliabilityQuarantineHours { get; init; } = 24;
     public string DetectorPythonCommand { get; init; } = "python3";
     public string DetectorWorkerPath { get; init; } = "scripts/channel_detector_worker.py";

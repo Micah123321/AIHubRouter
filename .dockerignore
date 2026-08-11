@@ -19,6 +19,7 @@ deploy/**
 scripts/**
 !scripts/
 !scripts/channel_detector_worker.py
+!scripts/channel_detector_worker_protocol.py
 tests
 tests/**
 src/AIHubRouter.Browser

@@ -150,7 +150,6 @@ function hydrateSettings(settings, force = false) {
   $("#providerSeriesRange").value = settings.providerSeriesRange;
   $("#providerSeriesTimezone").value = settings.providerSeriesTimezone;
   $("#reliabilityDetectionEnabled").checked = settings.reliabilityDetectionEnabled !== false;
-  $("#reliabilityDetectionIntervalSeconds").value = settings.reliabilityDetectionIntervalSeconds ?? 600;
   $("#reliabilityQuarantineHours").value = settings.reliabilityQuarantineHours ?? 24;
   $("#pollingInterval").value = settings.pollingIntervalSeconds;
   $("#persistCredentials").checked = settings.persistCredentials;
@@ -354,15 +353,29 @@ function reliabilityPhaseLabel(value) {
 
 function reliabilityTriggerLabel(value) {
   return ({
-    startup: "启动", scheduled: "定时", manual: "手动", refresh: "刷新",
-    configurationChanged: "配置变更", keyGroupChanged: "分组变更", routingCycle: "路由周期"
+    startup: "启动检查", scheduled: "每小时复检", manual: "手动检测", refresh: "刷新唤醒",
+    configurationChanged: "配置变更", keyGroupChanged: "新渠道", routingCycle: "路由周期"
   })[enumValue(value)] || "-";
+}
+
+function reliabilitySkipReasonLabel(value) {
+  return ({
+    notDue: "未到一小时", missingGroup: "未分配渠道", missingBinding: "未配置检测",
+    missingCredential: "未配置凭据", noModels: "未选择模型"
+  })[enumValue(value)] || "";
+}
+
+function capabilityStatusLabel(value) {
+  return ({
+    missing: "无健康样本（仍检测）", unknown: "健康状态未知（仍检测）",
+    failed: "健康样本失败（仍检测）", healthy: "健康样本正常"
+  })[enumValue(value)] || "";
 }
 
 function probeFamilyLabel(value) {
   return ({
     process: "过程", network: "网络", juice: "Juice", identity: "身份",
-    coverage: "覆盖率", probability: "概率", verdict: "结论"
+    coverage: "覆盖率", fingerprint: "指纹", verdict: "结论"
   })[enumValue(value)] || String(value || "-");
 }
 
@@ -480,10 +493,16 @@ function networkMetric(summary) {
 
 function evidenceMetric(summary) {
   if (!summary) return "-";
-  return `Juice ${summary.juiceState || "unknown"} ${summary.juiceValidCompleted ?? 0}` +
+  const juiceState = ({
+    pass: "通过", mismatch: "不一致", insufficient: "证据不足", possible_non_gpt: "疑似非GPT"
+  })[summary.juiceState] || "未知";
+  const fingerprintState = summary.fingerprintState === "strong_match"
+    ? `强指向 ${summary.fingerprintModel || "已知型号"}`
+    : summary.fingerprintEnabled ? "证据不明确" : "未启用";
+  return `Juice ${juiceState} ${summary.juiceValidCompleted ?? 0}` +
     ` · 输出 ${summary.outputExact ?? 0}/${summary.outputRequests ?? 0}` +
     ` · 覆盖 ${summary.coverageRequests ?? 0}` +
-    ` · 概率 ${summary.probabilityEnabled ? (summary.probabilityFormalEligible === true ? "有效" : "不足") : "关闭"}`;
+    ` · 指纹 ${fingerprintState}`;
 }
 
 function renderReliabilityProbes(runtime) {
@@ -495,15 +514,18 @@ function renderReliabilityProbes(runtime) {
     const status = probe.status ? reliabilityLabel(probe.status) : "-";
     const verdict = probe.verdict && enumValue(probe.verdict) !== "evidenceInsufficient" ? ` · ${probe.verdict}` : "";
     const error = probe.errorCategory && enumValue(probe.errorCategory) !== "none" ? ` · ${probe.errorCategory}` : "";
+    const skipReason = reliabilitySkipReasonLabel(probe.skipReason);
+    const capability = capabilityStatusLabel(probe.capabilityStatus);
+    const outcome = [status + verdict + error, skipReason].filter(Boolean).join(" · ");
     return `<tr>
       <td>${escapeHtml(probe.keyName || `Key ${probe.keyId}`)}<div class="metric-line">${probe.keyId} / ${probe.groupId ?? "-"}</div></td>
       <td>${escapeHtml(probe.model || "-")}</td>
       <td>${escapeHtml(probeFamilyLabel(probe.family))}</td>
       <td><span class="state-badge ${stageClass}">${escapeHtml(probeStageLabel(probe.stage))}</span></td>
-      <td>${escapeHtml(status + verdict + error)}</td>
+      <td>${escapeHtml(outcome || "-")}</td>
       <td><div class="metric-line">${escapeHtml(networkMetric(probe.network))}</div></td>
-      <td><div class="metric-line">${escapeHtml(evidenceMetric(probe.evidence))}</div></td>
-      <td>${formatDate(probe.completedAt || probe.startedAt || probe.queuedAt)}</td>
+      <td><div class="metric-line">${escapeHtml(evidenceMetric(probe.evidence))}</div>${capability ? `<div class="reliability-note ${enumValue(probe.capabilityStatus) === "healthy" ? "available" : "warning"}">${escapeHtml(capability)}</div>` : ""}</td>
+      <td>${formatDate(probe.completedAt || probe.startedAt || probe.queuedAt)}${probe.nextCheckAt ? `<div class="metric-line">下次 ${formatDate(probe.nextCheckAt)}</div>` : ""}</td>
     </tr>`;
   }).join("") : '<tr><td class="empty-state" colspan="8">等待检测</td></tr>';
 }
@@ -517,6 +539,9 @@ function renderReliabilityTimeline(runtime) {
     const verdict = item.verdict && enumValue(item.verdict) !== "evidenceInsufficient" ? ` · ${item.verdict}` : "";
     const error = item.errorCategory && enumValue(item.errorCategory) !== "none" ? item.errorCategory : "";
     const isolation = item.quarantinedUntil ? `至 ${formatDate(item.quarantinedUntil)}` : "";
+    const skipReason = reliabilitySkipReasonLabel(item.skipReason);
+    const capability = capabilityStatusLabel(item.capabilityStatus);
+    const nextCheck = item.nextCheckAt ? `下次 ${formatDate(item.nextCheckAt)}` : "";
     return `<tr>
       <td>#${item.sequence}</td>
       <td>${formatDate(item.occurredAt)}</td>
@@ -525,7 +550,7 @@ function renderReliabilityTimeline(runtime) {
       <td>${escapeHtml(probeFamilyLabel(item.family))}</td>
       <td>${escapeHtml(eventTypeLabel(item.eventType))}</td>
       <td>${escapeHtml(status + verdict)}</td>
-      <td>${escapeHtml([error, isolation].filter(Boolean).join(" · ") || "-")}</td>
+      <td>${escapeHtml([skipReason, capability, error, isolation, nextCheck].filter(Boolean).join(" · ") || "-")}</td>
     </tr>`;
   }).join("") : '<tr><td class="empty-state" colspan="8">等待检测</td></tr>';
 }
@@ -542,7 +567,7 @@ function renderReliability(dashboard) {
   $("#reliabilityRunId").textContent = runtime?.runId ? runtime.runId.slice(0, 12) : "-";
   $("#reliabilityNextCheck").textContent = formatDate(runtime?.nextCheckAt);
   $("#reliabilitySchedule").textContent = dashboard.settings.reliabilityDetectionEnabled
-    ? `每 ${dashboard.settings.reliabilityDetectionIntervalSeconds ?? 600} 秒 · ${runtime?.selectedKeyCount ?? 0} 个 Key`
+    ? `每小时 · ${runtime?.selectedKeyCount ?? 0} 个 Key`
     : "已关闭";
   $("#reliabilityCheckButton").disabled = !dashboard.settings.reliabilityDetectionEnabled || state.requestInFlight;
   renderReliabilityConfig(dashboard);
@@ -632,7 +657,7 @@ function settingsPayload() {
     blacklistedGroupIds: [...state.draftBlacklistIds],
     lunaSelectedKeyIds: [...state.draftLunaKeyIds],
     reliabilityDetectionEnabled: $("#reliabilityDetectionEnabled").checked,
-    reliabilityDetectionIntervalSeconds: readBoundedInteger("#reliabilityDetectionIntervalSeconds", 60, 86400, "可靠性检测间隔"),
+    reliabilityDetectionIntervalSeconds: 3600,
     reliabilityQuarantineHours: readBoundedInteger("#reliabilityQuarantineHours", 1, 168, "可靠性隔离时长"),
     detectorBindings,
     detectorApiKeys

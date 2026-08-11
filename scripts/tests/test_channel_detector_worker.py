@@ -16,6 +16,48 @@ import channel_detector_worker as worker
 
 
 class ChannelDetectorWorkerTests(unittest.TestCase):
+    def _report_for(self, outcome_code: str) -> dict[str, object]:
+        juice_state, fingerprint_state = worker.OUTCOME_STATES[outcome_code]
+        fingerprint_model = "gpt-5.6-sol" if fingerprint_state == "strong_match" else None
+        reasons = [] if fingerprint_state == "strong_match" else ["builtin_fingerprint_not_enabled"]
+        return {
+            "schema_version": worker.REPORT_SCHEMA_VERSION,
+            "mode": "single",
+            "preset": "low",
+            "official": True,
+            "official_grade": True,
+            "trust_scope": "official_preset",
+            "custom_preset": False,
+            "operational_status": "complete",
+            "verdict_available": True,
+            "overall_verdict": "Juice通过；指纹证据不明确",
+            "title_cn": "Juice通过；指纹证据不明确",
+            "claimed_model": "gpt-5.6-sol",
+            "outcome_code": outcome_code,
+            "juice_verdict_state": juice_state,
+            "fingerprint_verdict_state": fingerprint_state,
+            "fingerprint_model": fingerprint_model,
+            "fingerprint_summary": {
+                "schema_version": worker.REPORT_SCHEMA_VERSION,
+                "fingerprint_status": fingerprint_state,
+                "fingerprint_model": fingerprint_model,
+                "fingerprint_official_eligible": fingerprint_state == "strong_match",
+                "fingerprint_unclear_reasons": reasons,
+            },
+            "juice_summary": {"state": "juice_pass", "valid_completed": 4, "current_success": 4},
+            "output_integrity_summary": {"requests": 2, "exact": 2, "hard_anomaly": False},
+            "coverage_summary": {"requests": 1, "hard_anomaly": False},
+            "network_summary": {
+                **worker._empty_network_summary(),
+                "logical_tasks": 4,
+                "logical_completed": 4,
+                "successful": 4,
+            },
+            "network_error_details": [],
+            "retention_complete": True,
+            "run_stopped": False,
+        }
+
     def test_main_emits_ordered_safe_lifecycle_events(self) -> None:
         request = {
             "base_url": "https://channel.example.test/v1",
@@ -79,6 +121,48 @@ class ChannelDetectorWorkerTests(unittest.TestCase):
         self.assertEqual(summary["error_categories"], {"network_error": 1, "timeout": 1})
         self.assertNotIn("must-not-appear", json.dumps(summary))
         self._assert_safe_keys(summary)
+
+    def test_schema_three_accepts_all_seven_outcomes(self) -> None:
+        for outcome_code in sorted(worker.OUTCOME_CODES):
+            with self.subTest(outcome_code=outcome_code):
+                report = self._report_for(outcome_code)
+                evidence = worker._safe_evidence_summary(report)
+                self.assertIsNone(
+                    worker._validate_report(report, "gpt-5.6-sol", report["network_summary"]),
+                )
+                self.assertEqual(evidence["outcome_code"], outcome_code)
+                self.assertEqual(evidence["hard_verdict"], outcome_code in worker.HARD_OUTCOME_CODES)
+                self.assertEqual(
+                    evidence["evidence_insufficient"],
+                    outcome_code.startswith("juice_insufficient_"),
+                )
+                self._assert_safe_keys(evidence)
+
+    def test_low_preset_fingerprint_unclear_is_not_hard_failure(self) -> None:
+        report = self._report_for("juice_pass_fingerprint_unclear")
+
+        evidence = worker._safe_evidence_summary(report)
+
+        self.assertEqual(evidence["juice_state"], "pass")
+        self.assertEqual(evidence["fingerprint_state"], "unclear")
+        self.assertFalse(evidence["fingerprint_enabled"])
+        self.assertFalse(evidence["hard_verdict"])
+        self.assertFalse(evidence["evidence_insufficient"])
+
+    def test_unknown_schema_and_conflicting_fields_are_rejected(self) -> None:
+        unknown_schema = self._report_for("juice_pass_fingerprint_unclear")
+        unknown_schema["schema_version"] = 2
+        conflicting = self._report_for("juice_mismatch_fingerprint_unclear")
+        conflicting["juice_verdict_state"] = "pass"
+
+        self.assertEqual(
+            worker._validate_report(unknown_schema, "gpt-5.6-sol", unknown_schema["network_summary"]),
+            "unsupported_schema",
+        )
+        self.assertEqual(
+            worker._validate_report(conflicting, "gpt-5.6-sol", conflicting["network_summary"]),
+            "evidence_insufficient",
+        )
 
     def test_exception_messages_never_cross_the_worker_boundary(self) -> None:
         with patch.dict(sys.modules, {"gpt56_vnext.detector": None}):

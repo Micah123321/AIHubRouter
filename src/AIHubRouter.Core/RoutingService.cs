@@ -166,7 +166,8 @@ public sealed class RoutingService : IDisposable
         ICloudflareChallengeSolver? cloudflareChallengeSolver = null,
         IChannelQuarantineStore? channelQuarantineStore = null,
         IChannelReliabilityDetector? reliabilityDetector = null,
-        bool runReliabilityDuringRouting = true)
+        bool runReliabilityDuringRouting = true,
+        ChannelReliabilityLedger? reliabilityLedger = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _credentials = credentials ?? throw new ArgumentNullException(nameof(credentials));
@@ -192,7 +193,8 @@ public sealed class RoutingService : IDisposable
                     settings.DetectorPreset,
                     workingDirectory: workerDirectory),
                 _channelQuarantineStore,
-                _utcNow);
+                _utcNow,
+                ledger: reliabilityLedger);
         }
         _cacheHitRateStatus = settings.ProviderSeriesWeight > 0
             ? ProviderCacheHitRateLoadStatus.Unavailable("供应商缓存命中率尚未加载。")
@@ -530,6 +532,30 @@ public sealed class RoutingService : IDisposable
             : await lunaExecutionTask;
         ReplaceCachedKeys(primaryExecution.UpdatedKeys.Concat(
             lunaExecution?.UpdatedKeys ?? Array.Empty<ApiKeyInfo>()));
+
+        var routedKeyIds = primaryExecution.KeyResults
+            .Concat(lunaExecution?.KeyResults ?? [])
+            .Where(result => result.Success)
+            .Select(result => result.KeyId)
+            .ToHashSet();
+        var groupChanged = reliabilityKeys.Any(previous =>
+            routedKeyIds.Contains(previous.Id) &&
+            _cachedKeys.FirstOrDefault(current => current.Id == previous.Id)?.GroupId != previous.GroupId);
+        if (groupChanged && _reliabilityMonitor is not null && _runReliabilityDuringRouting)
+        {
+            var currentReliabilityKeys = reliabilityKeys
+                .Select(previous => _cachedKeys.FirstOrDefault(current => current.Id == previous.Id) ?? previous)
+                .ToArray();
+            reliability = await _reliabilityMonitor.CheckAsync(
+                currentReliabilityKeys,
+                _cachedModelHealthByGroup,
+                _cachedGroups,
+                dryRun,
+                force: false,
+                currentKeyResolver: keyId => _cachedKeys.FirstOrDefault(key => key.Id == keyId),
+                trigger: ChannelReliabilityTrigger.KeyGroupChanged,
+                cancellationToken: cancellationToken);
+        }
 
         if (!dryRun)
         {

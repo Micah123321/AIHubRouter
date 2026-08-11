@@ -69,7 +69,11 @@ public sealed class ChannelReliabilityRuntime
         }
     }
 
-    public void QueueModel(ApiKeyInfo key, string model, DateTimeOffset occurredAt)
+    public void QueueModel(
+        ApiKeyInfo key,
+        string model,
+        DateTimeOffset occurredAt,
+        DetectorModelCapabilityStatus capabilityStatus)
     {
         lock (_gate)
         {
@@ -80,10 +84,11 @@ public sealed class ChannelReliabilityRuntime
             }
 
             UpsertProbe(key, model, ChannelReliabilityProbeFamily.Process,
-                ChannelReliabilityProbeStage.Queued, occurredAt, null, null, null, null, null);
+                ChannelReliabilityProbeStage.Queued, occurredAt, null, null, null, null, null,
+                capabilityStatus: capabilityStatus);
             AppendEvent(runId, occurredAt, ChannelReliabilityEventType.ProbeQueued, key, model,
                 ChannelReliabilityProbeFamily.Process, ChannelReliabilityProbeStage.Queued,
-                null, null, null, null);
+                null, null, null, null, capabilityStatus: capabilityStatus);
             _snapshot = _snapshot with { TotalProbeCount = _snapshot.TotalProbeCount + 1 };
         }
     }
@@ -114,18 +119,23 @@ public sealed class ChannelReliabilityRuntime
                 return;
             }
 
+            var processKey = $"{key.Id}:{result.Model}:{ChannelReliabilityProbeFamily.Process}";
+            var capabilityStatus = _probes.TryGetValue(processKey, out var processProbe)
+                ? processProbe.CapabilityStatus
+                : null;
             var processStage = result.ErrorCategory == DetectorErrorCategory.None
                 ? ChannelReliabilityProbeStage.Completed
                 : ChannelReliabilityProbeStage.Failed;
             var status = result.Status;
             UpsertProbe(key, result.Model, ChannelReliabilityProbeFamily.Process, processStage,
-                occurredAt, result.CheckedAt, result, result.NetworkSummary, result.EvidenceSummary, null);
+                occurredAt, result.CheckedAt, result, result.NetworkSummary, result.EvidenceSummary, null,
+                capabilityStatus: capabilityStatus);
             AppendEvent(_snapshot.RunId, occurredAt,
                 processStage == ChannelReliabilityProbeStage.Completed
                     ? ChannelReliabilityEventType.ProbeCompleted
                     : ChannelReliabilityEventType.ProbeFailed,
                 key, result.Model, ChannelReliabilityProbeFamily.Process, processStage, status,
-                result, null, null);
+                result, null, null, capabilityStatus: capabilityStatus);
 
             foreach (var family in new[]
                      {
@@ -133,13 +143,14 @@ public sealed class ChannelReliabilityRuntime
                          ChannelReliabilityProbeFamily.Juice,
                          ChannelReliabilityProbeFamily.Identity,
                          ChannelReliabilityProbeFamily.Coverage,
-                         ChannelReliabilityProbeFamily.Probability,
+                         ChannelReliabilityProbeFamily.Fingerprint,
                          ChannelReliabilityProbeFamily.Verdict
                      })
             {
                 var stage = ResolveFamilyStage(result, family);
                 UpsertProbe(key, result.Model, family, stage, occurredAt, result.CheckedAt,
-                    result, result.NetworkSummary, result.EvidenceSummary, null);
+                    result, result.NetworkSummary, result.EvidenceSummary, null,
+                    capabilityStatus: capabilityStatus);
                 AppendEvent(_snapshot.RunId, occurredAt,
                     stage switch
                     {
@@ -147,7 +158,8 @@ public sealed class ChannelReliabilityRuntime
                         ChannelReliabilityProbeStage.Skipped => ChannelReliabilityEventType.ProbeSkipped,
                         _ => ChannelReliabilityEventType.ProbeFailed
                     },
-                    key, result.Model, family, stage, status, result, null, null);
+                    key, result.Model, family, stage, status, result, null, null,
+                    capabilityStatus: capabilityStatus);
             }
 
             _snapshot = _snapshot with
@@ -159,7 +171,11 @@ public sealed class ChannelReliabilityRuntime
         }
     }
 
-    public void SkipKey(ApiKeyInfo key, ChannelReliabilityStatus status, DateTimeOffset occurredAt)
+    public void SkipKey(
+        ApiKeyInfo key,
+        ChannelReliabilityStatus status,
+        DateTimeOffset occurredAt,
+        ChannelReliabilitySkipReason reason)
     {
         lock (_gate)
         {
@@ -169,10 +185,36 @@ public sealed class ChannelReliabilityRuntime
             }
 
             UpsertProbe(key, string.Empty, ChannelReliabilityProbeFamily.Process,
-                ChannelReliabilityProbeStage.Skipped, occurredAt, null, null, null, null, status);
+                ChannelReliabilityProbeStage.Skipped, occurredAt, null, null, null, null, status,
+                skipReason: reason);
             AppendEvent(_snapshot.RunId, occurredAt, ChannelReliabilityEventType.ProbeSkipped,
                 key, null, ChannelReliabilityProbeFamily.Process, ChannelReliabilityProbeStage.Skipped,
-                status, null, null, null);
+                status, null, null, null, skipReason: reason);
+        }
+    }
+
+    public void SkipModel(
+        ApiKeyInfo key,
+        string model,
+        ChannelReliabilityStatus status,
+        DetectorModelCapabilityStatus capabilityStatus,
+        DateTimeOffset nextCheckAt,
+        DateTimeOffset occurredAt)
+    {
+        lock (_gate)
+        {
+            if (_snapshot.RunId is null)
+            {
+                return;
+            }
+
+            UpsertProbe(key, model, ChannelReliabilityProbeFamily.Process,
+                ChannelReliabilityProbeStage.Skipped, occurredAt, null, null, null, null, status,
+                ChannelReliabilitySkipReason.NotDue, capabilityStatus, nextCheckAt);
+            AppendEvent(_snapshot.RunId, occurredAt, ChannelReliabilityEventType.ProbeSkipped,
+                key, model, ChannelReliabilityProbeFamily.Process, ChannelReliabilityProbeStage.Skipped,
+                status, null, null, null, ChannelReliabilitySkipReason.NotDue,
+                capabilityStatus, nextCheckAt);
         }
     }
 
@@ -322,7 +364,10 @@ public sealed class ChannelReliabilityRuntime
         DetectorResult? result,
         DetectorNetworkSummary? network,
         DetectorEvidenceSummary? evidence,
-        ChannelReliabilityStatus? status)
+        ChannelReliabilityStatus? status,
+        ChannelReliabilitySkipReason? skipReason = null,
+        DetectorModelCapabilityStatus? capabilityStatus = null,
+        DateTimeOffset? nextCheckAt = null)
     {
         var probeKey = $"{key.Id}:{model}:{family}";
         _probes[probeKey] = new ChannelReliabilityProbeProgress
@@ -344,10 +389,14 @@ public sealed class ChannelReliabilityRuntime
                 : null,
             Status = status ?? result?.Status,
             Verdict = result?.Verdict,
+            OutcomeCode = result?.OutcomeCode,
             ErrorCategory = result?.ErrorCategory ?? DetectorErrorCategory.None,
             Network = network,
             Evidence = evidence,
-            QuarantinedUntil = null
+            QuarantinedUntil = null,
+            SkipReason = skipReason,
+            CapabilityStatus = capabilityStatus ?? previous?.CapabilityStatus,
+            NextCheckAt = nextCheckAt
         };
         if (_probes.Count > MaxProbes)
         {
@@ -370,7 +419,7 @@ public sealed class ChannelReliabilityRuntime
         var evidence = result.EvidenceSummary;
         return family switch
         {
-            ChannelReliabilityProbeFamily.Probability when evidence?.ProbabilityEnabled != true =>
+            ChannelReliabilityProbeFamily.Fingerprint when evidence?.FingerprintEnabled != true =>
                 ChannelReliabilityProbeStage.Skipped,
             ChannelReliabilityProbeFamily.Network when result.NetworkSummary is null =>
                 ChannelReliabilityProbeStage.Skipped,
@@ -394,13 +443,16 @@ public sealed class ChannelReliabilityRuntime
         ChannelReliabilityStatus? status,
         DetectorResult? result,
         DateTimeOffset? quarantinedUntil,
-        DetectorErrorCategory? errorCategory)
+        DetectorErrorCategory? errorCategory,
+        ChannelReliabilitySkipReason? skipReason = null,
+        DetectorModelCapabilityStatus? capabilityStatus = null,
+        DateTimeOffset? nextCheckAt = null)
     {
         _sequence++;
         _events.Add(new ChannelReliabilityAuditEvent
         {
             Sequence = _sequence,
-            RunId = runId,
+            RunId = runId ?? string.Empty,
             OccurredAt = occurredAt,
             EventType = eventType,
             Trigger = _snapshot.Trigger ?? ChannelReliabilityTrigger.Scheduled,
@@ -413,8 +465,12 @@ public sealed class ChannelReliabilityRuntime
             DurationMs = null,
             Status = status,
             Verdict = result?.Verdict,
+            OutcomeCode = result?.OutcomeCode,
             ErrorCategory = errorCategory ?? result?.ErrorCategory ?? DetectorErrorCategory.None,
-            QuarantinedUntil = quarantinedUntil
+            QuarantinedUntil = quarantinedUntil,
+            SkipReason = skipReason,
+            CapabilityStatus = capabilityStatus,
+            NextCheckAt = nextCheckAt
         });
         if (_events.Count > MaxEvents)
         {

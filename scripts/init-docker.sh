@@ -8,8 +8,10 @@ readonly image_name="aihub-router-web:local"
 readonly volume_name="aihub-router-web-data"
 readonly environment_file="/etc/aihub-router-web.env"
 readonly detector_directory="$repo_root/gpt56_api_detector"
-readonly detector_repository="https://github.com/Micah123321/gpt56_api_detector.git"
-readonly detector_revision="e9ef5d0f9cd4b0fa401a4e9960d959557610b852"
+readonly detector_repository="https://github.com/chen-006/gpt56_api_detector.git"
+readonly detector_revision="cc9c53c43c83da8d52220b5da2e2c94d7ca4d9cf"
+readonly detector_version="4.1.0"
+readonly detector_baseline="gpt56_vnext/baselines/trusted_fingerprint_v3.json"
 
 generated_password=""
 temporary_file=""
@@ -47,13 +49,22 @@ docker info >/dev/null 2>&1 || die 'Docker daemon 不可用，请先启动 Docke
 [[ -f "$repo_root/Dockerfile" ]] || die "未找到 Dockerfile：$repo_root"
 
 ensure_detector_source() {
+  local version_file="$detector_directory/VERSION"
+  local baseline_file="$detector_directory/$detector_baseline"
+
   if [[ -f "$detector_directory/gpt56_vnext/detector.py" &&
-    -f "$detector_directory/gpt56_vnext/presets.py" ]]; then
+    -f "$detector_directory/gpt56_vnext/presets.py" &&
+    -f "$version_file" &&
+    -f "$baseline_file" ]]; then
+    local detector_local_version
+    detector_local_version="$(tr -d '\r\n' < "$version_file")"
+    [[ "$detector_local_version" == "$detector_version" ]] ||
+      die "参考检测器版本不匹配：期望 $detector_version，当前 $detector_local_version：$detector_directory"
     return
   fi
 
   if [[ -e "$detector_directory" ]]; then
-    die "参考检测器目录不完整：$detector_directory。请补齐 gpt56_vnext/detector.py 和 presets.py。"
+    die "参考检测器目录缺少 4.1.0 必需文件或版本不匹配：$detector_directory。请更新到 $detector_revision。"
   fi
 
   require_command git

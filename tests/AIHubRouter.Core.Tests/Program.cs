@@ -1,4 +1,5 @@
 using AIHubRouter.Core;
+using AIHubRouter.Core.Tests;
 using AIHubRouter.Cli;
 using AIHubRouter.Web;
 using System.Net;
@@ -89,6 +90,8 @@ var tests = new (string Name, Action Body)[]
     ("Manual route rejects out-of-range group", TestManualRouteRejectsOutOfRangeGroup),
     ("Manual route clears state after terminal authentication failure", TestManualRouteClearsStateAfterTerminalAuthenticationFailure),
     ("Background cycle only handles non-host cancellation", TestBackgroundCycleOnlyHandlesNonHostCancellation),
+    ("Reliability trigger force policy is explicit", TestReliabilityTriggerForcePolicy),
+    ("Reliability configuration targets affected keys", TestReliabilityConfigurationTargetsAffectedKeys),
     ("Manual route preserves changes across authentication retry", TestManualRoutePreservesChangesAcrossAuthenticationRetry),
     ("Encrypted settings roundtrip", TestEncryptedSettingsRoundtrip),
     ("Usable access token is reused", TestUsableAccessTokenIsReused),
@@ -114,13 +117,16 @@ var tests = new (string Name, Action Body)[]
     ("First key selection chooses first active key", TestFirstKeySelectionChoosesFirstActiveKey),
     ("Initialized empty key selection stays empty", TestInitializedEmptyKeySelectionStaysEmpty),
     ("Reliability model capability selection", ChannelReliabilityTests.TestDetectorModelNamesAndProbeSelection),
-    ("Reliability skips failed and unknown models", ChannelReliabilityTests.TestSelectProbeModelsSkipsFailedAndUnknown),
+    ("Reliability model selection ignores capability health", ChannelReliabilityTests.TestSelectProbeModelsIgnoresCapabilityHealth),
     ("Reliability hard verdict classification", ChannelReliabilityTests.TestHardVerdictClassification),
     ("Reliability mapper validates complete evidence", ChannelReliabilityTests.TestMapperValidatesCompleteEvidence),
+    ("Reliability mapper maps all seven detector outcomes", ChannelReliabilityTests.TestMapperMapsAllSevenDetectorOutcomes),
     ("Reliability quarantine expires after 24 hours", ChannelReliabilityTests.TestQuarantineExpiresAfterTwentyFourHours),
     ("Reliability quarantine store roundtrip", ChannelReliabilityTests.TestJsonQuarantineStoreRoundtripAndActiveFiltering),
     ("Reliability serialization excludes secrets", ChannelReliabilityTests.TestReliabilitySerializationExcludesSecrets),
+    ("Reliability skips disabled fingerprint family", ChannelReliabilityTests.TestRuntimeSkipsDisabledFingerprintFamily),
     ("Reliability keeps Key bindings and model capabilities independent", ChannelReliabilityTests.TestMonitorKeepsKeyBindingsIndependent),
+    ("Reliability schedules each channel model hourly", ChannelReliabilityTests.TestMonitorSchedulesEachChannelModelHourly),
     ("Reliability quarantines hard detector verdicts", ChannelReliabilityTests.TestMonitorQuarantinesHardVerdict),
     ("Reliability does not quarantine mixed execution errors", ChannelReliabilityTests.TestMonitorDoesNotQuarantineMixedExecutionErrors),
     ("Reliability dry-run only reports a proposed quarantine", ChannelReliabilityTests.TestMonitorDryRunReportsWouldQuarantineWithoutApplyingIt),
@@ -2237,6 +2243,48 @@ static void TestBackgroundCycleOnlyHandlesNonHostCancellation()
             new TaskCanceledException("host stopping"),
             stopping.Token),
         "Host shutdown cancellation must propagate out of the background cycle.");
+}
+
+static void TestReliabilityTriggerForcePolicy()
+{
+    Assert(WebRouterCoordinator.ForcesReliabilityProbe(ChannelReliabilityTrigger.Manual),
+        "Manual reliability checks must bypass the hourly interval.");
+    Assert(WebRouterCoordinator.ForcesReliabilityProbe(ChannelReliabilityTrigger.ConfigurationChanged),
+        "Configuration changes must recheck affected keys immediately.");
+    foreach (var trigger in new[]
+             {
+                 ChannelReliabilityTrigger.Startup,
+                 ChannelReliabilityTrigger.Scheduled,
+                 ChannelReliabilityTrigger.Refresh,
+                 ChannelReliabilityTrigger.KeyGroupChanged,
+                 ChannelReliabilityTrigger.RoutingCycle
+             })
+    {
+        Assert(!WebRouterCoordinator.ForcesReliabilityProbe(trigger),
+            $"{trigger} must respect the per-channel hourly ledger.");
+    }
+}
+
+static void TestReliabilityConfigurationTargetsAffectedKeys()
+{
+    var oldBindings = new[]
+    {
+        new DetectorBinding { KeyId = 1, BaseUrl = "https://one.test", Models = [DetectorModelNames.Sol] },
+        new DetectorBinding { KeyId = 2, BaseUrl = "https://two.test", Models = [DetectorModelNames.Luna] }
+    };
+    var newBindings = new[]
+    {
+        oldBindings[0],
+        oldBindings[1] with { Models = [DetectorModelNames.Terra] }
+    };
+    var affected = WebRouterCoordinator.ChangedReliabilityKeyIds(
+        oldBindings,
+        newBindings,
+        new Dictionary<long, string> { [1] = "same", [2] = "old" },
+        new Dictionary<long, string> { [1] = "same", [2] = "old", [3] = "new" });
+
+    Assert(affected.SequenceEqual([2L, 3L]),
+        "Only keys with changed detector bindings or credentials must be rechecked.");
 }
 
 static void TestCredentialProtectionFailurePreservesPreviousFiles()

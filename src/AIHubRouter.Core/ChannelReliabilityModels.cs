@@ -27,6 +27,7 @@ public static class DetectorModelNames
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum DetectorModelCapabilityStatus
 {
+    Missing,
     Unknown,
     Healthy,
     Failed
@@ -77,6 +78,19 @@ public enum DetectorVerdict
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
+public enum DetectorOutcomeCode
+{
+    Unknown,
+    JuicePassFingerprintStrong,
+    JuicePassFingerprintUnclear,
+    JuiceMismatchFingerprintStrong,
+    JuiceMismatchFingerprintUnclear,
+    JuiceInsufficientFingerprintStrong,
+    JuiceInsufficientFingerprintUnclear,
+    PossibleNonGpt
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum DetectorErrorCategory
 {
     None,
@@ -112,6 +126,9 @@ public sealed record DetectorResult
     [JsonPropertyName("verdict")]
     public DetectorVerdict Verdict { get; init; } = DetectorVerdict.EvidenceInsufficient;
 
+    [JsonPropertyName("outcomeCode")]
+    public DetectorOutcomeCode OutcomeCode { get; init; }
+
     [JsonPropertyName("errorCategory")]
     public DetectorErrorCategory ErrorCategory { get; init; } = DetectorErrorCategory.None;
 
@@ -124,6 +141,15 @@ public sealed record DetectorResult
     [JsonPropertyName("claimedModel")]
     public string? ClaimedModel { get; init; }
 
+    [JsonPropertyName("juiceState")]
+    public string? JuiceState { get; init; }
+
+    [JsonPropertyName("fingerprintState")]
+    public string? FingerprintState { get; init; }
+
+    [JsonPropertyName("fingerprintModel")]
+    public string? FingerprintModel { get; init; }
+
     [JsonPropertyName("title")]
     public string? Title { get; init; }
 
@@ -134,7 +160,9 @@ public sealed record DetectorResult
     public DetectorEvidenceSummary? EvidenceSummary { get; init; }
 
     [JsonIgnore]
-    public bool IsHardAnomaly => ChannelReliabilityRules.IsHardVerdict(Verdict);
+    public bool IsHardAnomaly => OutcomeCode != DetectorOutcomeCode.Unknown
+        ? ChannelReliabilityRules.IsHardOutcome(OutcomeCode)
+        : ChannelReliabilityRules.IsHardVerdict(Verdict);
 
     [JsonIgnore]
     public bool IsQuarantineEligible =>
@@ -160,6 +188,9 @@ public sealed record ChannelReliabilityResult
 
     [JsonPropertyName("verdict")]
     public DetectorVerdict? Verdict { get; init; }
+
+    [JsonPropertyName("outcomeCode")]
+    public DetectorOutcomeCode? OutcomeCode { get; init; }
 
     [JsonPropertyName("probedModels")]
     public IReadOnlyList<string> ProbedModels { get; init; } = [];

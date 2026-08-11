@@ -103,7 +103,7 @@ public sealed record WebSettings(
     long[] BlacklistedGroupIds)
 {
     public bool ReliabilityDetectionEnabled { get; init; }
-    public int ReliabilityDetectionIntervalSeconds { get; init; } = 600;
+    public int ReliabilityDetectionIntervalSeconds { get; init; } = 3600;
     public int ReliabilityQuarantineHours { get; init; } = 24;
     public string DetectorPythonCommand { get; init; } = "python3";
     public string DetectorWorkerPath { get; init; } = "scripts/channel_detector_worker.py";
