@@ -39,6 +39,11 @@ public sealed record SettingsUpdateRequest(
 public sealed record ManualRouteRequest(long GroupId);
 public sealed record AutoRoutingRequest(bool Enabled);
 
+public sealed record ReliabilityQueueResponse(
+    bool Accepted,
+    bool Merged,
+    WebDashboard Dashboard);
+
 public sealed record WebDashboard(
     WebSettings Settings,
     IReadOnlyList<WebProviderRow> Providers,
@@ -104,6 +109,7 @@ public sealed record WebSettings(
     public string DetectorWorkerPath { get; init; } = "scripts/channel_detector_worker.py";
     public string DetectorPreset { get; init; } = "low";
     public IReadOnlyList<DetectorBinding> DetectorBindings { get; init; } = [];
+    public IReadOnlyList<long> DetectorCredentialKeyIds { get; init; } = [];
 }
 
 public sealed record WebProviderSeriesStatus(

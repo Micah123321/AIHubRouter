@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light dark">
   <title>AIHub Router</title>
   <link rel="icon" href="/app-icon.png">
-  <link rel="stylesheet" href="/app.css?v=1.0.17">
-  <script src="/app.js?v=1.0.18" type="module"></script>
+  <link rel="stylesheet" href="/app.css?v=1.0.19">
+  <script src="/app.js?v=1.0.19" type="module"></script>
 </head>
 <body>
   <section class="login-view" id="loginView" hidden>
@@ -191,6 +191,65 @@
         </label>
         <span class="busy-indicator" id="busyIndicator" aria-label="正在处理" hidden></span>
       </nav>
+
+      <section class="data-section reliability-section" aria-labelledby="reliabilityTitle">
+        <div class="section-heading reliability-heading">
+          <div>
+            <h2 id="reliabilityTitle">可靠性检测</h2>
+            <span class="section-meta" id="reliabilitySchedule">尚未运行</span>
+          </div>
+          <button class="command" id="reliabilityCheckButton" type="button">
+            <span aria-hidden="true">▶</span>立即检测
+          </button>
+        </div>
+        <div class="reliability-runtime" id="reliabilityRuntime" data-phase="idle" aria-label="可靠性运行状态">
+          <div><span>阶段</span><strong id="reliabilityPhase">尚未运行</strong></div>
+          <div><span>触发</span><strong id="reliabilityTrigger">-</strong></div>
+          <div><span>模型进度</span><strong id="reliabilityProgress">0 / 0</strong></div>
+          <div><span>失败</span><strong id="reliabilityFailures">0</strong></div>
+          <div><span>Run</span><strong id="reliabilityRunId">-</strong></div>
+          <div><span>下次检测</span><strong id="reliabilityNextCheck">-</strong></div>
+        </div>
+
+        <div class="reliability-subheading">
+          <h3>Key 检测配置</h3>
+          <span class="section-meta" id="reliabilityConfigMeta">0 个 Key</span>
+        </div>
+        <div class="table-frame reliability-config-frame">
+          <table class="data-table reliability-config-table">
+            <thead>
+              <tr><th>启用</th><th>Key</th><th>分组</th><th>检测地址</th><th>模型</th><th>检测凭据</th><th>状态</th></tr>
+            </thead>
+            <tbody id="reliabilityConfigRows"><tr><td class="empty-state" colspan="7">刷新后显示 Key</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="reliability-subheading">
+          <h3>探针数据</h3>
+          <span class="section-meta" id="reliabilityProbeMeta">0 项</span>
+        </div>
+        <div class="table-frame reliability-probe-frame">
+          <table class="data-table reliability-probe-table">
+            <thead>
+              <tr><th>Key / 分组</th><th>模型</th><th>探针</th><th>阶段</th><th>结论</th><th>网络</th><th>证据</th><th>完成时间</th></tr>
+            </thead>
+            <tbody id="reliabilityProbeRows"><tr><td class="empty-state" colspan="8">等待检测</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="reliability-subheading">
+          <h3>审计时间线</h3>
+          <span class="section-meta" id="reliabilityTimelineMeta">0 条事件</span>
+        </div>
+        <div class="table-frame reliability-timeline-frame">
+          <table class="data-table reliability-timeline-table">
+            <thead>
+              <tr><th>序号</th><th>时间</th><th>Key / 分组</th><th>模型</th><th>探针</th><th>事件</th><th>状态</th><th>错误 / 隔离</th></tr>
+            </thead>
+            <tbody id="reliabilityTimelineRows"><tr><td class="empty-state" colspan="8">等待检测</td></tr></tbody>
+          </table>
+        </div>
+      </section>
 
       <section class="data-section" aria-labelledby="providerTitle">
         <div class="section-heading">

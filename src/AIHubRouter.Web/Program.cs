@@ -65,6 +65,11 @@ app.UseStaticFiles(new StaticFileOptions
         context.Context.Response.Headers.CacheControl =
             context.File.Name is "index.html" ? "no-store" : "public,max-age=86400";
         context.Context.Response.Headers.XContentTypeOptions = "nosniff";
+        context.Context.Response.Headers.XFrameOptions = "DENY";
+        context.Context.Response.Headers["Referrer-Policy"] = "no-referrer";
+        context.Context.Response.Headers.ContentSecurityPolicy =
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; " +
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
     }
 });
 
@@ -142,11 +147,23 @@ app.MapPut("/api/settings", async (SettingsUpdateRequest request, WebRouterCoord
     {
         result = Results.BadRequest(new { error = exception.Message });
     }
+    catch (ArgumentException exception)
+    {
+        result = Results.BadRequest(new { error = exception.Message });
+    }
 
     return result;
 });
 app.MapPost("/api/actions/refresh", async (WebRouterCoordinator coordinator, CancellationToken token) =>
     Results.Ok(await coordinator.RunCycleAsync(dryRun: true, forceRefresh: true, token)));
+app.MapPost("/api/actions/reliability-check", (WebRouterCoordinator coordinator) =>
+{
+    var response = coordinator.QueueReliabilityCheck();
+    IResult result = response.Accepted
+        ? Results.Accepted(value: response)
+        : Results.UnprocessableEntity(response);
+    return result;
+});
 app.MapPost("/api/actions/dry-run", async (WebRouterCoordinator coordinator, CancellationToken token) =>
     Results.Ok(await coordinator.RunCycleAsync(dryRun: true, forceRefresh: false, token)));
 app.MapPost("/api/actions/route", async (WebRouterCoordinator coordinator, CancellationToken token) =>

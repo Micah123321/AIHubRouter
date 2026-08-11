@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -30,8 +29,6 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(2);
 
     private const string WorkerModelPrefix = "gpt-5.6-";
-    private const int ReadBufferSize = 4096;
-    private const int MaxScalarLength = 4096;
 
     private readonly string _pythonCommand;
     private readonly string _workerPath;
@@ -168,13 +165,13 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
         using (var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                    cancellationToken, timeoutCancellation.Token))
         {
-            var stdoutTask = ReadBoundedAsync(
+            var stdoutTask = ChannelReliabilityProcessIo.ReadBoundedAsync(
                 process.StandardOutput.BaseStream, _maxStdoutBytes, linkedCancellation.Token);
-            var stderrTask = DrainBoundedAsync(
+            var stderrTask = ChannelReliabilityProcessIo.DrainBoundedAsync(
                 process.StandardError.BaseStream, _maxStderrBytes, linkedCancellation.Token);
             var timedOut = false;
             var cancelled = false;
-            var writeFailed = false;
+            var executionFailed = false;
 
             try
             {
@@ -187,15 +184,15 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
                 timedOut = !cancellationToken.IsCancellationRequested &&
                     timeoutCancellation.IsCancellationRequested;
                 cancelled = cancellationToken.IsCancellationRequested;
-                TryKill(process);
+                ChannelReliabilityProcessIo.TryKill(process);
             }
             catch (Exception)
             {
                 // A closed stdin is handled as a safe worker failure; stderr is never exposed.
-                writeFailed = true;
+                executionFailed = true;
             }
 
-            if (!timedOut && !cancelled && !HasExited(process))
+            if (!timedOut && !cancelled && !ChannelReliabilityProcessIo.HasExited(process))
             {
                 try
                 {
@@ -206,24 +203,25 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
                     timedOut = !cancellationToken.IsCancellationRequested &&
                         timeoutCancellation.IsCancellationRequested;
                     cancelled = cancellationToken.IsCancellationRequested;
-                    TryKill(process);
+                    ChannelReliabilityProcessIo.TryKill(process);
                 }
                 catch (Exception)
                 {
-                    TryKill(process);
+                    executionFailed = true;
+                    ChannelReliabilityProcessIo.TryKill(process);
                 }
             }
 
             if (timedOut || cancelled)
             {
-                TryKill(process);
+                ChannelReliabilityProcessIo.TryKill(process);
             }
 
             var stdout = await stdoutTask.ConfigureAwait(false);
             _ = await stderrTask.ConfigureAwait(false);
-            return MapProcessResult(
+            return ChannelReliabilityResultMapper.MapProcessResult(
                 keyId, groupId, normalizedModel, checkedAt, stdout,
-                GetExitCode(process), writeFailed, timedOut, cancelled);
+                ChannelReliabilityProcessIo.GetExitCode(process), executionFailed, timedOut, cancelled);
         }
     }
 
@@ -251,167 +249,6 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
         }
     }
 
-    private static DetectorResult MapProcessResult(
-        long keyId,
-        long? groupId,
-        string model,
-        DateTimeOffset checkedAt,
-        BoundedOutput stdout,
-        int exitCode,
-        bool writeFailed,
-        bool timedOut,
-        bool cancelled)
-    {
-        if (cancelled)
-        {
-            return Failure(keyId, groupId, model, DetectorErrorCategory.Cancelled,
-                ChannelReliabilityStatus.Unavailable, checkedAt);
-        }
-
-        if (timedOut)
-        {
-            return Failure(keyId, groupId, model, DetectorErrorCategory.Timeout,
-                ChannelReliabilityStatus.Unavailable, checkedAt);
-        }
-
-        if (stdout.Truncated)
-        {
-            return Failure(keyId, groupId, model, DetectorErrorCategory.StreamTruncated,
-                ChannelReliabilityStatus.Unavailable, checkedAt);
-        }
-
-        if (!TryReadLastResponse(stdout.Text, out var response))
-        {
-            var category = writeFailed || exitCode != 0
-                ? DetectorErrorCategory.Unknown
-                : DetectorErrorCategory.InvalidResponse;
-            return Failure(keyId, groupId, model, category,
-                ChannelReliabilityStatus.EvidenceInsufficient, checkedAt);
-        }
-
-        if (response.ClaimedModel is not null &&
-            !string.Equals(response.ClaimedModel, WorkerModelPrefix + model,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return Failure(keyId, groupId, model, DetectorErrorCategory.InvalidResponse,
-                ChannelReliabilityStatus.EvidenceInsufficient, checkedAt);
-        }
-
-        var status = response.Status.Trim().ToLowerInvariant();
-        if (status == "complete")
-        {
-            var verdict = ParseVerdict(response.OverallVerdict);
-            if (verdict is null || exitCode != 0)
-            {
-                return Failure(keyId, groupId, model, DetectorErrorCategory.InvalidResponse,
-                    ChannelReliabilityStatus.EvidenceInsufficient, checkedAt);
-            }
-
-            return new DetectorResult
-            {
-                KeyId = keyId,
-                GroupId = groupId,
-                Model = model,
-                Status = verdict == DetectorVerdict.Passed
-                    ? ChannelReliabilityStatus.Passed
-                    : ChannelReliabilityStatus.EvidenceInsufficient,
-                Verdict = verdict.Value,
-                ErrorCategory = DetectorErrorCategory.None,
-                CheckedAt = checkedAt,
-                Official = response.Official,
-                Title = VerdictTitle(verdict.Value)
-            };
-        }
-
-        if (status == "evidence_insufficient")
-        {
-            return Failure(keyId, groupId, model, DetectorErrorCategory.EvidenceInsufficient,
-                ChannelReliabilityStatus.EvidenceInsufficient, checkedAt, response.Official);
-        }
-
-        if (status == "error")
-        {
-            var category = ParseErrorCategory(response.ErrorCode);
-            return Failure(keyId, groupId, model, category,
-                category == DetectorErrorCategory.EvidenceInsufficient
-                    ? ChannelReliabilityStatus.EvidenceInsufficient
-                    : ChannelReliabilityStatus.Unavailable,
-                checkedAt, response.Official);
-        }
-
-        return Failure(keyId, groupId, model, DetectorErrorCategory.InvalidResponse,
-            ChannelReliabilityStatus.EvidenceInsufficient, checkedAt);
-    }
-
-    private static bool TryReadLastResponse(string stdout, out WorkerResponse response)
-    {
-        response = default!;
-        foreach (var line in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Reverse())
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(line, new JsonDocumentOptions
-                {
-                    AllowTrailingCommas = false,
-                    CommentHandling = JsonCommentHandling.Disallow,
-                    MaxDepth = 8
-                });
-                var root = document.RootElement;
-                if (root.ValueKind != JsonValueKind.Object ||
-                    !TryString(root, "status", out var status))
-                {
-                    continue;
-                }
-
-                response = new WorkerResponse(
-                    status,
-                    TryString(root, "overall_verdict", out var verdict) ? verdict : null,
-                    TryString(root, "error_code", out var errorCode) ? errorCode : null,
-                    TryBoolean(root, "official", out var official) ? official : null,
-                    TryString(root, "claimed_model", out var claimedModel) ? claimedModel : null);
-                return true;
-            }
-            catch (JsonException)
-            {
-                // Worker logs or malformed lines do not become application output.
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TryString(JsonElement root, string name, out string value)
-    {
-        value = string.Empty;
-        if (!root.TryGetProperty(name, out var property) ||
-            property.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        var candidate = property.GetString();
-        if (string.IsNullOrWhiteSpace(candidate) || candidate.Length > MaxScalarLength)
-        {
-            return false;
-        }
-
-        value = candidate;
-        return true;
-    }
-
-    private static bool TryBoolean(JsonElement root, string name, out bool value)
-    {
-        value = false;
-        if (!root.TryGetProperty(name, out var property) ||
-            property.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-        {
-            return false;
-        }
-
-        value = property.GetBoolean();
-        return true;
-    }
-
     private static string NormalizeModel(string? model, out string? workerModel)
     {
         workerModel = null;
@@ -434,37 +271,6 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
         return normalized;
     }
 
-    private static DetectorVerdict? ParseVerdict(string? value) => value?.Trim().ToLowerInvariant() switch
-    {
-        "通过" or "passed" => DetectorVerdict.Passed,
-        "可能非gpt" or "possible_non_gpt" => DetectorVerdict.PossibleNonGpt,
-        "juice混用" or "juice_mixed" => DetectorVerdict.JuiceMixed,
-        "仅概率探针混用" or "probability_only_mixed" => DetectorVerdict.ProbabilityOnlyMixed,
-        "juice通过但概率探针证据不足" or "evidence_insufficient" =>
-            DetectorVerdict.EvidenceInsufficient,
-        _ => null
-    };
-
-    private static DetectorErrorCategory ParseErrorCategory(string? value) =>
-        value?.Trim().ToLowerInvariant() switch
-        {
-            "timeout" => DetectorErrorCategory.Timeout,
-            "http_error" => DetectorErrorCategory.HttpError,
-            "truncated_stream" => DetectorErrorCategory.StreamTruncated,
-            "evidence_insufficient" => DetectorErrorCategory.EvidenceInsufficient,
-            "invalid_input" => DetectorErrorCategory.InvalidResponse,
-            _ => DetectorErrorCategory.Unknown
-        };
-
-    private static string VerdictTitle(DetectorVerdict verdict) => verdict switch
-    {
-        DetectorVerdict.Passed => "通过",
-        DetectorVerdict.PossibleNonGpt => "可能非GPT",
-        DetectorVerdict.JuiceMixed => "Juice混用",
-        DetectorVerdict.ProbabilityOnlyMixed => "仅概率探针混用",
-        _ => "未形成正式结论"
-    };
-
     private static DetectorResult Failure(
         long keyId,
         long? groupId,
@@ -472,7 +278,11 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
         DetectorErrorCategory category,
         ChannelReliabilityStatus status,
         DateTimeOffset checkedAt,
-        bool? official = null) => new()
+        bool? official = null,
+        string? claimedModel = null,
+        string? title = null,
+        DetectorNetworkSummary? networkSummary = null,
+        DetectorEvidenceSummary? evidenceSummary = null) => new()
         {
             KeyId = keyId,
             GroupId = groupId,
@@ -481,7 +291,11 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
             Verdict = DetectorVerdict.EvidenceInsufficient,
             ErrorCategory = category,
             CheckedAt = checkedAt,
-            Official = official
+            Official = official,
+            ClaimedModel = claimedModel,
+            Title = title,
+            NetworkSummary = networkSummary,
+            EvidenceSummary = evidenceSummary
         };
 
     private static bool IsMissingExecutable(Win32Exception exception) =>
@@ -502,136 +316,10 @@ public sealed class ProcessChannelReliabilityDetector : IChannelReliabilityDetec
         }
     }
 
-    private static bool HasExited(Process process)
-    {
-        try
-        {
-            return process.HasExited;
-        }
-        catch (InvalidOperationException)
-        {
-            return true;
-        }
-    }
-
-    private static int GetExitCode(Process process)
-    {
-        try
-        {
-            return process.ExitCode;
-        }
-        catch (InvalidOperationException)
-        {
-            return -1;
-        }
-    }
-
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-        catch (InvalidOperationException)
-        {
-        }
-        catch (NotSupportedException)
-        {
-        }
-        catch (Win32Exception)
-        {
-        }
-    }
-
-    private static async Task<BoundedOutput> ReadBoundedAsync(
-        Stream stream,
-        int maxBytes,
-        CancellationToken cancellationToken)
-    {
-        using var output = new MemoryStream(Math.Min(maxBytes, ReadBufferSize));
-        var buffer = new byte[ReadBufferSize];
-        var stored = 0;
-        var truncated = false;
-        try
-        {
-            while (true)
-            {
-                var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    break;
-                }
-
-                var count = Math.Min(maxBytes - stored, read);
-                if (count > 0)
-                {
-                    output.Write(buffer, 0, count);
-                    stored += count;
-                }
-
-                truncated |= count != read;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (IOException)
-        {
-            truncated = true;
-        }
-
-        return new BoundedOutput(Encoding.UTF8.GetString(output.ToArray()), truncated);
-    }
-
-    private static async Task<bool> DrainBoundedAsync(
-        Stream stream,
-        int maxBytes,
-        CancellationToken cancellationToken)
-    {
-        var buffer = new byte[ReadBufferSize];
-        var stored = 0;
-        var truncated = false;
-        try
-        {
-            while (true)
-            {
-                var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    break;
-                }
-
-                var count = Math.Min(maxBytes - stored, read);
-                stored += count;
-                truncated |= count != read;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (IOException)
-        {
-            truncated = true;
-        }
-
-        return truncated;
-    }
-
     private sealed record WorkerRequest(
         [property: JsonPropertyName("base_url")] string BaseUrl,
         [property: JsonPropertyName("model")] string Model,
         [property: JsonPropertyName("api_key")] string ApiKey,
         [property: JsonPropertyName("preset")] string Preset);
 
-    private sealed record WorkerResponse(
-        string Status,
-        string? OverallVerdict,
-        string? ErrorCode,
-        bool? Official,
-        string? ClaimedModel);
-
-    private sealed record BoundedOutput(string Text, bool Truncated);
 }

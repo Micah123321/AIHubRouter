@@ -9,6 +9,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
     private readonly PersistentCredentials _credentials;
     private readonly IChannelReliabilityDetector _detector;
     private readonly IChannelQuarantineStore _quarantineStore;
+    private readonly ChannelReliabilityRuntime _runtime;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<long, DateTimeOffset> _lastCheckedAt = [];
@@ -20,14 +21,18 @@ public sealed class ChannelReliabilityMonitor : IDisposable
         PersistentCredentials credentials,
         IChannelReliabilityDetector detector,
         IChannelQuarantineStore quarantineStore,
-        Func<DateTimeOffset>? utcNow = null)
+        Func<DateTimeOffset>? utcNow = null,
+        ChannelReliabilityRuntime? runtime = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _credentials = credentials ?? throw new ArgumentNullException(nameof(credentials));
         _detector = detector ?? throw new ArgumentNullException(nameof(detector));
         _quarantineStore = quarantineStore ?? throw new ArgumentNullException(nameof(quarantineStore));
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        _runtime = runtime ?? new ChannelReliabilityRuntime();
     }
+
+    public ChannelReliabilityRuntimeSnapshot RuntimeSnapshot => _runtime.Snapshot;
 
     public ChannelQuarantineSnapshot GetSnapshot(DateTimeOffset? now = null)
     {
@@ -47,6 +52,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
         bool dryRun = false,
         bool force = false,
         Func<long, ApiKeyInfo?>? currentKeyResolver = null,
+        ChannelReliabilityTrigger trigger = ChannelReliabilityTrigger.Scheduled,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(selectedKeys);
@@ -56,6 +62,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
         var startedAt = _utcNow().ToUniversalTime();
         if (!_settings.ReliabilityDetectionEnabled)
         {
+            _runtime.SetDisabled(startedAt);
             return BuildCycleResult(
                 enabled: false,
                 startedAt,
@@ -66,6 +73,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
         }
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var runStarted = false;
         try
         {
             var now = _utcNow().ToUniversalTime();
@@ -76,6 +84,8 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                 .Select(group => group.First())
                 .ToArray();
             var snapshot = GetSnapshot(now);
+            _runtime.BeginRun(trigger, now, uniqueKeys.Length);
+            runStarted = true;
 
             foreach (var key in uniqueKeys)
             {
@@ -88,6 +98,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                     now - lastChecked >= interval;
                 if (!due)
                 {
+                    _runtime.SkipKey(key, previous?.Status ?? ChannelReliabilityStatus.EvidenceInsufficient, now);
                     continue;
                 }
 
@@ -100,14 +111,16 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                     currentKeyResolver,
                     cancellationToken).ConfigureAwait(false);
                 _latestResults[key.Id] = result;
-                _lastCheckedAt[key.Id] = now;
+                _lastCheckedAt[key.Id] = result.CheckedAt ?? now;
 
                 if (!dryRun && result.Quarantine is { } quarantine &&
                     !snapshot.Records.Any(record =>
-                        record.GroupId == quarantine.GroupId && record.IsActiveAt(now)))
+                        record.GroupId == quarantine.GroupId &&
+                        record.IsActiveAt(result.CheckedAt ?? now)))
                 {
                     snapshot = snapshot with
                     {
+                        CapturedAt = result.CheckedAt ?? now,
                         Records = snapshot.Records
                             .Where(record => record.GroupId != quarantine.GroupId)
                             .Append(quarantine)
@@ -116,13 +129,42 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                 }
             }
 
-            return BuildCycleResult(
+            var completedAt = _utcNow().ToUniversalTime();
+            snapshot = snapshot with { CapturedAt = completedAt };
+            var cycle = BuildCycleResult(
                 enabled: true,
                 startedAt,
-                _utcNow().ToUniversalTime(),
+                completedAt,
                 uniqueKeys,
                 groups,
                 snapshot);
+            _runtime.SetNextCheckAt(completedAt + interval);
+            _runtime.CompleteRun(cycle, completedAt);
+            return BuildCycleResult(
+                enabled: true,
+                startedAt,
+                completedAt,
+                uniqueKeys,
+                groups,
+                snapshot);
+        }
+        catch (OperationCanceledException)
+        {
+            if (runStarted)
+            {
+                _runtime.Abort(ChannelReliabilityRunPhase.Cancelled, _utcNow().ToUniversalTime());
+            }
+
+            throw;
+        }
+        catch
+        {
+            if (runStarted)
+            {
+                _runtime.Abort(ChannelReliabilityRunPhase.Failed, _utcNow().ToUniversalTime());
+            }
+
+            throw;
         }
         finally
         {
@@ -148,6 +190,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
 
         if (key.GroupId is not > 0)
         {
+            _runtime.SkipKey(key, ChannelReliabilityStatus.Unconfigured, now);
             return new ChannelReliabilityResult
             {
                 KeyId = key.Id,
@@ -160,6 +203,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
 
         if (!hasBinding || !hasCredential)
         {
+            _runtime.SkipKey(key, ChannelReliabilityStatus.Unconfigured, now);
             return new ChannelReliabilityResult
             {
                 KeyId = key.Id,
@@ -172,6 +216,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
 
         if (!modelHealthByGroup.TryGetValue(key.GroupId.Value, out var modelHealth))
         {
+            _runtime.SkipKey(key, ChannelReliabilityStatus.EvidenceInsufficient, now);
             return new ChannelReliabilityResult
             {
                 KeyId = key.Id,
@@ -185,6 +230,7 @@ public sealed class ChannelReliabilityMonitor : IDisposable
         var models = ChannelReliabilityRules.SelectProbeModels(modelHealth, binding!);
         if (models.Count == 0)
         {
+            _runtime.SkipKey(key, ChannelReliabilityStatus.EvidenceInsufficient, now);
             return new ChannelReliabilityResult
             {
                 KeyId = key.Id,
@@ -200,6 +246,8 @@ public sealed class ChannelReliabilityMonitor : IDisposable
         foreach (var model in models)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            _runtime.QueueModel(key, model, _utcNow().ToUniversalTime());
+            _runtime.StartModel(key, model, _utcNow().ToUniversalTime());
             DetectorResult modelResult;
             try
             {
@@ -243,8 +291,10 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                 GroupId = key.GroupId,
                 Model = DetectorModelNames.Normalize(model) ?? model
             });
+            _runtime.CompleteModel(key, modelResults[^1], _utcNow().ToUniversalTime());
         }
 
+        var decisionAt = _utcNow().ToUniversalTime();
         var current = currentKeyResolver?.Invoke(key.Id);
         var groupChanged = currentKeyResolver is not null &&
             (current is null ||
@@ -260,21 +310,23 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                 Verdict = null,
                 ProbedModels = models,
                 ModelResults = modelResults,
-                CheckedAt = now,
+                CheckedAt = decisionAt,
                 GroupChanged = true
             };
         }
 
-        var hardResult = modelResults.FirstOrDefault(result => result.IsQuarantineEligible);
+        var hardResult = modelResults.All(result => result.ErrorCategory == DetectorErrorCategory.None)
+            ? modelResults.FirstOrDefault(result => result.IsQuarantineEligible)
+            : null;
         if (hardResult is { } hard)
         {
             var existing = snapshot.Records.FirstOrDefault(record =>
-                record.GroupId == key.GroupId.Value && record.IsActiveAt(now));
+                record.GroupId == key.GroupId.Value && record.IsActiveAt(decisionAt));
             var quarantine = existing ?? new ChannelQuarantineRecord
             {
                 GroupId = key.GroupId.Value,
-                QuarantinedAt = now,
-                ExpiresAt = now.AddHours(Math.Clamp(_settings.ReliabilityQuarantineHours, 1, 168)),
+                QuarantinedAt = decisionAt,
+                ExpiresAt = decisionAt.AddHours(Math.Clamp(_settings.ReliabilityQuarantineHours, 1, 168)),
                 Verdict = hard.Verdict,
                 SourceKeyId = key.Id,
                 SourceModel = hard.Model
@@ -283,35 +335,43 @@ public sealed class ChannelReliabilityMonitor : IDisposable
             {
                 _quarantineStore.Save(quarantine);
             }
+            _runtime.RecordQuarantine(key, quarantine, applied: !dryRun || existing is not null,
+                _utcNow().ToUniversalTime());
 
             return new ChannelReliabilityResult
             {
                 KeyId = key.Id,
                 GroupId = key.GroupId,
-                Status = ChannelReliabilityStatus.Quarantined,
+                Status = existing is not null || !dryRun
+                    ? ChannelReliabilityStatus.Quarantined
+                    : ChannelReliabilityStatus.EvidenceInsufficient,
                 Verdict = hard.Verdict,
                 ProbedModels = models,
                 ModelResults = modelResults,
-                CheckedAt = now,
+                CheckedAt = decisionAt,
                 GroupChanged = false,
-                Quarantine = quarantine
+                Quarantine = existing is not null || !dryRun ? quarantine : null,
+                WouldQuarantine = existing is null && dryRun
             };
         }
 
+        var activeQuarantine = snapshot.Records.FirstOrDefault(record =>
+            record.GroupId == key.GroupId.Value && record.IsActiveAt(decisionAt));
         return new ChannelReliabilityResult
         {
             KeyId = key.Id,
             GroupId = key.GroupId,
-            Status = ChannelReliabilityRules.ResolveStatus(modelResults),
+            Status = activeQuarantine is not null
+                ? ChannelReliabilityStatus.Quarantined
+                : ChannelReliabilityRules.ResolveStatus(modelResults),
             Verdict = modelResults
                 .Select(result => result.Verdict)
                 .FirstOrDefault(verdict => verdict != DetectorVerdict.EvidenceInsufficient),
             ProbedModels = models,
             ModelResults = modelResults,
-            CheckedAt = now,
+            CheckedAt = decisionAt,
             GroupChanged = false,
-            Quarantine = snapshot.Records.FirstOrDefault(record =>
-                record.GroupId == key.GroupId.Value && record.IsActiveAt(now))
+            Quarantine = activeQuarantine
         };
     }
 
@@ -323,6 +383,10 @@ public sealed class ChannelReliabilityMonitor : IDisposable
         IReadOnlyList<GroupInfo>? groups,
         ChannelQuarantineSnapshot snapshot)
     {
+        var activeByGroup = snapshot.Records
+            .Where(record => record.IsActiveAt(completedAt))
+            .GroupBy(record => record.GroupId)
+            .ToDictionary(group => group.Key, group => group.First());
         var results = selectedKeys
             .Select(key => _latestResults.TryGetValue(key.Id, out var result) && result.GroupId == key.GroupId
                 ? result
@@ -334,31 +398,25 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                     CheckedAt = null,
                     GroupChanged = false
                 })
+            .Select(result => NormalizeQuarantine(result, activeByGroup))
             .ToArray();
         var groupNames = (groups ?? [])
             .GroupBy(group => group.Id)
             .ToDictionary(group => group.Key, group => group.First().Name);
-        var activeByGroup = snapshot.Records
-            .Where(record => record.IsActiveAt(completedAt))
-            .GroupBy(record => record.GroupId)
-            .ToDictionary(group => group.Key, group => group.First());
         var groupSummaries = results
             .Where(result => result.GroupId is > 0)
             .GroupBy(result => result.GroupId!.Value)
             .Select(group =>
             {
                 var groupResults = group.ToArray();
-                var quarantine = activeByGroup.TryGetValue(group.Key, out var active)
-                    ? active
-                    : groupResults.Select(result => result.Quarantine).FirstOrDefault(record => record is not null);
+                var quarantine = activeByGroup.GetValueOrDefault(group.Key);
                 return new ChannelReliabilityGroupSummary
                 {
                     GroupId = group.Key,
                     GroupName = groupNames.TryGetValue(group.Key, out var name) ? name : string.Empty,
                     Status = quarantine is not null
                         ? ChannelReliabilityStatus.Quarantined
-                        : ChannelReliabilityRules.ResolveStatus(
-                            groupResults.SelectMany(result => result.ModelResults).ToArray()),
+                        : ChannelReliabilityRules.ResolveKeyStatus(groupResults),
                     Models = groupResults
                         .SelectMany(result => result.ProbedModels)
                         .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -380,8 +438,9 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                 var result = results.FirstOrDefault(candidate => candidate.KeyId == key.Id);
                 var binding = (_settings.DetectorBindings ?? [])
                     .FirstOrDefault(candidate => candidate.KeyId == key.Id);
-                var quarantine = result?.Quarantine ??
-                    (key.GroupId is > 0 && activeByGroup.TryGetValue(key.GroupId.Value, out var active) ? active : null);
+                var quarantine = key.GroupId is > 0
+                    ? activeByGroup.GetValueOrDefault(key.GroupId.Value)
+                    : null;
                 return new ChannelReliabilityKeySummary
                 {
                     KeyId = key.Id,
@@ -390,7 +449,9 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                     HasDetectorBinding = binding is { Enabled: true },
                     HasDetectorCredential = detectorApiKeys.TryGetValue(key.Id, out var secret) &&
                         !string.IsNullOrWhiteSpace(secret),
-                    Status = result?.Status ?? ChannelReliabilityStatus.EvidenceInsufficient,
+                    Status = quarantine is not null
+                        ? ChannelReliabilityStatus.Quarantined
+                        : result?.Status ?? FallbackStatus(key),
                     Verdict = result?.Verdict,
                     Models = result?.ProbedModels ?? [],
                     LastCheckedAt = result?.CheckedAt,
@@ -407,11 +468,71 @@ public sealed class ChannelReliabilityMonitor : IDisposable
             Enabled = enabled,
             StartedAt = startedAt,
             CompletedAt = completedAt,
+            Runtime = _runtime.Snapshot,
             Results = results,
             Keys = keySummaries,
             Groups = groupSummaries,
             Quarantine = snapshot
         };
+    }
+
+    private static ChannelReliabilityResult NormalizeQuarantine(
+        ChannelReliabilityResult result,
+        IReadOnlyDictionary<long, ChannelQuarantineRecord> activeByGroup)
+    {
+        if (result.GroupId is > 0 && activeByGroup.TryGetValue(result.GroupId.Value, out var active))
+        {
+            return result with
+            {
+                Status = ChannelReliabilityStatus.Quarantined,
+                Quarantine = active
+            };
+        }
+
+        if (result.Status != ChannelReliabilityStatus.Quarantined && result.Quarantine is null)
+        {
+            return result;
+        }
+
+        return result with
+        {
+            Status = ResolveStatusWithoutQuarantine(result),
+            Quarantine = null
+        };
+    }
+
+    private static ChannelReliabilityStatus ResolveStatusWithoutQuarantine(ChannelReliabilityResult result)
+    {
+        if (result.ModelResults.Any(item => item.Status == ChannelReliabilityStatus.Unavailable))
+        {
+            return ChannelReliabilityStatus.Unavailable;
+        }
+
+        if (result.ModelResults.Count > 0 && result.ModelResults.All(item =>
+                item.Status == ChannelReliabilityStatus.Passed && item.Verdict == DetectorVerdict.Passed))
+        {
+            return ChannelReliabilityStatus.Passed;
+        }
+
+        return result.Status == ChannelReliabilityStatus.Unconfigured
+            ? ChannelReliabilityStatus.Unconfigured
+            : ChannelReliabilityStatus.EvidenceInsufficient;
+    }
+
+    private ChannelReliabilityStatus FallbackStatus(ApiKeyInfo key)
+    {
+        if (key.GroupId is not > 0)
+        {
+            return ChannelReliabilityStatus.Unconfigured;
+        }
+
+        var hasBinding = (_settings.DetectorBindings ?? [])
+            .Any(binding => binding.KeyId == key.Id && binding.Enabled);
+        var hasCredential = (_credentials.DetectorApiKeys ?? [])
+            .TryGetValue(key.Id, out var secret) && !string.IsNullOrWhiteSpace(secret);
+        return hasBinding && hasCredential
+            ? ChannelReliabilityStatus.EvidenceInsufficient
+            : ChannelReliabilityStatus.Unconfigured;
     }
 
     private TimeSpan DetectionInterval() => TimeSpan.FromSeconds(

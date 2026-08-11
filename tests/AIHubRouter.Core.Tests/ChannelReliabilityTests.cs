@@ -75,15 +75,33 @@ public static class ChannelReliabilityTests
         {
             Assert(ChannelReliabilityRules.IsHardVerdict(verdict), $"{verdict} must be hard.");
             Assert(
-                new DetectorResult { Verdict = verdict }.IsQuarantineEligible,
-                $"{verdict} without an execution error must be quarantine eligible.");
+                new DetectorResult
+                {
+                    Model = DetectorModelNames.Sol,
+                    ClaimedModel = "gpt-5.6-sol",
+                    Verdict = verdict,
+                    Official = true
+                }.IsQuarantineEligible,
+                $"{verdict} with official matching evidence must be quarantine eligible.");
             Assert(
                 !new DetectorResult
                 {
+                    Model = DetectorModelNames.Sol,
+                    ClaimedModel = "gpt-5.6-sol",
                     Verdict = verdict,
+                    Official = true,
                     ErrorCategory = DetectorErrorCategory.Timeout
                 }.IsQuarantineEligible,
                 $"{verdict} with a timeout must not be quarantine eligible.");
+            Assert(
+                !new DetectorResult
+                {
+                    Model = DetectorModelNames.Sol,
+                    ClaimedModel = "gpt-5.6-terra",
+                    Verdict = verdict,
+                    Official = true
+                }.IsQuarantineEligible,
+                $"{verdict} with a mismatched claimed model must not be quarantine eligible.");
         }
 
         foreach (var verdict in softVerdicts)
@@ -95,11 +113,61 @@ public static class ChannelReliabilityTests
         [
             new DetectorResult
             {
+                Model = DetectorModelNames.Sol,
+                ClaimedModel = "gpt-5.6-sol",
                 Status = ChannelReliabilityStatus.Passed,
-                Verdict = DetectorVerdict.JuiceMixed
+                Verdict = DetectorVerdict.JuiceMixed,
+                Official = true
             }
         ]);
         Assert(status == ChannelReliabilityStatus.Quarantined, "A hard verdict must quarantine the channel.");
+
+        var mixedStatus = ChannelReliabilityRules.ResolveStatus(
+        [
+            new DetectorResult
+            {
+                Model = DetectorModelNames.Sol,
+                ClaimedModel = "gpt-5.6-sol",
+                Status = ChannelReliabilityStatus.EvidenceInsufficient,
+                Verdict = DetectorVerdict.JuiceMixed,
+                Official = true
+            },
+            new DetectorResult
+            {
+                Model = DetectorModelNames.Terra,
+                Status = ChannelReliabilityStatus.Unavailable,
+                Verdict = DetectorVerdict.EvidenceInsufficient,
+                ErrorCategory = DetectorErrorCategory.Timeout
+            }
+        ]);
+        Assert(mixedStatus == ChannelReliabilityStatus.Unavailable,
+            "An execution error must take precedence over a hard verdict from another model.");
+    }
+
+    public static void TestMapperValidatesCompleteEvidence()
+    {
+        const string valid = """
+            {"status":"complete","overall_verdict":"Juice混用","error_code":null,"official":true,"claimed_model":"gpt-5.6-sol","network_summary":{"logical_tasks":4,"logical_completed":4,"successful":4,"final_errors":0,"cancelled":0,"http_attempts":4,"retries":0,"in_flight":0},"evidence_summary":{"verdict_available":true,"hard_verdict":true,"juice_state":"juice_mixed","probability_enabled":false,"probability_formal_eligible":null,"evidence_insufficient":false}}
+            """;
+        var accepted = MapWorkerSummary(valid);
+        Assert(accepted.ErrorCategory == DetectorErrorCategory.None && accepted.IsQuarantineEligible,
+            "A complete, internally consistent official hard verdict must remain quarantine eligible.");
+
+        string[] invalid =
+        [
+            valid.Replace("\"final_errors\":0", "\"final_errors\":1", StringComparison.Ordinal),
+            valid.Replace("\"logical_completed\":4", "\"logical_completed\":3", StringComparison.Ordinal),
+            valid.Replace("\"hard_verdict\":true", "\"hard_verdict\":false", StringComparison.Ordinal),
+            valid.Replace("\"juice_state\":\"juice_mixed\"", "\"juice_state\":\"juice_pass\"", StringComparison.Ordinal)
+        ];
+        foreach (var summary in invalid)
+        {
+            var rejected = MapWorkerSummary(summary);
+            Assert(rejected.ErrorCategory == DetectorErrorCategory.InvalidResponse,
+                "A conflicting complete summary must be rejected as an invalid response.");
+            Assert(!rejected.IsQuarantineEligible,
+                "A conflicting complete summary must never become quarantine eligible.");
+        }
     }
 
     public static void TestQuarantineExpiresAfterTwentyFourHours()
@@ -192,6 +260,55 @@ public static class ChannelReliabilityTests
     {
         var json = JsonSerializer.Serialize(new ChannelReliabilityCycleResult
         {
+            Runtime = new ChannelReliabilityRuntimeSnapshot
+            {
+                Enabled = true,
+                Phase = ChannelReliabilityRunPhase.Running,
+                RunId = "run-safe-id",
+                Trigger = ChannelReliabilityTrigger.Scheduled,
+                TotalProbeCount = 2,
+                CompletedProbeCount = 1,
+                Probes =
+                [
+                    new ChannelReliabilityProbeProgress
+                    {
+                        KeyId = 11,
+                        KeyName = "safe-key",
+                        GroupId = 22,
+                        Model = DetectorModelNames.Sol,
+                        Family = ChannelReliabilityProbeFamily.Juice,
+                        Stage = ChannelReliabilityProbeStage.Completed,
+                        Network = new DetectorNetworkSummary
+                        {
+                            HttpAttempts = 2,
+                            Retries = 1,
+                            ErrorCategories =
+                            [new DetectorErrorCount { Category = "timeout", Count = 1 }]
+                        },
+                        Evidence = new DetectorEvidenceSummary
+                        {
+                            JuiceState = "juice_pass",
+                            JuiceValidCompleted = 8,
+                            VerdictAvailable = true
+                        }
+                    }
+                ],
+                Events =
+                [
+                    new ChannelReliabilityAuditEvent
+                    {
+                        Sequence = 1,
+                        RunId = "run-safe-id",
+                        EventType = ChannelReliabilityEventType.ProbeCompleted,
+                        OccurredAt = new DateTimeOffset(2026, 8, 10, 0, 1, 0, TimeSpan.Zero),
+                        KeyId = 11,
+                        GroupId = 22,
+                        Model = DetectorModelNames.Sol,
+                        Family = ChannelReliabilityProbeFamily.Juice,
+                        Stage = ChannelReliabilityProbeStage.Completed
+                    }
+                ]
+            },
             Results =
             [
                 new ChannelReliabilityResult
@@ -228,8 +345,15 @@ public static class ChannelReliabilityTests
             .ToArray();
         Assert(propertyNames.Contains("results"), "Reliability results were not serialized.");
         Assert(propertyNames.Contains("quarantine"), "Quarantine state was not serialized.");
+        Assert(propertyNames.Contains("runtime"), "Reliability runtime state was not serialized.");
+        Assert(json.Contains("httpAttempts", StringComparison.Ordinal), "Safe network metrics were not serialized.");
+        Assert(json.Contains("juiceValidCompleted", StringComparison.Ordinal), "Safe evidence metrics were not serialized.");
 
-        foreach (var forbidden in new[] { "secret", "token", "password", "cookie", "credential", "bearerToken" })
+        foreach (var forbidden in new[]
+                 {
+                     "secret", "token", "password", "cookie", "credential", "bearerToken",
+                     "apiKey", "prompt", "requestBody", "responseBody", "authorization", "stderr", "traceback"
+                 })
         {
             Assert(
                 !json.Contains(forbidden, StringComparison.OrdinalIgnoreCase),
@@ -305,6 +429,14 @@ public static class ChannelReliabilityTests
             result.Keys.Single(key => key.KeyId == 2).Status == ChannelReliabilityStatus.Unconfigured,
             "A missing detector credential must not borrow another Key's credential.");
         Assert(result.ExcludedGroupIds.Count == 0, "Passed checks must not exclude a group.");
+        Assert(result.Runtime?.Phase == ChannelReliabilityRunPhase.CompletedWithWarnings,
+            "An unconfigured selected Key must keep the runtime in a warning completion phase.");
+        Assert(result.Runtime?.Probes.Any(probe =>
+                probe.KeyId == 1 &&
+                probe.Model == DetectorModelNames.Sol &&
+                probe.Family == ChannelReliabilityProbeFamily.Network &&
+                probe.Stage == ChannelReliabilityProbeStage.Completed) == true,
+            "The runtime snapshot must expose categorized per-model probe progress.");
     }
 
     public static void TestMonitorQuarantinesHardVerdict()
@@ -350,7 +482,271 @@ public static class ChannelReliabilityTests
         Assert(result.ExcludedGroupIds.SequenceEqual([90L]), "A hard detector verdict must exclude its group.");
         Assert(store.Saved.Count == 1, "A new hard verdict must be persisted once.");
         Assert(store.Saved[0].ExpiresAt == now.AddHours(24), "Quarantine must last 24 hours.");
+        Assert(result.Runtime?.Events.Any(item =>
+                item.EventType == ChannelReliabilityEventType.QuarantineApplied &&
+                item.QuarantinedUntil == now.AddHours(24)) == true,
+            "The runtime timeline must expose the applied quarantine decision.");
     }
+
+    public static void TestMonitorDoesNotQuarantineMixedExecutionErrors()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var key = new ApiKeyInfo { Id = 12, Name = "mixed-result-key", GroupId = 120, Status = "active" };
+        var settings = new PersistentAppSettings
+        {
+            ReliabilityDetectionEnabled = true,
+            DetectorBindings =
+            [new DetectorBinding
+            {
+                KeyId = key.Id,
+                BaseUrl = "https://channel.example.test/v1",
+                Models = [DetectorModelNames.Sol, DetectorModelNames.Terra]
+            }]
+        };
+        var credentials = new PersistentCredentials
+        {
+            DetectorApiKeys = new Dictionary<long, string> { [key.Id] = "key-twelve" }
+        };
+        using var monitor = new ChannelReliabilityMonitor(
+            settings,
+            credentials,
+            new SequenceDetector(
+            [
+                (DetectorVerdict.PossibleNonGpt, DetectorErrorCategory.None),
+                (DetectorVerdict.EvidenceInsufficient, DetectorErrorCategory.Timeout)
+            ]),
+            new MemoryQuarantineStore(),
+            () => now);
+
+        var result = monitor.CheckAsync(
+                [key],
+                new Dictionary<long, IReadOnlyDictionary<string, string>>
+                {
+                    [120] = new Dictionary<string, string>
+                    {
+                        [DetectorModelNames.Sol] = "healthy",
+                        [DetectorModelNames.Terra] = "healthy"
+                    }
+                })
+            .GetAwaiter()
+            .GetResult();
+
+        Assert(result.ExcludedGroupIds.Count == 0,
+            "A hard verdict mixed with an execution timeout must not quarantine the group.");
+        Assert(result.Results.Single().Status == ChannelReliabilityStatus.Unavailable,
+            "A mixed hard verdict and timeout must surface as unavailable.");
+    }
+
+    public static void TestMonitorDryRunReportsWouldQuarantineWithoutApplyingIt()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var key = new ApiKeyInfo { Id = 13, Name = "preview-key", GroupId = 130, Status = "active" };
+        var store = new MemoryQuarantineStore();
+        using var monitor = CreateConfiguredMonitor(
+            key,
+            new RecordingDetector(DetectorVerdict.JuiceMixed),
+            store,
+            () => now);
+
+        var result = monitor.CheckAsync(
+                [key],
+                HealthyModels(130, DetectorModelNames.Sol),
+                dryRun: true,
+                force: true)
+            .GetAwaiter()
+            .GetResult();
+        var decision = result.Results.Single();
+
+        Assert(decision.WouldQuarantine, "Dry-run hard evidence must expose WouldQuarantine.");
+        Assert(decision.Status == ChannelReliabilityStatus.EvidenceInsufficient,
+            "Dry-run hard evidence must not claim that quarantine was applied.");
+        Assert(decision.Quarantine is null, "Dry-run must not expose a proposed quarantine as active state.");
+        Assert(store.Saved.Count == 0, "Dry-run must not persist quarantine state.");
+        Assert(result.Runtime?.Events.Any(item =>
+                item.EventType == ChannelReliabilityEventType.QuarantineRejected) == true,
+            "Dry-run must record that the quarantine decision was not applied.");
+    }
+
+    public static void TestMonitorKeepsActiveQuarantineVisibleAfterPassingProbe()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var key = new ApiKeyInfo { Id = 14, Name = "isolated-key", GroupId = 140, Status = "active" };
+        var store = new MemoryQuarantineStore();
+        store.Save(new ChannelQuarantineRecord
+        {
+            GroupId = 140,
+            QuarantinedAt = now.AddHours(-1),
+            ExpiresAt = now.AddHours(23),
+            Verdict = DetectorVerdict.JuiceMixed,
+            SourceKeyId = key.Id,
+            SourceModel = DetectorModelNames.Sol
+        });
+        using var monitor = CreateConfiguredMonitor(
+            key,
+            new RecordingDetector(DetectorVerdict.Passed),
+            store,
+            () => now);
+
+        var result = monitor.CheckAsync(
+                [key],
+                HealthyModels(140, DetectorModelNames.Sol),
+                force: true)
+            .GetAwaiter()
+            .GetResult();
+
+        Assert(result.Results.Single().Status == ChannelReliabilityStatus.Quarantined,
+            "An active quarantine must remain visible even when the latest probe passes.");
+        Assert(result.Keys.Single().Status == ChannelReliabilityStatus.Quarantined,
+            "Key summary and detailed result must agree while quarantine is active.");
+        Assert(result.ExcludedGroupIds.SequenceEqual([140L]),
+            "An active quarantine must continue excluding the group until expiry.");
+    }
+
+    public static void TestMonitorNormalizesQuarantineThatExpiresDuringCycle()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var current = now;
+        var key = new ApiKeyInfo { Id = 15, Name = "expiry-key", GroupId = 150, Status = "active" };
+        var store = new MemoryQuarantineStore(() => current = now.AddHours(25));
+        using var monitor = CreateConfiguredMonitor(
+            key,
+            new RecordingDetector(DetectorVerdict.JuiceMixed),
+            store,
+            () => current);
+
+        var result = monitor.CheckAsync(
+                [key],
+                HealthyModels(150, DetectorModelNames.Sol),
+                force: true)
+            .GetAwaiter()
+            .GetResult();
+
+        Assert(result.ExcludedGroupIds.Count == 0,
+            "A quarantine that expired before cycle completion must not remain in the route exclusion list.");
+        Assert(result.Results.Single().Status != ChannelReliabilityStatus.Quarantined &&
+               result.Results.Single().Quarantine is null,
+            "The detailed result must remove an expired quarantine.");
+        Assert(result.Keys.Single().Status != ChannelReliabilityStatus.Quarantined &&
+               result.Groups.Single().Status != ChannelReliabilityStatus.Quarantined,
+            "Key and group summaries must agree that an expired quarantine is inactive.");
+    }
+
+    public static void TestRuntimeMarksEmptyAndCancelledRunsHonestly()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var runtime = new ChannelReliabilityRuntime();
+        runtime.BeginRun(ChannelReliabilityTrigger.Scheduled, now, selectedKeyCount: 0);
+        runtime.CompleteRun(new ChannelReliabilityCycleResult { Keys = [] }, now.AddSeconds(1));
+        Assert(runtime.Snapshot.Phase == ChannelReliabilityRunPhase.CompletedWithWarnings,
+            "A run with no selected Key or model probe must not appear fully successful.");
+
+        var key = new ApiKeyInfo { Id = 15, Name = "cancel-key", GroupId = 150, Status = "active" };
+        runtime.BeginRun(ChannelReliabilityTrigger.Manual, now.AddMinutes(1), selectedKeyCount: 1);
+        runtime.QueueModel(key, DetectorModelNames.Sol, now.AddMinutes(1));
+        runtime.StartModel(key, DetectorModelNames.Sol, now.AddMinutes(1).AddSeconds(1));
+        runtime.Abort(ChannelReliabilityRunPhase.Cancelled, now.AddMinutes(1).AddSeconds(2));
+
+        Assert(runtime.Snapshot.Probes.Single().Stage == ChannelReliabilityProbeStage.Cancelled,
+            "A cancelled run must not leave an in-flight model marked Running.");
+        Assert(runtime.Snapshot.Events.Any(item =>
+                item.EventType == ChannelReliabilityEventType.ProbeCancelled),
+            "A cancelled model must emit a ProbeCancelled audit event.");
+    }
+
+    public static void TestMonitorReportsUnconfiguredGroupWithoutModelFlattening()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var keys = new[]
+        {
+            new ApiKeyInfo { Id = 31, Name = "configured", GroupId = 310, Status = "active" },
+            new ApiKeyInfo { Id = 32, Name = "unconfigured", GroupId = 320, Status = "active" }
+        };
+        var settings = new PersistentAppSettings
+        {
+            ReliabilityDetectionEnabled = true,
+            DetectorBindings =
+            [new DetectorBinding
+            {
+                KeyId = 31,
+                BaseUrl = "https://channel.example.test/v1",
+                Models = [DetectorModelNames.Sol]
+            }]
+        };
+        var credentials = new PersistentCredentials
+        {
+            DetectorApiKeys = new Dictionary<long, string> { [31] = "key-thirty-one" }
+        };
+        using var monitor = new ChannelReliabilityMonitor(
+            settings,
+            credentials,
+            new RecordingDetector(DetectorVerdict.Passed),
+            new MemoryQuarantineStore(),
+            () => now);
+
+        var result = monitor.CheckAsync(
+                keys,
+                new Dictionary<long, IReadOnlyDictionary<string, string>>
+                {
+                    [310] = new Dictionary<string, string>
+                    {
+                        [DetectorModelNames.Sol] = "healthy"
+                    }
+                })
+            .GetAwaiter()
+            .GetResult();
+
+        Assert(result.Keys.Single(item => item.KeyId == 32).Status == ChannelReliabilityStatus.Unconfigured,
+            "A missing binding or credential must be visible as unconfigured.");
+        Assert(result.Groups.Single(item => item.GroupId == 320).Status == ChannelReliabilityStatus.Unconfigured,
+            "Group aggregation must preserve an unconfigured Key status.");
+        Assert(result.Groups.Single(item => item.GroupId == 310).Status == ChannelReliabilityStatus.Passed,
+            "A configured passing Key must remain passed after group aggregation.");
+    }
+
+    private static ChannelReliabilityMonitor CreateConfiguredMonitor(
+        ApiKeyInfo key,
+        IChannelReliabilityDetector detector,
+        IChannelQuarantineStore store,
+        Func<DateTimeOffset> utcNow) => new(
+            new PersistentAppSettings
+            {
+                ReliabilityDetectionEnabled = true,
+                ReliabilityQuarantineHours = 24,
+                DetectorBindings =
+                [new DetectorBinding
+                {
+                    KeyId = key.Id,
+                    BaseUrl = "https://channel.example.test/v1",
+                    Models = [DetectorModelNames.Sol]
+                }]
+            },
+            new PersistentCredentials
+            {
+                DetectorApiKeys = new Dictionary<long, string> { [key.Id] = "test-key" }
+            },
+            detector,
+            store,
+            utcNow);
+
+    private static IReadOnlyDictionary<long, IReadOnlyDictionary<string, string>> HealthyModels(
+        long groupId,
+        params string[] models) =>
+        new Dictionary<long, IReadOnlyDictionary<string, string>>
+        {
+            [groupId] = models.ToDictionary(model => model, _ => "healthy")
+        };
+
+    private static DetectorResult MapWorkerSummary(string summary) =>
+        ChannelReliabilityResultMapper.MapProcessResult(
+            keyId: 1,
+            groupId: 10,
+            model: DetectorModelNames.Sol,
+            checkedAt: new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero),
+            stdout: new BoundedOutput(summary, Truncated: false),
+            exitCode: 0,
+            executionFailed: false,
+            timedOut: false,
+            cancelled: false);
 
     private sealed class RecordingDetector(DetectorVerdict verdict) : IChannelReliabilityDetector
     {
@@ -366,6 +762,9 @@ public static class ChannelReliabilityTests
             Calls.Add((binding?.KeyId ?? 0, model ?? string.Empty));
             return Task.FromResult(new DetectorResult
             {
+                Model = model ?? string.Empty,
+                ClaimedModel = DetectorModelNames.ToWorkerModel(model),
+                Official = true,
                 Verdict = verdict,
                 Status = verdict == DetectorVerdict.Passed
                     ? ChannelReliabilityStatus.Passed
@@ -375,7 +774,39 @@ public static class ChannelReliabilityTests
         }
     }
 
-    private sealed class MemoryQuarantineStore : IChannelQuarantineStore
+    private sealed class SequenceDetector(
+        IReadOnlyList<(DetectorVerdict Verdict, DetectorErrorCategory ErrorCategory)> sequence)
+        : IChannelReliabilityDetector
+    {
+        private int _index;
+
+        public Task<DetectorResult> DetectAsync(
+            DetectorBinding? binding,
+            string? model,
+            string? apiKey,
+            long? groupId = null,
+            CancellationToken cancellationToken = default)
+        {
+            var item = sequence[Math.Min(_index++, sequence.Count - 1)];
+            return Task.FromResult(new DetectorResult
+            {
+                KeyId = binding?.KeyId ?? 0,
+                GroupId = groupId,
+                Model = model ?? string.Empty,
+                ClaimedModel = DetectorModelNames.ToWorkerModel(model),
+                Official = true,
+                Verdict = item.Verdict,
+                Status = item.ErrorCategory == DetectorErrorCategory.None
+                    ? (item.Verdict == DetectorVerdict.Passed
+                        ? ChannelReliabilityStatus.Passed
+                        : ChannelReliabilityStatus.EvidenceInsufficient)
+                    : ChannelReliabilityStatus.Unavailable,
+                ErrorCategory = item.ErrorCategory
+            });
+        }
+    }
+
+    private sealed class MemoryQuarantineStore(Action? onSave = null) : IChannelQuarantineStore
     {
         public List<ChannelQuarantineRecord> Saved { get; } = [];
 
@@ -390,6 +821,7 @@ public static class ChannelReliabilityTests
         {
             Saved.RemoveAll(existing => existing.GroupId == record.GroupId);
             Saved.Add(record);
+            onSave?.Invoke();
         }
     }
 

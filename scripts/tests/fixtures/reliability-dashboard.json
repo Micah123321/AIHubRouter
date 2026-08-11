@@ -1,0 +1,88 @@
+{
+  "settings": {
+    "baseUrl": "https://aihub.top",
+    "email": "operator@example.test",
+    "hasPassword": true,
+    "hasBearerToken": false,
+    "routingMode": "economy",
+    "groupStickiness": 0.1,
+    "minimumPriceMultiplier": 0,
+    "maximumPriceMultiplier": 0.15,
+    "confidenceImpact": 1,
+    "minimumConfidence": 0.9,
+    "providerSeriesWeight": 0.2,
+    "providerSeriesCacheSeconds": 300,
+    "providerSeriesRange": "6h",
+    "providerSeriesTimezone": "Asia/Shanghai",
+    "pollingIntervalSeconds": 60,
+    "persistCredentials": true,
+    "canPersistCredentials": true,
+    "credentialsUnavailable": false,
+    "credentialProtection": "AES-GCM",
+    "themeMode": "dark",
+    "selectedKeyIds": [66383],
+    "lunaSelectedKeyIds": [66400],
+    "blacklistedGroupIds": [],
+    "reliabilityDetectionEnabled": true,
+    "reliabilityDetectionIntervalSeconds": 600,
+    "reliabilityQuarantineHours": 24,
+    "detectorBindings": [
+      {"keyId": 66383, "baseUrl": "https://channel.example.test/v1", "models": ["sol", "terra"], "enabled": true},
+      {"keyId": 66400, "baseUrl": "https://luna.example.test/v1", "models": ["luna"], "enabled": true}
+    ],
+    "detectorCredentialKeyIds": [66383, 66400]
+  },
+  "providers": [
+    {"providerId":"72","groupId":72,"plan":"A025-BugTeam","multiplier":0.05,"latency":6005,"confidence":0.993,"cacheHitRate":0.86,"sampleCount":100,"weightedScore":0.0297,"state":"推荐","checkedAt":"2026-08-10T22:46:15+08:00","canManualRoute":true,"recommended":true,"reliabilityState":"Passed","reliabilityModels":["sol","terra"]}
+  ],
+  "groups": [
+    {"id":72,"name":"A025-BugTeam","platform":"openai","status":"active","blacklisted":false},
+    {"id":41,"name":"A003-Plus","platform":"openai","status":"active","blacklisted":false}
+  ],
+  "keys": [
+    {"id":66383,"name":"t","status":"active","groupId":72,"groupName":"A025-BugTeam","selected":true,"lunaSelected":false,"reliabilityState":"Passed","reliabilityModels":["sol","terra"]},
+    {"id":66400,"name":"t2","status":"active","groupId":41,"groupName":"A003-Plus","selected":false,"lunaSelected":true,"reliabilityState":"Unavailable","reliabilityModels":["luna"]}
+  ],
+  "isBusy": false,
+  "autoRouting": false,
+  "status": "可靠性检测进行中 1/2",
+  "statusKind": "warning",
+  "providerSeriesStatus": null,
+  "providerCacheHitRateStatus": null,
+  "candidateSummary": "目标分组：72 / 方案：A025-BugTeam / 0.05x / 6005 ms",
+  "connectionSummary": "API-only / Economy",
+  "lastUpdatedAt": "2026-08-10T22:46:15+08:00",
+  "lunaRoute": {"configured":true,"hasRun":true,"healthAvailable":true,"hasTarget":true,"healthMessage":"Luna 健康数据可用。","filteredGroupCount":12,"selectedKeyCount":1,"groupId":41,"plan":"A003-Plus","multiplier":0.11,"latency":5138,"decisionReason":"已选择初始路由"},
+  "reliability": {
+    "enabled": true,
+    "keys": [
+      {"keyId":66383,"keyName":"t","groupId":72,"hasDetectorBinding":true,"hasDetectorCredential":true,"status":"Passed","models":["sol","terra"],"lastCheckedAt":"2026-08-10T22:46:10+08:00","nextCheckAt":"2026-08-10T22:56:10+08:00"},
+      {"keyId":66400,"keyName":"t2","groupId":41,"hasDetectorBinding":true,"hasDetectorCredential":true,"status":"Unavailable","models":["luna"],"lastCheckedAt":"2026-08-10T22:46:15+08:00","nextCheckAt":"2026-08-10T22:56:15+08:00"}
+    ],
+    "groups": [],
+    "quarantine": {"capturedAt":"2026-08-10T22:46:15+08:00","records":[]},
+    "runtime": {
+      "enabled": true,
+      "phase": "Running",
+      "runId": "02df5f2ec80341dfa9f961a25294d303",
+      "trigger": "Scheduled",
+      "startedAt": "2026-08-10T22:46:08+08:00",
+      "nextCheckAt": "2026-08-10T22:56:08+08:00",
+      "selectedKeyCount": 2,
+      "totalProbeCount": 2,
+      "completedProbeCount": 1,
+      "failedProbeCount": 0,
+      "timelineTruncated": false,
+      "lastEventSequence": 9,
+      "probes": [
+        {"keyId":66383,"keyName":"t","groupId":72,"model":"sol","family":"Network","stage":"Completed","queuedAt":"2026-08-10T22:46:08+08:00","startedAt":"2026-08-10T22:46:08+08:00","completedAt":"2026-08-10T22:46:10+08:00","durationMs":2000,"status":"Passed","verdict":"Passed","errorCategory":"None","network":{"logicalTasks":12,"logicalCompleted":12,"successful":12,"finalErrors":0,"cancelled":0,"httpAttempts":14,"retries":2,"inFlight":0,"errorCategories":[]},"evidence":{"verdictAvailable":true,"hardVerdict":false,"juiceState":"juice_pass","juiceValidCompleted":8,"juiceCurrentSuccess":8,"juiceMixed":0,"juiceNetworkErrors":0,"outputRequests":4,"outputExact":4,"coverageRequests":3,"coverageHardAnomaly":false,"probabilityEnabled":true,"probabilityFormalEligible":true,"evidenceInsufficient":false}},
+        {"keyId":66400,"keyName":"t2","groupId":41,"model":"luna","family":"Process","stage":"Running","queuedAt":"2026-08-10T22:46:11+08:00","startedAt":"2026-08-10T22:46:11+08:00","status":null,"verdict":null,"errorCategory":"None"}
+      ],
+      "events": [
+        {"sequence":1,"runId":"02df5f2ec80341dfa9f961a25294d303","occurredAt":"2026-08-10T22:46:08+08:00","eventType":"RunStarted","trigger":"Scheduled","keyId":null,"keyName":null,"groupId":null,"model":null,"family":"Process","stage":"Running","status":null,"verdict":null,"errorCategory":"None"},
+        {"sequence":8,"runId":"02df5f2ec80341dfa9f961a25294d303","occurredAt":"2026-08-10T22:46:10+08:00","eventType":"ProbeCompleted","trigger":"Scheduled","keyId":66383,"keyName":"t","groupId":72,"model":"sol","family":"Verdict","stage":"Completed","status":"Passed","verdict":"Passed","errorCategory":"None"},
+        {"sequence":9,"runId":"02df5f2ec80341dfa9f961a25294d303","occurredAt":"2026-08-10T22:46:11+08:00","eventType":"ProbeStarted","trigger":"Scheduled","keyId":66400,"keyName":"t2","groupId":41,"model":"luna","family":"Process","stage":"Running","status":null,"verdict":null,"errorCategory":"None"}
+      ]
+    }
+  }
+}

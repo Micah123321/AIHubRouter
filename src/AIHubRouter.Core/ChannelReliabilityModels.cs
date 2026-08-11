@@ -19,6 +19,9 @@ public static class DetectorModelNames
         return Models.FirstOrDefault(candidate =>
             string.Equals(candidate, trimmed, StringComparison.OrdinalIgnoreCase));
     }
+
+    public static string? ToWorkerModel(string? model) =>
+        Normalize(model) is { } normalized ? $"gpt-5.6-{normalized}" : null;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -84,6 +87,8 @@ public enum DetectorErrorCategory
     Timeout,
     Cancelled,
     HttpError,
+    NetworkError,
+    ProcessingError,
     StreamTruncated,
     InvalidResponse,
     EvidenceInsufficient,
@@ -116,21 +121,30 @@ public sealed record DetectorResult
     [JsonPropertyName("official")]
     public bool? Official { get; init; }
 
+    [JsonPropertyName("claimedModel")]
+    public string? ClaimedModel { get; init; }
+
     [JsonPropertyName("title")]
     public string? Title { get; init; }
 
     [JsonPropertyName("networkSummary")]
-    public string? NetworkSummary { get; init; }
+    public DetectorNetworkSummary? NetworkSummary { get; init; }
 
     [JsonPropertyName("evidenceSummary")]
-    public string? EvidenceSummary { get; init; }
+    public DetectorEvidenceSummary? EvidenceSummary { get; init; }
 
     [JsonIgnore]
     public bool IsHardAnomaly => ChannelReliabilityRules.IsHardVerdict(Verdict);
 
     [JsonIgnore]
     public bool IsQuarantineEligible =>
-        IsHardAnomaly && ErrorCategory == DetectorErrorCategory.None;
+        IsHardAnomaly &&
+        ErrorCategory == DetectorErrorCategory.None &&
+        Official == true &&
+        string.Equals(
+            DetectorModelNames.ToWorkerModel(Model),
+            ClaimedModel,
+            StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed record ChannelReliabilityResult
@@ -161,6 +175,9 @@ public sealed record ChannelReliabilityResult
 
     [JsonPropertyName("quarantine")]
     public ChannelQuarantineRecord? Quarantine { get; init; }
+
+    [JsonPropertyName("wouldQuarantine")]
+    public bool WouldQuarantine { get; init; }
 }
 
 public sealed record ChannelQuarantineRecord
@@ -282,6 +299,9 @@ public sealed record ChannelReliabilityCycleResult
     [JsonPropertyName("completedAt")]
     public DateTimeOffset? CompletedAt { get; init; }
 
+    [JsonPropertyName("runtime")]
+    public ChannelReliabilityRuntimeSnapshot? Runtime { get; init; }
+
     [JsonPropertyName("results")]
     public IReadOnlyList<ChannelReliabilityResult> Results { get; init; } = [];
 
@@ -296,90 +316,4 @@ public sealed record ChannelReliabilityCycleResult
 
     [JsonIgnore]
     public IReadOnlyList<long> ExcludedGroupIds => Quarantine.ActiveGroupIds;
-}
-
-public static class ChannelReliabilityRules
-{
-    public static DetectorModelCapabilityStatus ParseCapabilityStatus(string? value) =>
-        value?.Trim().ToLowerInvariant() switch
-        {
-            "healthy" => DetectorModelCapabilityStatus.Healthy,
-            "failed" => DetectorModelCapabilityStatus.Failed,
-            _ => DetectorModelCapabilityStatus.Unknown
-        };
-
-    public static IReadOnlyList<string> SelectProbeModels(
-        IReadOnlyDictionary<string, string>? modelHealth,
-        DetectorBinding binding)
-    {
-        ArgumentNullException.ThrowIfNull(binding);
-        if (!binding.Enabled || modelHealth is null)
-        {
-            return [];
-        }
-
-        var declaredModels = (binding.Models ?? [])
-            .Select(DetectorModelNames.Normalize)
-            .Where(model => model is not null)
-            .Select(model => model!)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        // The supported model set is intentionally fixed to the three provider models.
-        return DetectorModelNames.Models
-            .Where(model => IsHealthy(modelHealth, model) &&
-                (declaredModels.Count == 0 || declaredModels.Contains(model)))
-            .ToArray();
-    }
-
-    public static bool IsHardVerdict(DetectorVerdict verdict) =>
-        verdict is DetectorVerdict.PossibleNonGpt or
-            DetectorVerdict.JuiceMixed or
-            DetectorVerdict.ProbabilityOnlyMixed;
-
-    public static ChannelReliabilityStatus ResolveStatus(
-        IReadOnlyCollection<DetectorResult>? results)
-    {
-        if (results is null || results.Count == 0)
-        {
-            return ChannelReliabilityStatus.EvidenceInsufficient;
-        }
-
-        if (results.Any(result => result.IsQuarantineEligible))
-        {
-            return ChannelReliabilityStatus.Quarantined;
-        }
-
-        if (results.All(result => result.Status == ChannelReliabilityStatus.Unconfigured))
-        {
-            return ChannelReliabilityStatus.Unconfigured;
-        }
-
-        if (results.Any(result => result.Status == ChannelReliabilityStatus.Unavailable))
-        {
-            return ChannelReliabilityStatus.Unavailable;
-        }
-
-        if (results.All(result =>
-                result.Status == ChannelReliabilityStatus.Passed &&
-                result.Verdict == DetectorVerdict.Passed))
-        {
-            return ChannelReliabilityStatus.Passed;
-        }
-
-        return ChannelReliabilityStatus.EvidenceInsufficient;
-    }
-
-    private static bool IsHealthy(
-        IReadOnlyDictionary<string, string> modelHealth,
-        string model)
-    {
-        if (modelHealth.TryGetValue(model, out var status))
-        {
-            return ParseCapabilityStatus(status) == DetectorModelCapabilityStatus.Healthy;
-        }
-
-        return modelHealth.Any(entry =>
-            string.Equals(entry.Key, model, StringComparison.OrdinalIgnoreCase) &&
-            ParseCapabilityStatus(entry.Value) == DetectorModelCapabilityStatus.Healthy);
-    }
 }

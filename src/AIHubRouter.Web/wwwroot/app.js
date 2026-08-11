@@ -8,6 +8,10 @@ const state = {
   draftKeyIds: new Set(),
   draftLunaKeyIds: new Set(),
   draftBlacklistIds: new Set(),
+  draftDetectorBindings: new Map(),
+  detectorCredentialKeyIds: new Set(),
+  detectorCredentialClears: new Set(),
+  reliabilityDraftChanged: false,
   settingsHydrated: false,
   credentialDraftChanged: false,
   requestInFlight: false
@@ -34,7 +38,7 @@ async function api(path, options = {}) {
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.error || "请求失败。");
+    throw new Error(body.error || body.dashboard?.status || "请求失败。");
   }
   return body;
 }
@@ -161,6 +165,18 @@ function hydrateSettings(settings, force = false) {
   state.draftLunaKeyIds = new Set(settings.lunaSelectedKeyIds || []);
   for (const id of state.draftKeyIds) state.draftLunaKeyIds.delete(id);
   state.draftBlacklistIds = new Set(settings.blacklistedGroupIds);
+  state.draftDetectorBindings = new Map((settings.detectorBindings || []).map(binding => [
+    binding.keyId,
+    {
+      keyId: binding.keyId,
+      baseUrl: binding.baseUrl || "",
+      models: [...(binding.models || [])],
+      enabled: binding.enabled !== false
+    }
+  ]));
+  state.detectorCredentialKeyIds = new Set(settings.detectorCredentialKeyIds || []);
+  state.detectorCredentialClears = new Set();
+  state.reliabilityDraftChanged = false;
   state.settingsHydrated = true;
   applyTheme($("#themeSelect").value);
   updateCredentialState(settings);
@@ -328,6 +344,212 @@ function renderKeys(keys) {
     </tr>`).join("") : '<tr><td class="empty-state" colspan="7">刷新后显示 Key</td></tr>';
 }
 
+function reliabilityPhaseLabel(value) {
+  return ({
+    disabled: "已关闭", idle: "尚未运行", queued: "已排队", running: "运行中",
+    completed: "已完成", completedWithWarnings: "完成（有未确认项）",
+    failed: "失败", cancelled: "已取消"
+  })[enumValue(value)] || "尚未运行";
+}
+
+function reliabilityTriggerLabel(value) {
+  return ({
+    startup: "启动", scheduled: "定时", manual: "手动", refresh: "刷新",
+    configurationChanged: "配置变更", keyGroupChanged: "分组变更", routingCycle: "路由周期"
+  })[enumValue(value)] || "-";
+}
+
+function probeFamilyLabel(value) {
+  return ({
+    process: "过程", network: "网络", juice: "Juice", identity: "身份",
+    coverage: "覆盖率", probability: "概率", verdict: "结论"
+  })[enumValue(value)] || String(value || "-");
+}
+
+function probeStageLabel(value) {
+  return ({
+    queued: "排队", running: "运行中", completed: "完成", failed: "失败",
+    cancelled: "取消", skipped: "跳过"
+  })[enumValue(value)] || String(value || "-");
+}
+
+function eventTypeLabel(value) {
+  return ({
+    runQueued: "轮次排队", runStarted: "轮次开始", probeQueued: "探针排队",
+    probeStarted: "探针开始", probeCompleted: "探针完成", probeFailed: "探针失败",
+    probeCancelled: "探针取消", probeSkipped: "探针跳过", quarantineApplied: "已隔离",
+    quarantineRejected: "模拟隔离", runCompleted: "轮次完成", runFailed: "轮次失败",
+    runCancelled: "轮次取消"
+  })[enumValue(value)] || String(value || "-");
+}
+
+function reliabilityStateBadge(value) {
+  const normalized = enumValue(value);
+  const label = reliabilityLabel(value);
+  const className = normalized === "passed" || normalized === "completed"
+    ? "available"
+    : normalized === "quarantined" || normalized === "unavailable" || normalized === "failed"
+      ? "error"
+      : normalized === "unconfigured" ? "" : "warning";
+  return `<span class="state-badge ${className}">${escapeHtml(label)}</span>`;
+}
+
+function detectorConfigKeys(dashboard) {
+  const keys = new Map();
+  for (const key of dashboard.keys || []) {
+    keys.set(key.id, { id: key.id, name: key.name, groupId: key.groupId });
+  }
+  for (const key of dashboard.reliability?.keys || []) {
+    keys.set(key.keyId, { id: key.keyId, name: key.keyName, groupId: key.groupId });
+  }
+  for (const probe of dashboard.reliability?.runtime?.probes || []) {
+    keys.set(probe.keyId, { id: probe.keyId, name: probe.keyName, groupId: probe.groupId });
+  }
+  for (const binding of dashboard.settings.detectorBindings || []) {
+    if (!keys.has(binding.keyId)) {
+      keys.set(binding.keyId, { id: binding.keyId, name: `Key ${binding.keyId}`, groupId: null });
+    }
+  }
+  return [...keys.values()].sort((left, right) => left.id - right.id);
+}
+
+function renderReliabilityConfig(dashboard) {
+  const rowsElement = $("#reliabilityConfigRows");
+  if (state.reliabilityDraftChanged && rowsElement.children.length > 0) return;
+  const keys = detectorConfigKeys(dashboard);
+  const summaryByKey = new Map((dashboard.reliability?.keys || []).map(item => [item.keyId, item]));
+  $("#reliabilityConfigMeta").textContent = `${keys.length} 个 Key`;
+  rowsElement.innerHTML = keys.length ? keys.map(key => {
+    const binding = state.draftDetectorBindings.get(key.id) || {
+      keyId: key.id, baseUrl: "", models: [], enabled: false
+    };
+    const models = new Set(binding.models.length
+      ? binding.models.map(enumValue)
+      : ["sol", "terra", "luna"]);
+    const hasCredential = state.detectorCredentialKeyIds.has(key.id);
+    const pendingClear = state.detectorCredentialClears.has(key.id);
+    const credentialState = pendingClear ? "待清除" : hasCredential ? "已保存" : "未配置";
+    const summary = summaryByKey.get(key.id);
+    const status = summary?.status || (binding.enabled || hasCredential ? "evidenceInsufficient" : "unconfigured");
+    return `<tr data-key-id="${key.id}">
+      <td><input type="checkbox" class="detector-enabled" aria-label="启用 ${escapeHtml(key.name)} 检测" ${binding.enabled ? "checked" : ""}></td>
+      <td><strong>${escapeHtml(key.name || `Key ${key.id}`)}</strong><div class="metric-line">ID ${key.id}</div></td>
+      <td>${key.groupId ?? "-"}</td>
+      <td><input class="detector-base-url" type="url" inputmode="url" autocomplete="off" value="${escapeHtml(binding.baseUrl)}" aria-label="${escapeHtml(key.name)} 检测地址"></td>
+      <td><div class="reliability-models">
+        ${["sol", "terra", "luna"].map(model => `<label><input type="checkbox" class="detector-model" value="${model}" ${models.has(model) ? "checked" : ""}><span>${model}</span></label>`).join("")}
+      </div></td>
+      <td><div class="detector-secret-field ${pendingClear ? "pending-clear" : ""}">
+        <input class="detector-secret-input" type="password" autocomplete="new-password" placeholder="${credentialState}" aria-label="${escapeHtml(key.name)} 检测凭据">
+        <button class="icon-button detector-secret-clear" type="button" title="${pendingClear ? "撤销清除" : "清除检测凭据"}" aria-label="${pendingClear ? "撤销清除" : "清除"} ${escapeHtml(key.name)} 检测凭据" aria-pressed="${pendingClear}">×</button>
+        <span class="detector-secret-state">${credentialState}</span>
+      </div></td>
+      <td>${reliabilityStateBadge(status)}${summary?.lastCheckedAt ? `<div class="metric-line">${formatDate(summary.lastCheckedAt)}</div>` : ""}</td>
+    </tr>`;
+  }).join("") : '<tr><td class="empty-state" colspan="7">刷新后显示 Key</td></tr>';
+}
+
+function syncDetectorCredentialRow(row) {
+  const keyId = Number(row?.dataset.keyId);
+  const input = row?.querySelector(".detector-secret-input");
+  const field = row?.querySelector(".detector-secret-field");
+  const button = row?.querySelector(".detector-secret-clear");
+  const stateLabel = row?.querySelector(".detector-secret-state");
+  if (!(keyId > 0) || !input || !field || !button || !stateLabel) return;
+
+  const pendingClear = state.detectorCredentialClears.has(keyId);
+  const pendingReplace = !pendingClear && input.value.trim().length > 0;
+  const hasSavedCredential = state.detectorCredentialKeyIds.has(keyId);
+  const label = pendingClear ? "待清除" : pendingReplace ? "待替换" :
+    hasSavedCredential ? "已保存" : "未配置";
+  field.classList.toggle("pending-clear", pendingClear);
+  button.title = pendingClear ? "撤销清除" : "清除检测凭据";
+  button.setAttribute("aria-label", `${pendingClear ? "撤销清除" : "清除"} 检测凭据`);
+  button.setAttribute("aria-pressed", String(pendingClear));
+  stateLabel.textContent = label;
+}
+
+function networkMetric(summary) {
+  if (!summary) return "-";
+  const errors = (summary.errorCategories || [])
+    .map(item => `${item.category}:${item.count}`)
+    .join(" / ");
+  return `任务 ${summary.logicalCompleted ?? 0}/${summary.logicalTasks ?? 0} · 成功 ${summary.successful ?? 0} · HTTP ${summary.httpAttempts ?? 0} · 重试 ${summary.retries ?? 0}` +
+    (errors ? ` · ${errors}` : "");
+}
+
+function evidenceMetric(summary) {
+  if (!summary) return "-";
+  return `Juice ${summary.juiceState || "unknown"} ${summary.juiceValidCompleted ?? 0}` +
+    ` · 输出 ${summary.outputExact ?? 0}/${summary.outputRequests ?? 0}` +
+    ` · 覆盖 ${summary.coverageRequests ?? 0}` +
+    ` · 概率 ${summary.probabilityEnabled ? (summary.probabilityFormalEligible === true ? "有效" : "不足") : "关闭"}`;
+}
+
+function renderReliabilityProbes(runtime) {
+  const probes = runtime?.probes || [];
+  $("#reliabilityProbeMeta").textContent = `${probes.length} 项`;
+  $("#reliabilityProbeRows").innerHTML = probes.length ? probes.map(probe => {
+    const stage = enumValue(probe.stage);
+    const stageClass = stage === "completed" ? "available" : stage === "failed" ? "error" : "warning";
+    const status = probe.status ? reliabilityLabel(probe.status) : "-";
+    const verdict = probe.verdict && enumValue(probe.verdict) !== "evidenceInsufficient" ? ` · ${probe.verdict}` : "";
+    const error = probe.errorCategory && enumValue(probe.errorCategory) !== "none" ? ` · ${probe.errorCategory}` : "";
+    return `<tr>
+      <td>${escapeHtml(probe.keyName || `Key ${probe.keyId}`)}<div class="metric-line">${probe.keyId} / ${probe.groupId ?? "-"}</div></td>
+      <td>${escapeHtml(probe.model || "-")}</td>
+      <td>${escapeHtml(probeFamilyLabel(probe.family))}</td>
+      <td><span class="state-badge ${stageClass}">${escapeHtml(probeStageLabel(probe.stage))}</span></td>
+      <td>${escapeHtml(status + verdict + error)}</td>
+      <td><div class="metric-line">${escapeHtml(networkMetric(probe.network))}</div></td>
+      <td><div class="metric-line">${escapeHtml(evidenceMetric(probe.evidence))}</div></td>
+      <td>${formatDate(probe.completedAt || probe.startedAt || probe.queuedAt)}</td>
+    </tr>`;
+  }).join("") : '<tr><td class="empty-state" colspan="8">等待检测</td></tr>';
+}
+
+function renderReliabilityTimeline(runtime) {
+  const allEvents = runtime?.events || [];
+  const events = [...allEvents].sort((a, b) => b.sequence - a.sequence).slice(0, 120);
+  $("#reliabilityTimelineMeta").textContent = `${allEvents.length} 条事件${runtime?.timelineTruncated ? " · 已裁剪" : ""}`;
+  $("#reliabilityTimelineRows").innerHTML = events.length ? events.map(item => {
+    const status = item.status ? reliabilityLabel(item.status) : "-";
+    const verdict = item.verdict && enumValue(item.verdict) !== "evidenceInsufficient" ? ` · ${item.verdict}` : "";
+    const error = item.errorCategory && enumValue(item.errorCategory) !== "none" ? item.errorCategory : "";
+    const isolation = item.quarantinedUntil ? `至 ${formatDate(item.quarantinedUntil)}` : "";
+    return `<tr>
+      <td>#${item.sequence}</td>
+      <td>${formatDate(item.occurredAt)}</td>
+      <td>${escapeHtml(item.keyName || (item.keyId ? `Key ${item.keyId}` : "轮次"))}<div class="metric-line">${item.keyId ?? "-"} / ${item.groupId ?? "-"}</div></td>
+      <td>${escapeHtml(item.model || "-")}</td>
+      <td>${escapeHtml(probeFamilyLabel(item.family))}</td>
+      <td>${escapeHtml(eventTypeLabel(item.eventType))}</td>
+      <td>${escapeHtml(status + verdict)}</td>
+      <td>${escapeHtml([error, isolation].filter(Boolean).join(" · ") || "-")}</td>
+    </tr>`;
+  }).join("") : '<tr><td class="empty-state" colspan="8">等待检测</td></tr>';
+}
+
+function renderReliability(dashboard) {
+  const reliability = dashboard.reliability;
+  const runtime = reliability?.runtime;
+  const phase = enumValue(runtime?.phase || (dashboard.settings.reliabilityDetectionEnabled ? "idle" : "disabled"));
+  $("#reliabilityRuntime").dataset.phase = phase;
+  $("#reliabilityPhase").textContent = reliabilityPhaseLabel(phase);
+  $("#reliabilityTrigger").textContent = reliabilityTriggerLabel(runtime?.trigger);
+  $("#reliabilityProgress").textContent = `${runtime?.completedProbeCount ?? 0} / ${runtime?.totalProbeCount ?? 0}`;
+  $("#reliabilityFailures").textContent = String(runtime?.failedProbeCount ?? 0);
+  $("#reliabilityRunId").textContent = runtime?.runId ? runtime.runId.slice(0, 12) : "-";
+  $("#reliabilityNextCheck").textContent = formatDate(runtime?.nextCheckAt);
+  $("#reliabilitySchedule").textContent = dashboard.settings.reliabilityDetectionEnabled
+    ? `每 ${dashboard.settings.reliabilityDetectionIntervalSeconds ?? 600} 秒 · ${runtime?.selectedKeyCount ?? 0} 个 Key`
+    : "已关闭";
+  $("#reliabilityCheckButton").disabled = !dashboard.settings.reliabilityDetectionEnabled || state.requestInFlight;
+  renderReliabilityConfig(dashboard);
+  renderReliabilityProbes(runtime);
+  renderReliabilityTimeline(runtime);
+}
+
 function updateSortIndicators() {
   $$(".sort-button").forEach(button => {
     button.querySelector("span").textContent = button.dataset.sort === state.sortField
@@ -350,6 +572,7 @@ function renderDashboard(dashboard, syncSettings = false) {
   renderGroups(dashboard.groups);
   renderProviders(dashboard.providers);
   renderKeys(dashboard.keys);
+  renderReliability(dashboard);
   const providerReferenceMessage = [
     dashboard.providerSeriesStatus?.message,
     dashboard.providerCacheHitRateStatus?.message
@@ -368,6 +591,23 @@ function settingsPayload() {
   const password = $("#password").value;
   const bearerToken = $("#bearerToken").value;
   const priceRange = readPriceRange();
+  const detectorBindings = [...state.draftDetectorBindings.values()]
+    .filter(binding => binding.baseUrl || binding.enabled)
+    .map(binding => {
+      if (binding.enabled && !binding.baseUrl) {
+        throw new Error(`Key ${binding.keyId} 的检测地址不能为空。`);
+      }
+      if (binding.models.length === 0) {
+        throw new Error(`Key ${binding.keyId} 至少选择一个检测模型。`);
+      }
+      return binding;
+    });
+  const detectorApiKeys = {};
+  $$("#reliabilityConfigRows .detector-secret-input").forEach(input => {
+    const keyId = Number(input.closest("tr")?.dataset.keyId);
+    if (keyId > 0 && input.value) detectorApiKeys[keyId] = input.value;
+  });
+  for (const keyId of state.detectorCredentialClears) detectorApiKeys[keyId] = "";
   return {
     baseUrl: $("#baseUrl").value.trim(),
     email: $("#email").value.trim(),
@@ -393,7 +633,9 @@ function settingsPayload() {
     lunaSelectedKeyIds: [...state.draftLunaKeyIds],
     reliabilityDetectionEnabled: $("#reliabilityDetectionEnabled").checked,
     reliabilityDetectionIntervalSeconds: readBoundedInteger("#reliabilityDetectionIntervalSeconds", 60, 86400, "可靠性检测间隔"),
-    reliabilityQuarantineHours: readBoundedInteger("#reliabilityQuarantineHours", 1, 168, "可靠性隔离时长")
+    reliabilityQuarantineHours: readBoundedInteger("#reliabilityQuarantineHours", 1, 168, "可靠性隔离时长"),
+    detectorBindings,
+    detectorApiKeys
   };
 }
 
@@ -402,8 +644,8 @@ async function runAction(path, options = {}) {
   state.requestInFlight = true;
   if (state.dashboard) renderDashboard(state.dashboard);
   try {
-    const dashboard = await api(path, { method: "POST", ...options });
-    renderDashboard(dashboard);
+    const response = await api(path, { method: "POST", ...options });
+    renderDashboard(response.dashboard || response);
   } catch (error) {
     showStatusError(error.message);
   } finally {
@@ -480,6 +722,7 @@ $("#saveButton").addEventListener("click", async () => {
 });
 
 $("#refreshButton").addEventListener("click", () => runAction("/api/actions/refresh"));
+$("#reliabilityCheckButton").addEventListener("click", () => runAction("/api/actions/reliability-check"));
 $("#dryRunButton").addEventListener("click", () => runAction("/api/actions/dry-run"));
 $("#routeButton").addEventListener("click", () => runAction("/api/actions/route"));
 $("#manualButton").addEventListener("click", () => {
@@ -554,6 +797,57 @@ $("#keyRows").addEventListener("change", event => {
       '[data-id="' + id + '"]');
     if (otherInput) otherInput.checked = false;
   }
+});
+
+function updateDetectorBindingFromRow(row) {
+  const keyId = Number(row?.dataset.keyId);
+  if (!(keyId > 0)) return;
+  const models = [...row.querySelectorAll(".detector-model:checked")].map(input => input.value);
+  state.draftDetectorBindings.set(keyId, {
+    keyId,
+    baseUrl: row.querySelector(".detector-base-url").value.trim().replace(/\/$/, ""),
+    models,
+    enabled: row.querySelector(".detector-enabled").checked
+  });
+  state.reliabilityDraftChanged = true;
+}
+
+$("#reliabilityConfigRows").addEventListener("change", event => {
+  if (!event.target.matches(".detector-enabled, .detector-model")) return;
+  updateDetectorBindingFromRow(event.target.closest("tr"));
+});
+
+$("#reliabilityConfigRows").addEventListener("input", event => {
+  const row = event.target.closest("tr");
+  if (event.target.classList.contains("detector-base-url")) {
+    updateDetectorBindingFromRow(row);
+    return;
+  }
+  if (event.target.classList.contains("detector-secret-input")) {
+    const keyId = Number(row?.dataset.keyId);
+    state.detectorCredentialClears.delete(keyId);
+    syncDetectorCredentialRow(row);
+    state.reliabilityDraftChanged = true;
+    state.credentialDraftChanged = true;
+  }
+});
+
+$("#reliabilityConfigRows").addEventListener("click", event => {
+  const button = event.target.closest(".detector-secret-clear");
+  if (!button) return;
+  const row = button.closest("tr");
+  const keyId = Number(row?.dataset.keyId);
+  const input = row?.querySelector(".detector-secret-input");
+  if (!(keyId > 0) || !input) return;
+  input.value = "";
+  if (state.detectorCredentialClears.has(keyId)) {
+    state.detectorCredentialClears.delete(keyId);
+  } else {
+    state.detectorCredentialClears.add(keyId);
+  }
+  syncDetectorCredentialRow(row);
+  state.reliabilityDraftChanged = true;
+  state.credentialDraftChanged = true;
 });
 
 $("#providerRows").addEventListener("change", event => {

@@ -140,6 +140,7 @@ public sealed class RoutingService : IDisposable
     private readonly ProviderSeriesCache _providerSeriesCache;
     private readonly IChannelQuarantineStore _channelQuarantineStore;
     private readonly ChannelReliabilityMonitor? _reliabilityMonitor;
+    private readonly bool _runReliabilityDuringRouting;
     private PersistentCredentials _credentials;
     private AuthSession? _currentSession;
     private IAIHubApiClient? _sessionClient;
@@ -164,7 +165,8 @@ public sealed class RoutingService : IDisposable
         Func<DateTimeOffset>? utcNow = null,
         ICloudflareChallengeSolver? cloudflareChallengeSolver = null,
         IChannelQuarantineStore? channelQuarantineStore = null,
-        IChannelReliabilityDetector? reliabilityDetector = null)
+        IChannelReliabilityDetector? reliabilityDetector = null,
+        bool runReliabilityDuringRouting = true)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _credentials = credentials ?? throw new ArgumentNullException(nameof(credentials));
@@ -176,6 +178,7 @@ public sealed class RoutingService : IDisposable
         _providerSeriesCache = new ProviderSeriesCache(settings);
         _channelQuarantineStore = channelQuarantineStore ??
             new JsonChannelQuarantineStore(AppPaths.GetConfigurationDirectory());
+        _runReliabilityDuringRouting = runReliabilityDuringRouting;
         if (settings.ReliabilityDetectionEnabled)
         {
             var workerPath = Path.GetFullPath(settings.DetectorWorkerPath);
@@ -237,6 +240,61 @@ public sealed class RoutingService : IDisposable
         throw new InvalidOperationException("认证重试未返回结果。" );
     }
 
+    public async Task<ChannelReliabilityCycleResult> RunReliabilityOnceAsync(
+        bool dryRun = false,
+        bool force = false,
+        CancellationToken cancellationToken = default,
+        ChannelReliabilityTrigger trigger = ChannelReliabilityTrigger.Scheduled,
+        IReadOnlyCollection<long>? selectedKeyIds = null,
+        IReadOnlyCollection<long>? selectedLunaKeyIds = null)
+    {
+        if (_reliabilityMonitor is null)
+        {
+            return BuildDisabledReliabilityCycleResult([], _utcNow());
+        }
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var client = await GetAuthenticatedClientAsync(
+                forceRenew: attempt > 0,
+                cancellationToken);
+            try
+            {
+                await RefreshAccountDataAsync(
+                    client,
+                    _utcNow(),
+                    forceRefresh: true,
+                    cancellationToken,
+                    requireLunaHealth: true);
+                var primaryKeys = ResolveSelectedKeys(_cachedKeys, selectedKeyIds);
+                var lunaKeys = ResolveSelectedKeys(
+                    _cachedKeys,
+                    selectedLunaKeyIds ?? _settings.LunaSelectedKeyIds);
+                var reliabilityKeys = primaryKeys
+                    .Concat(lunaKeys)
+                    .GroupBy(key => key.Id)
+                    .Select(group => group.First())
+                    .ToArray();
+                return await _reliabilityMonitor.CheckAsync(
+                    reliabilityKeys,
+                    _cachedModelHealthByGroup,
+                    _cachedGroups,
+                    dryRun,
+                    force,
+                    currentKeyResolver: keyId => _cachedKeys.FirstOrDefault(key => key.Id == keyId),
+                    trigger: trigger,
+                    cancellationToken: cancellationToken);
+            }
+            catch (AIHubApiException exception)
+                when (attempt == 0 && exception.IsAuthenticationFailure && CanRenewAutomatically())
+            {
+                InvalidateSession();
+            }
+        }
+
+        throw new InvalidOperationException("认证重试未返回可靠性检测结果。" );
+    }
+
     public async Task<ManualRoutingResult> RouteManuallyAsync(
         long groupId,
         bool forceAccountRefresh = false,
@@ -284,6 +342,9 @@ public sealed class RoutingService : IDisposable
     {
         _accountCacheExpiresAt = DateTimeOffset.MinValue;
     }
+
+    public ChannelReliabilityRuntimeSnapshot? ReliabilityRuntimeSnapshot =>
+        _reliabilityMonitor?.RuntimeSnapshot;
 
     private async Task<RoutingCycleResult> RunCoreAsync(
         IAIHubApiClient client,
@@ -353,14 +414,14 @@ public sealed class RoutingService : IDisposable
             .GroupBy(key => key.Id)
             .Select(group => group.First())
             .ToArray();
-        var reliability = _reliabilityMonitor is null
+        var reliability = _reliabilityMonitor is null || !_runReliabilityDuringRouting
             ? BuildDisabledReliabilityCycleResult(reliabilityKeys, now)
             : await _reliabilityMonitor.CheckAsync(
                 reliabilityKeys,
                 _cachedModelHealthByGroup,
                 _cachedGroups,
                 dryRun,
-                force: false,
+                force: forceAccountRefresh,
                 currentKeyResolver: keyId => _cachedKeys.FirstOrDefault(key => key.Id == keyId),
                 cancellationToken: cancellationToken);
         var reliabilityExcludedGroupIds = reliability.ExcludedGroupIds.ToHashSet();

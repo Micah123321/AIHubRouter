@@ -17,7 +17,7 @@
   --danger-soft: #fbe9e7;
   --focus: #208a65;
   --shadow: 0 14px 38px rgba(25, 38, 33, 0.12);
-  font-family: Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: "Segoe UI Variable", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
 }
 
 :root[data-theme="dark"] {
@@ -199,6 +199,74 @@ input::placeholder { color: color-mix(in srgb, var(--muted) 72%, transparent); }
 .luna-route-metric { min-width: 0; display: grid; gap: 3px; }
 .luna-route-metric span { color: var(--muted); font-size: 11px; }
 .luna-route-metric strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+
+.reliability-section { padding-top: 2px; scroll-margin-top: 160px; }
+.reliability-heading > div { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.reliability-runtime {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin: 0 0 13px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+.reliability-runtime > div { min-width: 0; padding: 9px 11px; border-right: 1px solid var(--border); }
+.reliability-runtime > div:last-child { border-right: 0; }
+.reliability-runtime span { display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; }
+.reliability-runtime strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.reliability-runtime[data-phase="running"] strong { color: var(--accent); }
+.reliability-runtime[data-phase="failed"] strong,
+.reliability-runtime[data-phase="cancelled"] strong { color: var(--danger); }
+.reliability-runtime[data-phase="completedWithWarnings"] strong { color: var(--warning); }
+.reliability-subheading {
+  min-height: 28px;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.reliability-subheading h3 { margin: 0; font-size: 12px; font-weight: 680; }
+.reliability-config-frame { max-height: 260px; }
+.reliability-probe-frame { max-height: 310px; }
+.reliability-timeline-frame { max-height: 310px; }
+.reliability-config-table { min-width: 1160px; table-layout: fixed; }
+.reliability-config-table th:nth-child(1) { width: 58px; }
+.reliability-config-table th:nth-child(2) { width: 150px; }
+.reliability-config-table th:nth-child(3) { width: 72px; }
+.reliability-config-table th:nth-child(4) { width: 270px; }
+.reliability-config-table th:nth-child(5) { width: 250px; }
+.reliability-config-table th:nth-child(6) { width: 250px; }
+.reliability-config-table th:nth-child(7) { width: 110px; }
+.reliability-config-table td { height: 48px; }
+.reliability-config-table input[type="url"],
+.reliability-config-table input[type="password"] { height: 32px; }
+.reliability-models { display: flex; align-items: center; gap: 10px; }
+.reliability-models label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.reliability-models input { width: 15px; height: 15px; accent-color: var(--accent); }
+.detector-secret-field { display: grid; grid-template-columns: minmax(0, 1fr) 32px; }
+.detector-secret-state { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 14px; }
+.detector-secret-field input { border-radius: 4px 0 0 4px; }
+.detector-secret-field button { width: 32px; min-height: 32px; border-left: 0; border-radius: 0 4px 4px 0; }
+.detector-secret-field.pending-clear input { border-color: var(--danger); }
+.reliability-probe-table { min-width: 1240px; table-layout: fixed; }
+.reliability-probe-table th:nth-child(1) { width: 170px; }
+.reliability-probe-table th:nth-child(2) { width: 100px; }
+.reliability-probe-table th:nth-child(3) { width: 110px; }
+.reliability-probe-table th:nth-child(4) { width: 105px; }
+.reliability-probe-table th:nth-child(5) { width: 155px; }
+.reliability-probe-table th:nth-child(6) { width: 230px; }
+.reliability-probe-table th:nth-child(7) { width: 300px; }
+.reliability-timeline-table { min-width: 1160px; table-layout: fixed; }
+.reliability-timeline-table th:nth-child(1) { width: 68px; }
+.reliability-timeline-table th:nth-child(2) { width: 145px; }
+.reliability-timeline-table th:nth-child(3) { width: 170px; }
+.reliability-timeline-table th:nth-child(4) { width: 105px; }
+.reliability-timeline-table th:nth-child(5) { width: 110px; }
+.reliability-timeline-table th:nth-child(6) { width: 160px; }
+.reliability-timeline-table th:nth-child(7) { width: 160px; }
+.metric-line { color: var(--muted); font-size: 11px; white-space: normal; line-height: 1.35; }
+.metric-line + .metric-line { margin-top: 2px; }
 
 .connection-grid {
   display: grid;
@@ -385,6 +453,9 @@ input:focus-visible + .switch { box-shadow: 0 0 0 3px color-mix(in srgb, var(--f
   .field.wide-field { grid-column: span 1; }
   .advanced-grid { grid-template-columns: 1fr 1fr; }
   .luna-route-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .reliability-runtime { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .reliability-runtime > div:nth-child(3) { border-right: 0; }
+  .reliability-runtime > div:nth-child(-n+3) { border-bottom: 1px solid var(--border); }
 }
 
 @media (max-width: 620px) {
@@ -399,10 +470,25 @@ input:focus-visible + .switch { box-shadow: 0 0 0 3px color-mix(in srgb, var(--f
   .strategy-row { align-items: flex-start; gap: 14px; }
   .advanced-grid { grid-template-columns: 1fr; }
   .luna-route-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; }
+  .reliability-heading { align-items: flex-start; }
+  .reliability-heading > div { display: grid; gap: 3px; }
+  .reliability-runtime { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .reliability-runtime > div { border-right: 1px solid var(--border); }
+  .reliability-runtime > div:nth-child(2n) { border-right: 0; }
+  .reliability-runtime > div:nth-child(-n+4) { border-bottom: 1px solid var(--border); }
   .segmented { grid-template-columns: repeat(3, minmax(72px, 1fr)); width: 100%; }
   .switch-field { margin-left: 0; }
   .command-bar { top: 94px; margin-left: -14px; margin-right: -14px; padding-left: 14px; padding-right: 14px; }
   .command { padding: 0 11px; }
   .statusbar-inner { padding: 6px 14px; }
   #lastUpdated { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

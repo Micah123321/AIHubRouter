@@ -89,6 +89,19 @@ def _summary(
     }
 
 
+def _event(event_type: str, *, model: str | None, status: str, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build a lifecycle event without exposing request or detector data."""
+
+    event = {
+        "event": event_type,
+        "status": status,
+        "model": model if model in SUPPORTED_MODELS else None,
+    }
+    if summary is not None:
+        event["summary"] = summary
+    return event
+
+
 def _integer(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -343,11 +356,25 @@ def run_worker(request: Any) -> dict[str, Any]:
 
 def main() -> int:
     try:
-        response = run_worker(_read_request())
+        request = _read_request()
+        model = request.get("model") if isinstance(request, dict) else None
+        sys.stdout.write(json.dumps(
+            _event("probe.started", model=model, status="running"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ) + "\n")
+        sys.stdout.flush()
+        response = run_worker(request)
     except BaseException as exc:
         response = _summary(status="error", model=None, official=False, error_code=_error_code_from_exception(exc))
-    # Keep this as the sole stdout write: no credentials, prompts, responses, paths, or traces.
-    sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n")
+    # Only allow-listed lifecycle and final summary events cross the process boundary.
+    sys.stdout.write(json.dumps(
+        _event("probe.completed", model=response.get("claimed_model"), status=response.get("status", "error"), summary=response),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ) + "\n")
     sys.stdout.flush()
     return 0 if response.get("status") == "complete" else 1
 

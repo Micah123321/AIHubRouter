@@ -41,6 +41,7 @@ public interface IChannelQuarantineStore
 public sealed class JsonChannelQuarantineStore : IChannelQuarantineStore
 {
     public const string FileName = "channel-reliability.json";
+    public const int MaxHistoryEntries = 512;
     public static readonly TimeSpan DefaultIsolationDuration = TimeSpan.FromHours(24);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -99,6 +100,7 @@ public sealed class JsonChannelQuarantineStore : IChannelQuarantineStore
         {
             var document = ReadDocument();
             document.History.Add(record);
+            TrimHistory(document);
 
             var latestIndex = document.Latest.FindIndex(
                 current => current.GroupId == record.GroupId);
@@ -131,6 +133,7 @@ public sealed class JsonChannelQuarantineStore : IChannelQuarantineStore
 
         document.History ??= [];
         document.Latest ??= [];
+        TrimHistory(document);
         if (document.Latest.Count == 0 && document.History.Count > 0)
         {
             foreach (var record in document.History)
@@ -149,6 +152,16 @@ public sealed class JsonChannelQuarantineStore : IChannelQuarantineStore
         }
 
         return document;
+    }
+
+    private static void TrimHistory(ChannelQuarantineDocument document)
+    {
+        if (document.History.Count > MaxHistoryEntries)
+        {
+            document.History = document.History
+                .TakeLast(MaxHistoryEntries)
+                .ToList();
+        }
     }
 
     private void WriteDocument(ChannelQuarantineDocument document)

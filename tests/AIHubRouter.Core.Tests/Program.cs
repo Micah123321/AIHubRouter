@@ -116,11 +116,18 @@ var tests = new (string Name, Action Body)[]
     ("Reliability model capability selection", ChannelReliabilityTests.TestDetectorModelNamesAndProbeSelection),
     ("Reliability skips failed and unknown models", ChannelReliabilityTests.TestSelectProbeModelsSkipsFailedAndUnknown),
     ("Reliability hard verdict classification", ChannelReliabilityTests.TestHardVerdictClassification),
+    ("Reliability mapper validates complete evidence", ChannelReliabilityTests.TestMapperValidatesCompleteEvidence),
     ("Reliability quarantine expires after 24 hours", ChannelReliabilityTests.TestQuarantineExpiresAfterTwentyFourHours),
     ("Reliability quarantine store roundtrip", ChannelReliabilityTests.TestJsonQuarantineStoreRoundtripAndActiveFiltering),
     ("Reliability serialization excludes secrets", ChannelReliabilityTests.TestReliabilitySerializationExcludesSecrets),
     ("Reliability keeps Key bindings and model capabilities independent", ChannelReliabilityTests.TestMonitorKeepsKeyBindingsIndependent),
-    ("Reliability quarantines hard detector verdicts", ChannelReliabilityTests.TestMonitorQuarantinesHardVerdict)
+    ("Reliability quarantines hard detector verdicts", ChannelReliabilityTests.TestMonitorQuarantinesHardVerdict),
+    ("Reliability does not quarantine mixed execution errors", ChannelReliabilityTests.TestMonitorDoesNotQuarantineMixedExecutionErrors),
+    ("Reliability dry-run only reports a proposed quarantine", ChannelReliabilityTests.TestMonitorDryRunReportsWouldQuarantineWithoutApplyingIt),
+    ("Reliability keeps active quarantine visible after a pass", ChannelReliabilityTests.TestMonitorKeepsActiveQuarantineVisibleAfterPassingProbe),
+    ("Reliability expires quarantine consistently during a cycle", ChannelReliabilityTests.TestMonitorNormalizesQuarantineThatExpiresDuringCycle),
+    ("Reliability runtime reports empty and cancelled runs honestly", ChannelReliabilityTests.TestRuntimeMarksEmptyAndCancelledRunsHonestly),
+    ("Reliability preserves unconfigured group status", ChannelReliabilityTests.TestMonitorReportsUnconfiguredGroupWithoutModelFlattening)
 };
 
 var failures = 0;
