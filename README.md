@@ -44,13 +44,13 @@ CLI 路由全新版本核弹来袭，奥特曼瘫坐在椅子不知所措。
 
 ### 渠道可靠性检测
 
-路由服务按每个 `KeyId + GroupId + Model` 的内存账本检测当前实际使用的 active Key。新渠道在路由完成后立即检测；已检测渠道按每小时复检，未到一小时会显示剩余等待时间。每个 Key 通过 `KeyId` 绑定自己的检测地址、可用模型和加密检测 API 密钥；不会跨 Key 借用凭据。探针模型只取绑定声明允许的 `sol`、`terra`、`luna`，不再被 `model_health` 的 healthy 过滤阻断；健康样本缺失、未知或失败会在页面明确提示，但仍发送已启用模型探针。
+路由服务按每个 `KeyId + GroupId + Model` 的内存账本检测当前实际使用的 active Key。新渠道在路由完成后立即检测；若探针因断网、超时或证据不足无法确认，自动路由会在同一周期临时排除该分组并尝试下一顺位，每个候选最多一次，且不会把暂时性失败写入 24 小时隔离。已检测渠道按每小时复检，未到一小时会显示剩余等待时间。每个 Key 通过 `KeyId` 绑定自己的检测地址、可用模型和加密检测 API 密钥；不会跨 Key 借用凭据。探针模型只取绑定声明允许的 `sol`、`terra`、`luna`，不再被 `model_health` 的 healthy 过滤阻断；健康样本缺失、未知或失败会在页面明确提示，但仍发送已启用模型探针。Key 普通状态按 `sol > luna > terra` 选择主判定模型，辅助模型仍单独展示；任一模型满足硬异常条件时仍按原规则隔离。
 
 检测复用仓库中的 `gpt56_api_detector/gpt56_vnext` 官方 `single/low` preset；当前参考源为 detector `4.1.0`，worker 接收报告 schema `3` 并按七种 `outcome_code` 归一化：`juice_pass_*` 表示 Juice 通过，`juice_mismatch_*` 表示 Juice 与申报型号不一致，`juice_insufficient_*` 表示 Juice 证据不足，`possible_non_gpt` 表示可能不是已知 GPT。只有 `juice_mismatch_*` 和 `possible_non_gpt` 会进入“掺水隔离”；低档常见的 `juice_pass_fingerprint_unclear` 是正常通过但指纹主动弃权，不是故障。HTTP 错误、超时、截断流、证据不足或 worker 不可用不会误隔离。隔离分组会从主路由和 Luna 路由候选中排除，过期后自动恢复，不会调用 AIHub 远端禁用接口。
 
-Web 设置接口接收 `detectorBindings` 和一次性 `detectorApiKeys`，凭据写入加密 `credentials.dat`，dashboard、CLI JSON、日志和页面只显示 Key/模型/状态/到期时间，不回显密钥。Docker 镜像已带 `python3`、worker 和参考检测器；`scripts/init-docker.sh` 构建前若发现 `gpt56_api_detector` 缺失、版本不匹配或文件不完整，会从 `https://github.com/chen-006/gpt56_api_detector.git` 的固定提交 `cc9c53c43c83da8d52220b5da2e2c94d7ca4d9cf` 获取 detector `4.1.0`，并校验 `gpt56_vnext/baselines/trusted_fingerprint_v3.json`。校验通过后旧目录会自动改名为 `gpt56_api_detector.backup.<timestamp>` 并保留，新目录安装后继续构建；网络、checkout 或校验失败时不会覆盖旧目录。后续发布更新的项目脚本后，服务器仍执行同一条 `bash scripts/init-docker.sh` 即可。直接执行 `docker build` 时请先准备匹配目录。自定义部署缺少 Python 时会明确显示“检测不可用”，但不会阻断原有路由。
+Web 设置接口接收 `detectorBindings` 和一次性 `detectorApiKeys`，凭据写入加密 `credentials.dat`，dashboard、CLI JSON、日志和页面只显示 Key/模型/状态/到期时间，不回显密钥。Docker 镜像已带 `python3`、worker 和参考检测器；`scripts/init-docker.sh` 构建前若发现 `gpt56_api_detector` 缺失、版本不匹配、文件不完整或 Git `HEAD`/工作树不符合固定源，会从 `https://github.com/chen-006/gpt56_api_detector.git` 的固定提交 `cc9c53c43c83da8d52220b5da2e2c94d7ca4d9cf` 获取 detector `4.1.0`，并校验 `gpt56_vnext/baselines/trusted_fingerprint_v3.json`。正式目录必须是该提交的干净 Git 工作树，关键目录和文件不能是符号链接。校验通过后旧目录会自动改名为 `gpt56_api_detector.backup.<timestamp>` 并保留，新目录安装后继续构建；网络、checkout 或校验失败时不会覆盖旧目录。后续发布更新的项目脚本后，服务器仍执行同一条 `bash scripts/init-docker.sh` 即可。直接执行 `docker build` 时请先准备匹配目录。自定义部署缺少 Python 时会明确显示“检测不可用”，但不会阻断原有路由。
 
-Web 页面下方的“可靠性检测”工作台会实时显示运行阶段、触发来源（新渠道、每小时复检、配置变更、手动检测）、当前进度、每个 Key/模型/探针族的状态、脱敏网络统计、证据摘要和审计时间线。未到一小时、未配置、无健康样本等跳过或提示原因会单独显示。时间线与当前探针是进程内有界数据（最多 1024 个事件、512 条探针），轮询不会覆盖正在编辑的检测地址或凭据输入；容器重启后只保留最新的 24 小时隔离摘要，不提供长期逐探针历史。自动路由开关关闭时，可靠性检测仍按每小时独立运行；一次检测超时会标记失败并等待下一周期，不会让 Web Host 退出。
+Web 页面下方的“可靠性检测”工作台会实时显示运行阶段、触发来源（新渠道、每小时复检、配置变更、手动检测）、当前进度、每个 Key/模型/探针族的状态、脱敏网络统计、证据摘要和审计时间线。未到一小时、未配置、无健康样本等跳过或提示原因会单独显示。时间线与当前探针是进程内有界数据（最多 1024 个事件、512 条探针），轮询不会覆盖正在编辑的检测地址或凭据输入；容器重启后只保留最新的 24 小时隔离摘要，不提供长期逐探针历史。自动路由开关关闭时，可靠性检测仍按每小时独立运行；页面刷新会先取消正在运行的后台长探针、完成账号数据刷新，再由已排队信号重新启动可靠性检测，避免刷新请求因等待探针而被反向代理返回 502。
 
 默认 `Balanced` 对价格与首 Token 速度各占 50% 权重；`Economy` 以价格为主，`Speed` 以首 Token 速度为主。当前分组仍然有效时，新分组还必须超过“分组粘性”才会切换；默认值为 `0.10`，可在 Web、桌面端或 CLI 的 `--group-stickiness` 中调整。数值越大，越不容易因短时波动切换分组。每次结果都会告诉你为什么选它。
 
@@ -129,7 +129,7 @@ Linux 服务器在仓库目录执行下面一条命令即可完成环境文件�
 bash scripts/init-docker.sh
 ```
 
-脚本要求以 root 执行，并检查 Docker、OpenSSL 和 curl。首次运行会生成 `/etc/aihub-router-web.env`，以 `0600` 权限保存 Web 口令和凭据加密主密钥，并在启动成功后显示一次 Web 口令。后续运行会复用已有口令和主密钥，只替换同名容器，不删除 `aihub-router-web-data` 数据卷。
+脚本要求以 root 执行，并检查 Docker、OpenSSL、curl 和 Git。每次初始化都会用 Git 验证参考检测器是否为固定提交且工作树干净；检测器缺失、旧版本或不完整时还会用 Git 自动刷新。首次运行会生成 `/etc/aihub-router-web.env`，以 `0600` 权限保存 Web 口令和凭据加密主密钥，并在启动成功后显示一次 Web 口令。后续运行会复用已有口令和主密钥，只替换同名容器，不删除 `aihub-router-web-data` 数据卷。
 
 脚本默认把宿主机 `5080` 发布到 `0.0.0.0:5080`，可以直接通过服务器公网 IP 访问。此模式使用明文 HTTP，登录口令、Cookie 和管理操作不会获得 HTTPS 加密保护；请在云安全组和服务器防火墙中限制 `5080` 的来源 IP，并尽快迁移到带正式证书的 HTTPS 反向代理。脚本不会安装 Docker、修改防火墙或配置反向代理。
 

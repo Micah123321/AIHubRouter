@@ -56,15 +56,16 @@ assert_contains "$init_script" 'readonly detector_revision="cc9c53c43c83da8d5222
 assert_contains "$init_script" 'readonly detector_version="4.1.0"'
 assert_contains "$init_script" 'git clone --quiet --no-tags --no-checkout'
 assert_contains "$init_script" 'git -C "$temporary_detector" checkout --quiet --detach "$detector_revision"'
-assert_contains "$init_script" 'temporary_detector/gpt56_vnext/detector.py'
-assert_contains "$init_script" 'temporary_detector/$detector_baseline'
-assert_contains "$init_script" 'temporary_detector_version="$(tr -d '\''\r\n'\'' < "$temporary_detector/VERSION")"'
+assert_contains "$init_script" 'detector_source_revision_is_clean'
+assert_contains "$init_script" 'git -C "$source_directory" rev-parse --verify HEAD'
+assert_contains "$init_script" 'git -C "$source_directory" status --porcelain --untracked-files=all --ignored'
+assert_contains "$init_script" '[[ -d "$source_directory" && ! -L "$source_directory" ]]'
 assert_contains "$init_script" 'backup_base="$repo_root/gpt56_api_detector.backup.$(date +%Y%m%d%H%M%S)"'
 assert_contains "$init_script" 'mv -- "$detector_directory" "$detector_backup_directory"'
 assert_contains "$init_script" 'mv -- "$temporary_detector" "$detector_directory"'
 assert_contains "$init_script" 'mv -- "$backup_detector" "$detector_directory"'
 assert_before "$init_script" \
-  'temporary_detector_version="$(tr -d' \
+  'if ! detector_source_is_current "$temporary_detector"; then' \
   'mv -- "$detector_directory" "$detector_backup_directory"'
 assert_before "$init_script" \
   'mv -- "$detector_directory" "$detector_backup_directory"' \
@@ -75,7 +76,7 @@ assert_contains "$dockerignore" '.gpt56_api_detector.*'
 
 readonly function_file="$test_root/ensure_detector_source.sh"
 awk '
-  /^detector_source_is_current\(\) \{/ { capturing = 1 }
+  /^detector_source_layout_is_safe\(\) \{/ { capturing = 1 }
   /^write_environment_file\(\) \{/ { exit }
   capturing { print }
 ' "$init_script" > "$function_file"
@@ -96,6 +97,7 @@ prepare_fixture() {
 run_refresh_case() {
   local case_root="$1"
   local expect_success="$2"
+  local fake_revision="${3:-test-revision}"
   local fake_bin="$case_root/bin"
   local case_repo_root="$case_root/repo"
   local case_detector_directory="$case_repo_root/gpt56_api_detector"
@@ -115,8 +117,13 @@ run_refresh_case() {
     '  exit 0' \
     'fi' \
     'if [[ "$1" == "-C" ]]; then' \
-    '  [[ "${FAKE_GIT_FAIL_CHECKOUT:-0}" != "1" ]] || exit 1' \
-    '  exit 0' \
+    '  if [[ "$3" == "rev-parse" ]]; then printf "%s\\n" "${FAKE_GIT_REVISION:-test-revision}"; exit 0; fi' \
+    '  if [[ "$3" == "status" ]]; then exit 0; fi' \
+    '  if [[ "$3" == "checkout" ]]; then' \
+    '    [[ "${FAKE_GIT_FAIL_CHECKOUT:-0}" != "1" ]] || exit 1' \
+    '    exit 0' \
+    '  fi' \
+    '  exit 1' \
     'fi' \
     'exit 1' > "$fake_git"
   chmod +x "$fake_git"
@@ -132,6 +139,7 @@ run_refresh_case() {
 
     export PATH="$fake_bin:$PATH"
     export FAKE_GIT_FIXTURE="$case_fixture"
+    export FAKE_GIT_REVISION="$fake_revision"
     export FAKE_GIT_FAIL_CHECKOUT="$((1 - expect_success))"
     source "$function_file"
     ensure_detector_source
@@ -160,5 +168,13 @@ if run_refresh_case "$failure_case" 0; then
 fi
 [[ -f "$failure_case/repo/gpt56_api_detector/old-marker.txt" ]] ||
   { printf '断言失败：checkout 失败后旧检测器目录未保留。\n' >&2; exit 1; }
+
+revision_failure_case="$test_root/revision-failure"
+if run_refresh_case "$revision_failure_case" 1 wrong-revision; then
+  printf '断言失败：固定提交校验失败场景应返回非零状态。\n' >&2
+  exit 1
+fi
+[[ -f "$revision_failure_case/repo/gpt56_api_detector/old-marker.txt" ]] ||
+  { printf '断言失败：固定提交校验失败后旧检测器目录未保留。\n' >&2; exit 1; }
 
 printf '检测器一键刷新契约自检通过。\n'

@@ -29,6 +29,29 @@ public static class ChannelReliabilityRules
             .ToArray();
     }
 
+    public static IReadOnlyList<DetectorResult> SelectSummaryResults(
+        IReadOnlyCollection<DetectorResult> results,
+        DetectorBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(results);
+        ArgumentNullException.ThrowIfNull(binding);
+        var models = SelectProbeModels(binding);
+        var primaryModel = models.Contains(DetectorModelNames.Sol, StringComparer.OrdinalIgnoreCase)
+            ? DetectorModelNames.Sol
+            : models.Contains(DetectorModelNames.Luna, StringComparer.OrdinalIgnoreCase)
+                ? DetectorModelNames.Luna
+                : models.FirstOrDefault();
+        if (primaryModel is null)
+        {
+            return results.ToArray();
+        }
+
+        var primaryResults = results
+            .Where(result => string.Equals(result.Model, primaryModel, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return primaryResults.Length > 0 ? primaryResults : results.ToArray();
+    }
+
     public static bool IsHardVerdict(DetectorVerdict verdict) =>
         verdict is DetectorVerdict.PossibleNonGpt or
             DetectorVerdict.JuiceMixed or

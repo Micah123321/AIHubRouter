@@ -373,17 +373,20 @@ public sealed class ChannelReliabilityMonitor : IDisposable
 
         var activeQuarantine = snapshot.Records.FirstOrDefault(record =>
             record.GroupId == key.GroupId.Value && record.IsActiveAt(decisionAt));
+        var summaryResults = ChannelReliabilityRules.SelectSummaryResults(modelResults, binding!);
         return new ChannelReliabilityResult
         {
             KeyId = key.Id,
             GroupId = key.GroupId,
             Status = activeQuarantine is not null
                 ? ChannelReliabilityStatus.Quarantined
-                : ChannelReliabilityRules.ResolveStatus(modelResults),
-            Verdict = modelResults
+                : ResolveStatusWithoutQuarantine(
+                    ChannelReliabilityStatus.EvidenceInsufficient,
+                    summaryResults),
+            Verdict = activeQuarantine?.Verdict ?? summaryResults
                 .Select(result => result.Verdict)
                 .FirstOrDefault(verdict => verdict != DetectorVerdict.EvidenceInsufficient),
-            OutcomeCode = FirstOutcomeCode(modelResults),
+            OutcomeCode = activeQuarantine is null ? FirstOutcomeCode(summaryResults) : null,
             ProbedModels = probedModels,
             ModelResults = modelResults,
             CheckedAt = latestCheckedAt,
@@ -415,7 +418,11 @@ public sealed class ChannelReliabilityMonitor : IDisposable
                     CheckedAt = null,
                     GroupChanged = false
                 })
-            .Select(result => NormalizeQuarantine(result, activeByGroup))
+            .Select(result => NormalizeQuarantine(
+                result,
+                activeByGroup,
+                (_settings.DetectorBindings ?? [])
+                    .FirstOrDefault(binding => binding.KeyId == result.KeyId)))
             .ToArray();
         var groupNames = (groups ?? [])
             .GroupBy(group => group.Id)
@@ -516,13 +523,16 @@ public sealed class ChannelReliabilityMonitor : IDisposable
 
     private static ChannelReliabilityResult NormalizeQuarantine(
         ChannelReliabilityResult result,
-        IReadOnlyDictionary<long, ChannelQuarantineRecord> activeByGroup)
+        IReadOnlyDictionary<long, ChannelQuarantineRecord> activeByGroup,
+        DetectorBinding? binding)
     {
         if (result.GroupId is > 0 && activeByGroup.TryGetValue(result.GroupId.Value, out var active))
         {
             return result with
             {
                 Status = ChannelReliabilityStatus.Quarantined,
+                Verdict = active.Verdict,
+                OutcomeCode = null,
                 Quarantine = active
             };
         }
@@ -532,27 +542,36 @@ public sealed class ChannelReliabilityMonitor : IDisposable
             return result;
         }
 
+        var summaryResults = binding is null
+            ? result.ModelResults
+            : ChannelReliabilityRules.SelectSummaryResults(result.ModelResults, binding);
         return result with
         {
-            Status = ResolveStatusWithoutQuarantine(result),
+            Status = ResolveStatusWithoutQuarantine(result.Status, summaryResults),
+            Verdict = summaryResults
+                .Select(item => item.Verdict)
+                .FirstOrDefault(verdict => verdict != DetectorVerdict.EvidenceInsufficient),
+            OutcomeCode = FirstOutcomeCode(summaryResults),
             Quarantine = null
         };
     }
 
-    private static ChannelReliabilityStatus ResolveStatusWithoutQuarantine(ChannelReliabilityResult result)
+    private static ChannelReliabilityStatus ResolveStatusWithoutQuarantine(
+        ChannelReliabilityStatus fallbackStatus,
+        IReadOnlyCollection<DetectorResult> summaryResults)
     {
-        if (result.ModelResults.Any(item => item.Status == ChannelReliabilityStatus.Unavailable))
+        if (summaryResults.Any(item => item.Status == ChannelReliabilityStatus.Unavailable))
         {
             return ChannelReliabilityStatus.Unavailable;
         }
 
-        if (result.ModelResults.Count > 0 && result.ModelResults.All(item =>
+        if (summaryResults.Count > 0 && summaryResults.All(item =>
                 item.Status == ChannelReliabilityStatus.Passed && item.Verdict == DetectorVerdict.Passed))
         {
             return ChannelReliabilityStatus.Passed;
         }
 
-        return result.Status == ChannelReliabilityStatus.Unconfigured
+        return fallbackStatus == ChannelReliabilityStatus.Unconfigured
             ? ChannelReliabilityStatus.Unconfigured
             : ChannelReliabilityStatus.EvidenceInsufficient;
     }

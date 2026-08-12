@@ -80,6 +80,8 @@ var tests = new (string Name, Action Body)[]
     ("Provider series cache rejects age-expired page", TestProviderSeriesCacheRejectsAgeExpiredPage),
     ("Provider series caller cancellation propagates", TestProviderSeriesCallerCancellationPropagates),
     ("Automatic route honors explicit multi-key selection", TestAutomaticRouteHonorsExplicitMultiKeySelection),
+    ("Automatic route falls back after a transient reliability failure", TestAutomaticRouteFallsBackAfterTransientReliabilityFailure),
+    ("Automatic route stops after all reliability candidates fail", TestAutomaticRouteStopsAfterAllReliabilityCandidatesFail),
     ("Luna route filters failed model health groups", TestLunaRouteFiltersFailedModelHealthGroups),
     ("Luna health failure does not block primary route", TestLunaHealthFailureDoesNotBlockPrimaryRoute),
     ("Luna health loads after a primary-only cycle", TestLunaHealthLoadsAfterPrimaryOnlyCycle),
@@ -118,6 +120,7 @@ var tests = new (string Name, Action Body)[]
     ("Initialized empty key selection stays empty", TestInitializedEmptyKeySelectionStaysEmpty),
     ("Reliability model capability selection", ChannelReliabilityTests.TestDetectorModelNamesAndProbeSelection),
     ("Reliability model selection ignores capability health", ChannelReliabilityTests.TestSelectProbeModelsIgnoresCapabilityHealth),
+    ("Reliability summary follows the primary configured model", ChannelReliabilityTests.TestSummaryFollowsPrimaryConfiguredModel),
     ("Reliability hard verdict classification", ChannelReliabilityTests.TestHardVerdictClassification),
     ("Reliability mapper validates complete evidence", ChannelReliabilityTests.TestMapperValidatesCompleteEvidence),
     ("Reliability mapper maps all seven detector outcomes", ChannelReliabilityTests.TestMapperMapsAllSevenDetectorOutcomes),
@@ -132,6 +135,7 @@ var tests = new (string Name, Action Body)[]
     ("Reliability dry-run only reports a proposed quarantine", ChannelReliabilityTests.TestMonitorDryRunReportsWouldQuarantineWithoutApplyingIt),
     ("Reliability keeps active quarantine visible after a pass", ChannelReliabilityTests.TestMonitorKeepsActiveQuarantineVisibleAfterPassingProbe),
     ("Reliability expires quarantine consistently during a cycle", ChannelReliabilityTests.TestMonitorNormalizesQuarantineThatExpiresDuringCycle),
+    ("Reliability expiry still follows the primary model", ChannelReliabilityTests.TestExpiredQuarantineStillFollowsPrimaryModel),
     ("Reliability runtime reports empty and cancelled runs honestly", ChannelReliabilityTests.TestRuntimeMarksEmptyAndCancelledRunsHonestly),
     ("Reliability preserves unconfigured group status", ChannelReliabilityTests.TestMonitorReportsUnconfiguredGroupWithoutModelFlattening)
 };
@@ -1777,6 +1781,105 @@ static void TestAutomaticRouteHonorsExplicitMultiKeySelection()
     Assert(result.Keys.Where(key => key.Id is 10 or 11).All(key => key.GroupId == 2),
         "Automatic route did not return the updated group for every explicitly selected Key.");
 }
+
+static void TestAutomaticRouteFallsBackAfterTransientReliabilityFailure()
+{
+    var fixture = CreateReliabilityFallbackFixture(groupId =>
+        groupId == 2 ? DetectorErrorCategory.NetworkError : DetectorErrorCategory.None);
+    using var service = fixture.Service;
+
+    var result = service.RunOnceAsync().GetAwaiter().GetResult();
+
+    Assert(fixture.Api.UpdatedGroupIds.SequenceEqual([2L, 3L]),
+        "A transient probe failure did not route to the second-ranked group.");
+    Assert(result.Decision.Target?.Group.Id == 3 && result.Keys.Single().GroupId == 3,
+        "The route result did not expose the confirmed fallback group.");
+    Assert(fixture.State.Current.CurrentGroupId == 3,
+        "The route state did not persist the confirmed fallback group.");
+    Assert(fixture.State.Current.LunaCurrentGroupId == 99,
+        "A primary fallback cleared the existing Luna route state.");
+    Assert(fixture.Quarantine.Saved.Count == 0,
+        "A transient probe failure incorrectly created a persistent quarantine.");
+}
+
+static void TestAutomaticRouteStopsAfterAllReliabilityCandidatesFail()
+{
+    var fixture = CreateReliabilityFallbackFixture(_ => DetectorErrorCategory.Timeout);
+    using var service = fixture.Service;
+
+    var result = service.RunOnceAsync().GetAwaiter().GetResult();
+
+    Assert(fixture.Api.UpdatedGroupIds.SequenceEqual([2L, 3L]),
+        "A failed candidate was retried or the next candidate was not attempted exactly once.");
+    Assert(fixture.Detector.GroupIds.Where(groupId => groupId is 2 or 3).SequenceEqual([2L, 3L]),
+        "Reliability probes did not stop after exhausting the eligible groups.");
+    Assert(result.Reliability?.Results.Single().Status == ChannelReliabilityStatus.Unavailable,
+        "The exhausted route did not preserve the final transient failure status.");
+    Assert(result.Decision.ShouldSwitch && result.Decision.Target?.Group.Id == 3 &&
+           result.KeyResults.Single().Changed && result.Keys.Single().GroupId == 3,
+        "The exhausted result did not preserve the final remote write consistently.");
+    Assert(fixture.Quarantine.Saved.Count == 0,
+        "Exhausted transient failures incorrectly created a persistent quarantine.");
+}
+
+static ReliabilityFallbackFixture CreateReliabilityFallbackFixture(
+    Func<long, DetectorErrorCategory> errorForGroup)
+{
+    var now = new DateTimeOffset(2026, 8, 12, 1, 30, 0, TimeSpan.Zero);
+    var api = new StubAIHubApiClient(
+        now,
+        availableGroupIds: [2, 3],
+        usageStats:
+        [
+            UsageStat(2, 0.01, 100, now),
+            UsageStat(3, 0.02, 200, now)
+        ]);
+    var settings = new PersistentAppSettings
+    {
+        KeySelectionInitialized = true,
+        SelectedKeyIds = [10],
+        ProviderSeriesWeight = 0,
+        ReliabilityDetectionEnabled = true,
+        DetectorBindings =
+        [new DetectorBinding
+        {
+            KeyId = 10,
+            BaseUrl = "https://detector.example.test/v1",
+            Models = [DetectorModelNames.Sol]
+        }]
+    };
+    var state = new MemoryRouteStateStore(new RouteState
+    {
+        CurrentGroupId = 1,
+        LunaCurrentGroupId = 99
+    });
+    var quarantine = new RecordingQuarantineStore();
+    var detector = new GroupReliabilityDetector(now, errorForGroup);
+    var service = new RoutingService(
+        settings,
+        new PersistentCredentials
+        {
+            BearerToken = "test-token",
+            DetectorApiKeys = new Dictionary<long, string> { [10] = "detector-key" }
+        },
+        state,
+        new StubAIHubClientFactory(api),
+        utcNow: () => now,
+        channelQuarantineStore: quarantine,
+        reliabilityDetector: detector);
+    return new ReliabilityFallbackFixture(service, api, state, quarantine, detector);
+}
+
+static GroupUsageStat UsageStat(long groupId, double rate, double latency, DateTimeOffset now) => new()
+{
+    Code = $"Group {groupId}",
+    GroupId = groupId,
+    Platform = "openai",
+    RateMultiplier = rate,
+    AverageTtftMs = latency,
+    SampleCount = 100,
+    LastSampleAt = now
+};
 
 static void TestLunaRouteFiltersFailedModelHealthGroups()
 {
@@ -3427,11 +3530,14 @@ sealed class StubAIHubApiClient(
     Func<int, long, long, Exception?>? updateFailure = null,
     bool supportsRefresh = false,
     Func<int, ProviderSeriesPage>? providerSeries = null,
-    Func<int, ProviderCacheHitRatePage>? providerCacheHitRates = null) : IAIHubApiClient
+    Func<int, ProviderCacheHitRatePage>? providerCacheHitRates = null,
+    IReadOnlyList<long>? availableGroupIds = null,
+    IReadOnlyList<GroupUsageStat>? usageStats = null) : IAIHubApiClient
 {
     public int UpdateCalls { get; private set; }
     public int ProviderSeriesCalls { get; private set; }
     public int ProviderCacheHitRateCalls { get; private set; }
+    public List<long> UpdatedGroupIds { get; } = [];
 
     public Task<GroupUsageStatsPage> GetGroupUsageStatsAsync(
         string platform,
@@ -3441,7 +3547,7 @@ sealed class StubAIHubApiClient(
         Task.FromResult(new GroupUsageStatsPage
         {
             SampleLimit = samples,
-            Items =
+            Items = usageStats?.ToList() ??
             [
                 new GroupUsageStat
                 {
@@ -3497,7 +3603,8 @@ sealed class StubAIHubApiClient(
             : throw new NotSupportedException();
 
     public Task<IReadOnlyList<GroupInfo>> GetAvailableGroupsAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<GroupInfo>>([GroupForStub(2)]);
+        Task.FromResult<IReadOnlyList<GroupInfo>>(
+            (availableGroupIds ?? [2L]).Select(GroupForStub).ToArray());
 
     public Task<IReadOnlyDictionary<long, double>> GetUserGroupRatesAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyDictionary<long, double>>(new Dictionary<long, double>());
@@ -3512,6 +3619,7 @@ sealed class StubAIHubApiClient(
     public Task<ApiKeyInfo> UpdateKeyGroupAsync(long keyId, long groupId, CancellationToken cancellationToken = default)
     {
         UpdateCalls++;
+        UpdatedGroupIds.Add(groupId);
         if (updateFailure?.Invoke(UpdateCalls, keyId, groupId) is { } failure)
         {
             throw failure;
@@ -3538,4 +3646,57 @@ sealed class StubAIHubApiClient(
         Platform = "openai",
         Status = "active"
     };
+}
+
+sealed record ReliabilityFallbackFixture(
+    RoutingService Service,
+    StubAIHubApiClient Api,
+    MemoryRouteStateStore State,
+    RecordingQuarantineStore Quarantine,
+    GroupReliabilityDetector Detector);
+
+sealed class RecordingQuarantineStore : IChannelQuarantineStore
+{
+    public List<ChannelQuarantineRecord> Saved { get; } = [];
+    public IReadOnlyList<ChannelQuarantineRecord> LoadHistory() => Saved;
+    public IReadOnlyList<ChannelQuarantineRecord> LoadLatest() => Saved;
+    public IReadOnlyList<ChannelQuarantineRecord> GetActive(DateTimeOffset utcNow) =>
+        Saved.Where(record => record.IsActiveAt(utcNow)).ToArray();
+    public void Save(ChannelQuarantineRecord record) => Saved.Add(record);
+}
+
+sealed class GroupReliabilityDetector(
+    DateTimeOffset now,
+    Func<long, DetectorErrorCategory> errorForGroup) : IChannelReliabilityDetector
+{
+    public List<long> GroupIds { get; } = [];
+
+    public Task<DetectorResult> DetectAsync(
+        DetectorBinding? binding,
+        string? model,
+        string? apiKey,
+        long? groupId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var resolvedGroupId = groupId ?? 0;
+        GroupIds.Add(resolvedGroupId);
+        var error = errorForGroup(resolvedGroupId);
+        return Task.FromResult(new DetectorResult
+        {
+            GroupId = groupId,
+            Model = model ?? DetectorModelNames.Sol,
+            Status = error == DetectorErrorCategory.None
+                ? ChannelReliabilityStatus.Passed
+                : ChannelReliabilityStatus.Unavailable,
+            Verdict = error == DetectorErrorCategory.None
+                ? DetectorVerdict.Passed
+                : DetectorVerdict.EvidenceInsufficient,
+            ErrorCategory = error,
+            CheckedAt = now,
+            Official = error == DetectorErrorCategory.None,
+            ClaimedModel = error == DetectorErrorCategory.None
+                ? DetectorModelNames.ToWorkerModel(model)
+                : null
+        });
+    }
 }

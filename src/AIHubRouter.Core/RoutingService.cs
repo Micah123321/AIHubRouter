@@ -129,6 +129,11 @@ internal sealed record RouteLaneExecution(
     IReadOnlyList<KeyRouteResult> KeyResults,
     IReadOnlyList<ApiKeyInfo> UpdatedKeys);
 
+internal sealed record RouteLaneReliabilityResolution(
+    RouteLaneExecution Execution,
+    RouteEvaluation Evaluation,
+    int FilteredGroupCount);
+
 public sealed class RoutingService : IDisposable
 {
     private readonly PersistentAppSettings _settings;
@@ -533,16 +538,46 @@ public sealed class RoutingService : IDisposable
         ReplaceCachedKeys(primaryExecution.UpdatedKeys.Concat(
             lunaExecution?.UpdatedKeys ?? Array.Empty<ApiKeyInfo>()));
 
-        var routedKeyIds = primaryExecution.KeyResults
+        var groupChanged = !dryRun && primaryExecution.KeyResults
             .Concat(lunaExecution?.KeyResults ?? [])
-            .Where(result => result.Success)
-            .Select(result => result.KeyId)
-            .ToHashSet();
-        var groupChanged = reliabilityKeys.Any(previous =>
-            routedKeyIds.Contains(previous.Id) &&
-            _cachedKeys.FirstOrDefault(current => current.Id == previous.Id)?.GroupId != previous.GroupId);
+            .Any(result => result.Changed && result.Success);
         if (groupChanged && _reliabilityMonitor is not null && _runReliabilityDuringRouting)
         {
+            var primaryResolution = await ResolveReliabilityFallbackAsync(
+                client,
+                selectedKeys.Select(key => key.Id).ToArray(),
+                primaryExecution,
+                evaluation,
+                providers,
+                policy,
+                providerSeries.Page?.Groups,
+                reliabilityExcludedGroupIds,
+                cancellationToken).ConfigureAwait(false);
+            primaryExecution = primaryResolution.Execution;
+            decisionResult = primaryExecution.DecisionResult;
+            evaluation = primaryResolution.Evaluation;
+
+            if (lunaExecution is not null && lunaRoute?.Evaluation is { } initialLunaEvaluation)
+            {
+                var lunaResolution = await ResolveReliabilityFallbackAsync(
+                    client,
+                    selectedLunaKeys.Select(key => key.Id).ToArray(),
+                    lunaExecution,
+                    initialLunaEvaluation,
+                    providers,
+                    policy,
+                    providerSeries.Page?.Groups,
+                    lunaHealth.FailedGroupIds.Union(reliabilityExcludedGroupIds).ToHashSet(),
+                    cancellationToken).ConfigureAwait(false);
+                lunaExecution = lunaResolution.Execution;
+                lunaRoute = lunaRoute with
+                {
+                    Decision = lunaExecution.DecisionResult.Decision,
+                    Evaluation = lunaResolution.Evaluation,
+                    FilteredGroupCount = lunaResolution.FilteredGroupCount
+                };
+            }
+
             var currentReliabilityKeys = reliabilityKeys
                 .Select(previous => _cachedKeys.FirstOrDefault(current => current.Id == previous.Id) ?? previous)
                 .ToArray();
@@ -578,6 +613,10 @@ public sealed class RoutingService : IDisposable
             lunaRoute = lunaRoute with { KeyResults = lunaExecution.KeyResults };
         }
 
+        providerSeriesStatus = ResolveProviderSeriesStatus(
+            providerSeries.Status,
+            evaluation);
+
         return new RoutingCycleResult(
             decisionResult.Decision,
             evaluation,
@@ -596,6 +635,106 @@ public sealed class RoutingService : IDisposable
             LunaRoute = lunaRoute,
             Reliability = reliability
         };
+    }
+
+    private async Task<RouteLaneReliabilityResolution> ResolveReliabilityFallbackAsync(
+        IAIHubApiClient client,
+        IReadOnlyList<long> selectedKeyIds,
+        RouteLaneExecution initialExecution,
+        RouteEvaluation initialEvaluation,
+        IReadOnlyList<ProviderStatus> providers,
+        BalancedRoutingPolicy policy,
+        IReadOnlyDictionary<long, ProviderSeriesMetrics>? providerSeriesMetrics,
+        IReadOnlySet<long> baseExcludedGroupIds,
+        CancellationToken cancellationToken)
+    {
+        var execution = initialExecution;
+        var evaluation = initialEvaluation;
+        var excluded = baseExcludedGroupIds.ToHashSet();
+        var attempted = new HashSet<long>();
+
+        while (TryGetChangedTarget(execution, attempted, out var targetGroupId))
+        {
+            var selectedKeys = ResolveSelectedKeys(_cachedKeys, selectedKeyIds);
+            var reliability = await CheckRoutedKeysAsync(selectedKeys, cancellationToken)
+                .ConfigureAwait(false);
+            if (!RequiresRouteFallback(reliability, execution, targetGroupId))
+            {
+                break;
+            }
+
+            excluded.Add(targetGroupId);
+            var nextEvaluation = RoutingEngine.Evaluate(
+                providers,
+                _cachedGroups,
+                _cachedRates,
+                policy,
+                _utcNow(),
+                providerSeriesMetrics,
+                excluded);
+            var currentGroupId = ResolveObservedGroup(selectedKeys);
+            var nextDecision = RouteDecisionEngine.Decide(
+                nextEvaluation,
+                execution.DecisionResult.NextState with { CurrentGroupId = currentGroupId },
+                policy,
+                _utcNow(),
+                currentGroupId);
+            if (!nextDecision.Decision.ShouldSwitch || nextDecision.Decision.Target is null)
+            {
+                break;
+            }
+
+            evaluation = nextEvaluation;
+            execution = await ExecuteRouteLaneAsync(
+                client,
+                selectedKeys,
+                nextDecision,
+                dryRun: false,
+                cancellationToken).ConfigureAwait(false);
+            ReplaceCachedKeys(execution.UpdatedKeys);
+        }
+
+        return new RouteLaneReliabilityResolution(execution, evaluation, excluded.Count);
+    }
+
+    private Task<ChannelReliabilityCycleResult> CheckRoutedKeysAsync(
+        IReadOnlyList<ApiKeyInfo> selectedKeys,
+        CancellationToken cancellationToken) =>
+        _reliabilityMonitor!.CheckAsync(
+            selectedKeys,
+            _cachedModelHealthByGroup,
+            _cachedGroups,
+            force: false,
+            currentKeyResolver: keyId => _cachedKeys.FirstOrDefault(key => key.Id == keyId),
+            trigger: ChannelReliabilityTrigger.KeyGroupChanged,
+            cancellationToken: cancellationToken);
+
+    private static bool TryGetChangedTarget(
+        RouteLaneExecution execution,
+        ISet<long> attempted,
+        out long targetGroupId)
+    {
+        targetGroupId = execution.DecisionResult.Decision.Target?.Group.Id ?? 0;
+        return targetGroupId > 0 &&
+            execution.KeyResults.Any(result => result.Changed && result.Success) &&
+            attempted.Add(targetGroupId);
+    }
+
+    private static bool RequiresRouteFallback(
+        ChannelReliabilityCycleResult reliability,
+        RouteLaneExecution execution,
+        long targetGroupId)
+    {
+        var changedKeyIds = execution.KeyResults
+            .Where(result => result.Changed && result.Success)
+            .Select(result => result.KeyId)
+            .ToHashSet();
+        return reliability.Results.Any(result =>
+            changedKeyIds.Contains(result.KeyId) &&
+            result.GroupId == targetGroupId &&
+            result.Status is ChannelReliabilityStatus.Unavailable or
+                ChannelReliabilityStatus.EvidenceInsufficient or
+                ChannelReliabilityStatus.Quarantined);
     }
 
     private async Task<RouteLaneExecution> ExecuteRouteLaneAsync(

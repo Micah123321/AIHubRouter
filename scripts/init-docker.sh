@@ -42,23 +42,50 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   die '请使用 root 执行：bash scripts/init-docker.sh'
 fi
 
-for command_name in docker openssl curl; do
+for command_name in docker openssl curl git; do
   require_command "$command_name"
 done
 
 docker info >/dev/null 2>&1 || die 'Docker daemon 不可用，请先启动 Docker。'
 [[ -f "$repo_root/Dockerfile" ]] || die "未找到 Dockerfile：$repo_root"
 
+detector_source_layout_is_safe() {
+  local source_directory="$1"
+
+  [[ -d "$source_directory" && ! -L "$source_directory" ]] || return 1
+  [[ -d "$source_directory/gpt56_vnext" && ! -L "$source_directory/gpt56_vnext" ]] || return 1
+  [[ -d "$source_directory/gpt56_vnext/baselines" &&
+    ! -L "$source_directory/gpt56_vnext/baselines" ]] || return 1
+  [[ -f "$source_directory/gpt56_vnext/detector.py" &&
+    ! -L "$source_directory/gpt56_vnext/detector.py" ]] || return 1
+  [[ -f "$source_directory/gpt56_vnext/presets.py" &&
+    ! -L "$source_directory/gpt56_vnext/presets.py" ]] || return 1
+  [[ -f "$source_directory/VERSION" && ! -L "$source_directory/VERSION" ]] || return 1
+  [[ -f "$source_directory/$detector_baseline" &&
+    ! -L "$source_directory/$detector_baseline" ]] || return 1
+}
+
+detector_source_revision_is_clean() {
+  local source_directory="$1"
+  local source_revision
+  local source_status
+
+  if ! source_revision="$(git -C "$source_directory" rev-parse --verify HEAD 2>/dev/null)"; then
+    return 1
+  fi
+  [[ "$source_revision" == "$detector_revision" ]] || return 1
+  if ! source_status="$(git -C "$source_directory" status --porcelain --untracked-files=all --ignored 2>/dev/null)"; then
+    return 1
+  fi
+  [[ -z "$source_status" ]]
+}
+
 detector_source_is_current() {
   local source_directory="$1"
   local version_file="$source_directory/VERSION"
 
-  if [[ ! -f "$source_directory/gpt56_vnext/detector.py" ||
-    ! -f "$source_directory/gpt56_vnext/presets.py" ||
-    ! -f "$version_file" ||
-    ! -f "$source_directory/$detector_baseline" ]]; then
-    return 1
-  fi
+  detector_source_layout_is_safe "$source_directory" || return 1
+  detector_source_revision_is_clean "$source_directory" || return 1
 
   local detector_local_version
   if ! detector_local_version="$(tr -d '\r\n' < "$version_file")"; then
@@ -78,19 +105,8 @@ fetch_detector_source() {
     die "参考检测器不包含固定版本：$detector_revision；现有目录未被修改。"
   fi
 
-  if [[ ! -f "$temporary_detector/gpt56_vnext/detector.py" ||
-    ! -f "$temporary_detector/gpt56_vnext/presets.py" ||
-    ! -f "$temporary_detector/VERSION" ||
-    ! -f "$temporary_detector/$detector_baseline" ]]; then
-    die "固定版本缺少 4.1.0 必需文件；现有目录未被修改。"
-  fi
-
-  local temporary_detector_version
-  if ! temporary_detector_version="$(tr -d '\r\n' < "$temporary_detector/VERSION")"; then
-    die "无法读取固定版本 VERSION；现有目录未被修改。"
-  fi
-  if [[ "$temporary_detector_version" != "$detector_version" ]]; then
-    die "固定提交版本不匹配：期望 $detector_version，当前 $temporary_detector_version；现有目录未被修改。"
+  if ! detector_source_is_current "$temporary_detector"; then
+    die "固定提交校验失败：需要干净的 $detector_revision、版本 $detector_version 和完整必需文件；现有目录未被修改。"
   fi
 }
 
@@ -145,7 +161,6 @@ ensure_detector_source() {
     printf '未找到参考检测器，准备获取固定版本：%s\n' "$detector_revision"
   fi
 
-  require_command git
   temporary_detector_parent="$(mktemp -d "$repo_root/.gpt56_api_detector.XXXXXX")"
   local temporary_detector="$temporary_detector_parent/source"
   fetch_detector_source "$temporary_detector"

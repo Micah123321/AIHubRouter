@@ -46,6 +46,38 @@ public static class ChannelReliabilityTests
         Assert(disabled.Count == 0, "Disabled detector bindings must not be probed.");
     }
 
+    public static void TestSummaryFollowsPrimaryConfiguredModel()
+    {
+        var binding = new DetectorBinding
+        {
+            KeyId = 1,
+            Models = [DetectorModelNames.Sol, DetectorModelNames.Terra]
+        };
+        var results = new DetectorResult[]
+        {
+            new()
+            {
+                Model = DetectorModelNames.Sol,
+                Status = ChannelReliabilityStatus.Passed,
+                Verdict = DetectorVerdict.Passed
+            },
+            new()
+            {
+                Model = DetectorModelNames.Terra,
+                Status = ChannelReliabilityStatus.Unavailable,
+                Verdict = DetectorVerdict.EvidenceInsufficient,
+                ErrorCategory = DetectorErrorCategory.NetworkError
+            }
+        };
+
+        var summary = ChannelReliabilityRules.SelectSummaryResults(results, binding);
+
+        Assert(summary.Count == 1 && summary[0].Model == DetectorModelNames.Sol,
+            "Sol must be the primary summary model when it is configured.");
+        Assert(ChannelReliabilityRules.ResolveStatus(summary) == ChannelReliabilityStatus.Passed,
+            "An unavailable Terra probe must not override a passing Sol summary.");
+    }
+
     public static void TestHardVerdictClassification()
     {
         var hardVerdicts = new[]
@@ -647,8 +679,8 @@ public static class ChannelReliabilityTests
 
         Assert(result.ExcludedGroupIds.Count == 0,
             "A hard verdict mixed with an execution timeout must not quarantine the group.");
-        Assert(result.Results.Single().Status == ChannelReliabilityStatus.Unavailable,
-            "A mixed hard verdict and timeout must surface as unavailable.");
+        Assert(result.Results.Single().Status == ChannelReliabilityStatus.EvidenceInsufficient,
+            "A suppressed hard verdict must remain evidence-insufficient when only auxiliary Terra times out.");
     }
 
     public static void TestMonitorDryRunReportsWouldQuarantineWithoutApplyingIt()
@@ -710,6 +742,8 @@ public static class ChannelReliabilityTests
 
         Assert(result.Results.Single().Status == ChannelReliabilityStatus.Quarantined,
             "An active quarantine must remain visible even when the latest probe passes.");
+        Assert(result.Results.Single().Verdict == DetectorVerdict.JuiceMixed,
+            "An active quarantine must retain the verdict that caused the isolation.");
         Assert(result.Keys.Single().Status == ChannelReliabilityStatus.Quarantined,
             "Key summary and detailed result must agree while quarantine is active.");
         Assert(result.ExcludedGroupIds.SequenceEqual([140L]),
@@ -743,6 +777,63 @@ public static class ChannelReliabilityTests
         Assert(result.Keys.Single().Status != ChannelReliabilityStatus.Quarantined &&
                result.Groups.Single().Status != ChannelReliabilityStatus.Quarantined,
             "Key and group summaries must agree that an expired quarantine is inactive.");
+    }
+
+    public static void TestExpiredQuarantineStillFollowsPrimaryModel()
+    {
+        var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+        var current = now;
+        var key = new ApiKeyInfo { Id = 16, Name = "primary-key", GroupId = 160, Status = "active" };
+        var store = new MemoryQuarantineStore();
+        store.Save(new ChannelQuarantineRecord
+        {
+            GroupId = 160,
+            QuarantinedAt = now.AddHours(-1),
+            ExpiresAt = now.AddHours(1),
+            Verdict = DetectorVerdict.JuiceMixed,
+            SourceKeyId = key.Id,
+            SourceModel = DetectorModelNames.Terra
+        });
+        var settings = new PersistentAppSettings
+        {
+            ReliabilityDetectionEnabled = true,
+            DetectorBindings =
+            [new DetectorBinding
+            {
+                KeyId = key.Id,
+                BaseUrl = "https://channel.example.test/v1",
+                Models = [DetectorModelNames.Sol, DetectorModelNames.Terra]
+            }]
+        };
+        var credentials = new PersistentCredentials
+        {
+            DetectorApiKeys = new Dictionary<long, string> { [key.Id] = "test-key" }
+        };
+        using var monitor = new ChannelReliabilityMonitor(
+            settings,
+            credentials,
+            new PrimaryPassAuxiliaryFailureDetector(),
+            store,
+            () => current);
+
+        var result = monitor.CheckAsync(
+                [key],
+                HealthyModels(160, DetectorModelNames.Sol, DetectorModelNames.Terra),
+                force: true,
+                currentKeyResolver: _ =>
+                {
+                    current = now.AddHours(2);
+                    return key;
+                })
+            .GetAwaiter()
+            .GetResult();
+
+        Assert(result.Results.Single().Status == ChannelReliabilityStatus.Passed,
+            "An expired quarantine must restore the passing Sol summary.");
+        Assert(result.Results.Single().Verdict == DetectorVerdict.Passed,
+            "An expired quarantine must restore the primary model verdict.");
+        Assert(result.Keys.Single().Status == ChannelReliabilityStatus.Passed,
+            "Key status must follow Sol when only auxiliary Terra is unavailable.");
     }
 
     public static void TestRuntimeMarksEmptyAndCancelledRunsHonestly()
@@ -971,6 +1062,30 @@ public static class ChannelReliabilityTests
                         : ChannelReliabilityStatus.EvidenceInsufficient)
                     : ChannelReliabilityStatus.Unavailable,
                 ErrorCategory = item.ErrorCategory
+            });
+        }
+    }
+
+    private sealed class PrimaryPassAuxiliaryFailureDetector : IChannelReliabilityDetector
+    {
+        public Task<DetectorResult> DetectAsync(
+            DetectorBinding? binding,
+            string? model,
+            string? apiKey,
+            long? groupId = null,
+            CancellationToken cancellationToken = default)
+        {
+            var primary = string.Equals(model, DetectorModelNames.Sol, StringComparison.OrdinalIgnoreCase);
+            return Task.FromResult(new DetectorResult
+            {
+                KeyId = binding?.KeyId ?? 0,
+                GroupId = groupId,
+                Model = model ?? string.Empty,
+                ClaimedModel = DetectorModelNames.ToWorkerModel(model),
+                Official = true,
+                Status = primary ? ChannelReliabilityStatus.Passed : ChannelReliabilityStatus.Unavailable,
+                Verdict = primary ? DetectorVerdict.Passed : DetectorVerdict.EvidenceInsufficient,
+                ErrorCategory = primary ? DetectorErrorCategory.None : DetectorErrorCategory.NetworkError
             });
         }
     }

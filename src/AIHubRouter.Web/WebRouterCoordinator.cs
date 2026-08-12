@@ -314,17 +314,32 @@ public sealed class WebRouterCoordinator : BackgroundService
         return GetDashboard();
     }
 
-    public Task<WebDashboard> RunCycleAsync(
+    public async Task<WebDashboard> RunCycleAsync(
         bool dryRun,
         bool forceRefresh,
         CancellationToken cancellationToken)
     {
-        if (forceRefresh)
+        if (!forceRefresh)
         {
-            QueueReliabilityCheck(ChannelReliabilityTrigger.Refresh);
+            return await RunCycleCoreAsync(dryRun, forceRefresh: false, cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        return RunCycleCoreAsync(dryRun, forceRefresh, cancellationToken);
+        CancelActiveReliabilityCheck();
+        await RunCycleCoreAsync(dryRun, forceRefresh: true, cancellationToken)
+            .ConfigureAwait(false);
+        QueueReliabilityCheck(ChannelReliabilityTrigger.Refresh);
+        return GetDashboard();
+    }
+
+    private void CancelActiveReliabilityCheck()
+    {
+        CancellationTokenSource? active;
+        lock (_stateLock)
+        {
+            active = _activeReliabilityCancellation;
+        }
+        TryCancel(active);
     }
 
     public ReliabilityQueueResponse QueueReliabilityCheck(
@@ -489,6 +504,7 @@ public sealed class WebRouterCoordinator : BackgroundService
         {
             ChannelReliabilityTrigger trigger;
             long[]? keyIds = null;
+            CancellationTokenSource? cycleCancellation = null;
             var forceRefresh = false;
             var shouldRun = false;
             lock (_stateLock)
@@ -508,6 +524,8 @@ public sealed class WebRouterCoordinator : BackgroundService
                     _pendingReliabilityKeyIds.Clear();
                     _pendingReliabilityAllKeys = false;
                     _reliabilityRunning = true;
+                    cycleCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                    _activeReliabilityCancellation = cycleCancellation;
                 }
             }
 
@@ -520,19 +538,33 @@ public sealed class WebRouterCoordinator : BackgroundService
                         forceRefresh: forceRefresh,
                         trigger: trigger,
                         keyIds: keyIds,
+                        cycleToken: cycleCancellation!.Token,
                         stoppingToken: stoppingToken);
+                }
+                catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                {
+                    lock (_stateLock)
+                    {
+                        _status = "可靠性检测已取消。";
+                        _statusKind = "warning";
+                    }
                 }
                 finally
                 {
                     lock (_stateLock)
                     {
-                    _reliabilityRunning = false;
+                        if (ReferenceEquals(_activeReliabilityCancellation, cycleCancellation))
+                        {
+                            _activeReliabilityCancellation = null;
+                        }
+                        _reliabilityRunning = false;
                         if (_pendingReliabilityTrigger is null &&
                             _nextReliabilityRun <= DateTimeOffset.UtcNow)
                         {
                             _nextReliabilityRun = DateTimeOffset.UtcNow.AddHours(1);
                         }
                     }
+                    cycleCancellation?.Dispose();
                 }
             }
 
@@ -616,16 +648,15 @@ public sealed class WebRouterCoordinator : BackgroundService
         bool forceRefresh,
         ChannelReliabilityTrigger trigger,
         IReadOnlyCollection<long>? keyIds,
+        CancellationToken cycleToken,
         CancellationToken stoppingToken)
     {
-        await _operationGate.WaitAsync(stoppingToken);
+        await _operationGate.WaitAsync(cycleToken);
         try
         {
-            await _reliabilityGate.WaitAsync(stoppingToken);
-            using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            await _reliabilityGate.WaitAsync(cycleToken);
             lock (_stateLock)
             {
-                _activeReliabilityCancellation = linkedCancellation;
                 _status = "可靠性检测运行中。";
                 _statusKind = "neutral";
             }
@@ -636,79 +667,71 @@ public sealed class WebRouterCoordinator : BackgroundService
                 var result = await _reliabilityService!.RunReliabilityOnceAsync(
                     dryRun,
                     forceRefresh,
-                    linkedCancellation.Token,
+                    cycleToken,
                     trigger,
                     selectedKeyIds: keyIds,
                     selectedLunaKeyIds: keyIds is null ? null : []);
-                lock (_stateLock)
-                {
-                    _lastReliability = MergeReliabilityCycles(_lastReliability, result);
-                    result = _lastReliability;
-                    if (_lastResult is { } routeResult)
-                    {
-                        _lastResult = routeResult with { Reliability = result };
-                    }
-
-                    _lastUpdatedAt = result.CompletedAt;
-                    _nextReliabilityRun = result.Runtime?.NextCheckAt ?? DateTimeOffset.UtcNow.AddHours(1);
-                    _status = BuildReliabilityStatus(result) ?? "可靠性检测已完成。";
-                    _statusKind = result.Keys.Any(key => key.Status is
-                        ChannelReliabilityStatus.Unavailable or ChannelReliabilityStatus.EvidenceInsufficient)
-                        ? "warning"
-                        : "success";
-                    var decisionStartedAt = result.StartedAt ?? result.CompletedAt ?? DateTimeOffset.MaxValue;
-                    if (!dryRun && _settings.AutoRoutingEnabled && result.Results.Any(item =>
-                            item.Quarantine is { } quarantine &&
-                            quarantine.QuarantinedAt >= decisionStartedAt))
-                    {
-                        _nextAutoRun = DateTimeOffset.MinValue;
-                    }
-                }
+                ApplyReliabilityResult(result, dryRun);
             }
             catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
             {
-                lock (_stateLock)
-                {
-                    var runtime = _reliabilityService?.ReliabilityRuntimeSnapshot;
-                    if (_lastReliability is { } previous && runtime is not null)
-                    {
-                        _lastReliability = previous with { Runtime = runtime };
-                    }
-
-                    _status = "可靠性检测已取消。";
-                    _statusKind = "warning";
-                }
+                SetReliabilityInterruption("可靠性检测已取消。", "warning");
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 _logger.LogError(exception, "Reliability detection cycle failed; the scheduler will retry.");
-                lock (_stateLock)
-                {
-                    var runtime = _reliabilityService?.ReliabilityRuntimeSnapshot;
-                    if (_lastReliability is { } previous && runtime is not null)
-                    {
-                        _lastReliability = previous with { Runtime = runtime };
-                    }
-
-                    _status = $"可靠性检测失败：{SafeMessage(exception)}";
-                    _statusKind = "error";
-                }
+                SetReliabilityInterruption($"可靠性检测失败：{SafeMessage(exception)}", "error");
             }
             finally
             {
-                lock (_stateLock)
-                {
-                    if (ReferenceEquals(_activeReliabilityCancellation, linkedCancellation))
-                    {
-                        _activeReliabilityCancellation = null;
-                    }
-                }
                 _reliabilityGate.Release();
             }
         }
         finally
         {
             _operationGate.Release();
+        }
+    }
+
+    private void ApplyReliabilityResult(ChannelReliabilityCycleResult result, bool dryRun)
+    {
+        lock (_stateLock)
+        {
+            _lastReliability = MergeReliabilityCycles(_lastReliability, result);
+            result = _lastReliability;
+            if (_lastResult is { } routeResult)
+            {
+                _lastResult = routeResult with { Reliability = result };
+            }
+
+            _lastUpdatedAt = result.CompletedAt;
+            _nextReliabilityRun = result.Runtime?.NextCheckAt ?? DateTimeOffset.UtcNow.AddHours(1);
+            _status = BuildReliabilityStatus(result) ?? "可靠性检测已完成。";
+            _statusKind = result.Keys.Any(key => key.Status is
+                ChannelReliabilityStatus.Unavailable or ChannelReliabilityStatus.EvidenceInsufficient)
+                ? "warning"
+                : "success";
+            var decisionStartedAt = result.StartedAt ?? result.CompletedAt ?? DateTimeOffset.MaxValue;
+            if (!dryRun && _settings.AutoRoutingEnabled && result.Results.Any(item =>
+                    item.Quarantine is { } quarantine && quarantine.QuarantinedAt >= decisionStartedAt))
+            {
+                _nextAutoRun = DateTimeOffset.MinValue;
+            }
+        }
+    }
+
+    private void SetReliabilityInterruption(string status, string statusKind)
+    {
+        lock (_stateLock)
+        {
+            var runtime = _reliabilityService?.ReliabilityRuntimeSnapshot;
+            if (_lastReliability is { } previous && runtime is not null)
+            {
+                _lastReliability = previous with { Runtime = runtime };
+            }
+
+            _status = status;
+            _statusKind = statusKind;
         }
     }
 
